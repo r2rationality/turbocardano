@@ -21,6 +21,17 @@ These ideas are further explained in the following research reports:
 - [Scalability of Bulk Synchronization in the Cardano Blockchain](./doc/2023_Sierkov_CardanoBulkSynchronization.pdf) – Infrastructure scaling and compression-based network optimization.
 
 # Status
+
+> ⚠️ **Warning**
+> 
+> The project is currently preparing for the next release, which will reorganize the networking infrastructure based on [CIP 0150](https://github.com/cardano-foundation/CIPs/pull/993).
+> 
+> As a result, the Turbo proxies that supported the existing network-based examples have been disabled.
+> Because of this, the examples listed below may not function as intended.
+> This will be addressed in the next release.
+> 
+> If you have any questions or encounter issues, please open a GitHub issue.
+
 With the code now functionally complete, the focus has shifted to testing and integration. Key ongoing efforts include:
 - **Integration:** [Cardano Improvement Proposal 0150 - Block Data Compression](https://github.com/cardano-foundation/CIPs/pull/993) – Ensuring seamless integration of block data compression with existing infrastructure.
 - **Verification:** [Implementation-Independent Ledger Conformance Test Suite](https://github.com/IntersectMBO/cardano-ledger/issues/4892) – Validating correctness and conformance with the ledger specification.
