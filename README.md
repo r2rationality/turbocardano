@@ -33,7 +33,8 @@ These ideas are further explained in the following research reports:
 > If you have any questions or encounter issues, please open a GitHub issue.
 
 With the core functionally mostly complete now, the focus has shifted to testing and integration. Key ongoing efforts include:
-- **Integration:** [Cardano Improvement Proposal 0150 - Block Data Compression](https://github.com/cardano-foundation/CIPs/pull/993) – Ensuring seamless integration of block data compression with existing infrastructure.
+- **Integration:** [Cardano Improvement Proposal 0150 - Block Data Compression](https://github.com/cardano-foundation/CIPs/tree/master/CIP-0150) – Ensuring seamless integration of block data compression with existing infrastructure.
+- **Integration:** [Integration of an Alternative Node Implementation into Cardano Wallet](https://github.com/cardano-foundation/cardano-wallet/discussions/5072) – Enabling fast synchronization and wallet-history reconstruction for client software, such as Daedalus.
 - **Verification:** [Implementation-Independent Ledger Conformance Test Suite](https://github.com/IntersectMBO/cardano-ledger/issues/4892) – Validating correctness and conformance with the ledger specification.
 - **Performance:** [Cross-Implementation Benchmarking Dataset for Plutus Performance](https://github.com/IntersectMBO/plutus/issues/6626) – Measuring and optimizing Plutus script execution across implementations.
 - **Safety:** [Memory Safety Verification for critical C++ Code](./doc/memory-safety.md) – Analyzing and mitigating potential memory safety issues.
