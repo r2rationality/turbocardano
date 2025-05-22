@@ -5,7 +5,6 @@
  * https://github.com/sierkov/daedalus-turbo/blob/main/LICENSE */
 #include <dt/cli.hpp>
 #include <dt/chunk-registry.hpp>
-#include <dt/sync/turbo.hpp>
 
 namespace daedalus_turbo::cli::node_export {
     struct cmd: command {

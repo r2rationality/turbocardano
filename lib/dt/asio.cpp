@@ -34,7 +34,7 @@ namespace daedalus_turbo::asio {
     namespace net = boost::asio;
     using tcp = boost::asio::ip::tcp;
 
-    struct worker::impl {
+    struct worker_thread::impl {
         explicit impl() =default;
 
         ~impl()
@@ -132,49 +132,135 @@ namespace daedalus_turbo::asio {
         std::atomic<double> _speed_current { 0.0 };
     };
 
-    worker &worker::get()
+    const worker_ptr &worker::get()
     {
-        static worker w {};
+        static worker_ptr w = std::make_shared<worker_thread>();
         return w;
     }
 
-    worker::worker(): _impl { std::make_unique<impl>() }
+    worker_thread::worker_thread(): _impl { std::make_unique<impl>() }
     {
     }
 
-    worker::~worker() =default;
+    worker_thread::~worker_thread() =default;
 
-    void worker::add_before_action(const std::string &name, const action_type &act)
+    void worker_thread::add_before_action(const std::string &name, const action_type &act)
     {
         _impl->add_before_action(name, act);
     }
 
-    void worker::del_before_action(const std::string &name)
+    void worker_thread::del_before_action(const std::string &name)
     {
         _impl->del_before_action(name);
     }
 
-    void worker::add_after_action(const std::string &name, const action_type &act)
+    void worker_thread::add_after_action(const std::string &name, const action_type &act)
     {
         _impl->add_after_action(name, act);
     }
 
-    void worker::del_after_action(const std::string &name)
+    void worker_thread::del_after_action(const std::string &name)
     {
         _impl->del_after_action(name);
     }
 
-    net::io_context &worker::io_context()
+    net::io_context &worker_thread::io_context()
     {
         return _impl->io_context();
     }
 
-    void worker::internet_speed_report(const double current_speed)
+    void worker_thread::internet_speed_report(const double current_speed)
     {
         return _impl->internet_speed_report(current_speed);
     }
 
-    speed_mbps worker::internet_speed() const
+    speed_mbps worker_thread::internet_speed() const
+    {
+        return _impl->internet_speed();
+    }
+
+    struct worker_manual::impl {
+        explicit impl() =default;
+
+        ~impl()
+        {
+        }
+
+        void add_before_action(const std::string &, const action_type &)
+        {
+            throw error("worker_manual::add_before_action not implemented");
+        }
+
+        void del_before_action(const std::string &)
+        {
+            throw error("worker_manual::del_before_action not implemented");
+        }
+
+        void add_after_action(const std::string &, const action_type &)
+        {
+            throw error("worker_manual::add_after_action not implemented");
+        }
+
+        void del_after_action(const std::string &)
+        {
+            throw error("worker_manual::del_after_action not implemented");
+        }
+
+        net::io_context &io_context()
+        {
+            return _ioc;
+        }
+
+        void internet_speed_report(const double)
+        {
+            throw error("worker_manual::internet_speed_report not implemented");
+        }
+
+        speed_mbps internet_speed() const
+        {
+            throw error("worker_manual::internet_speed not implemented");
+        }
+    private:
+        net::io_context _ioc {};
+    };
+
+    worker_manual::worker_manual(): _impl { std::make_unique<impl>() }
+    {
+    }
+
+    worker_manual::~worker_manual() =default;
+
+    void worker_manual::add_before_action(const std::string &name, const action_type &act)
+    {
+        _impl->add_before_action(name, act);
+    }
+
+    void worker_manual::del_before_action(const std::string &name)
+    {
+        _impl->del_before_action(name);
+    }
+
+    void worker_manual::add_after_action(const std::string &name, const action_type &act)
+    {
+        _impl->add_after_action(name, act);
+    }
+
+    void worker_manual::del_after_action(const std::string &name)
+    {
+        _impl->del_after_action(name);
+    }
+
+    net::io_context &worker_manual::io_context()
+    {
+        return _impl->io_context();
+    }
+
+    void worker_manual::internet_speed_report(const double current_speed)
+    {
+        return _impl->internet_speed_report(current_speed);
+    }
+
+    speed_mbps worker_manual::internet_speed() const
     {
         return _impl->internet_speed();
     }

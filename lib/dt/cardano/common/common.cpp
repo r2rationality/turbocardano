@@ -20,13 +20,13 @@ namespace daedalus_turbo::cardano {
     {
         return {
             blk->hash(), blk.offset(), blk.size(),
-            narrow_cast<uint32_t>(blk->slot()),
-            narrow_cast<uint32_t>(blk->height ()),
+            numeric_cast<uint32_t>(blk->slot()),
+            numeric_cast<uint32_t>(blk->height ()),
             crypto::crc32::digest(blk.raw()),
             blk->issuer_hash(),
-            narrow_cast<uint16_t>(blk->header().size()),
-            narrow_cast<uint8_t>(blk->header_offset()),
-            narrow_cast<uint8_t>(blk->era())
+            numeric_cast<uint16_t>(blk->header().size()),
+            numeric_cast<uint8_t>(blk->header_offset()),
+            numeric_cast<uint8_t>(blk->era())
         };
     }
 
@@ -128,7 +128,7 @@ namespace daedalus_turbo::cardano {
         const auto ref_idx = k_it.read().uint();
         auto &val = m_it.read_val(std::move(key));
         auto &v_it = val.array();
-        return { tag, narrow_cast<uint16_t>(ref_idx), v_it.read().data_raw(), ex_units::from_cbor(v_it.read()) };
+        return { tag, numeric_cast<uint16_t>(ref_idx), v_it.read().data_raw(), ex_units::from_cbor(v_it.read()) };
     }
 
     tx_redeemer tx_redeemer::from_cbor(cbor::zero2::array_reader &a_it)
@@ -137,7 +137,7 @@ namespace daedalus_turbo::cardano {
         auto &it = v.array();
         return {
             redeemer_tag_from_cbor(it.read()),
-            narrow_cast<uint16_t>(it.read().uint()),
+            numeric_cast<uint16_t>(it.read().uint()),
             it.read().data_raw(),
             ex_units::from_cbor(it.read())
         };

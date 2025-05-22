@@ -26,9 +26,9 @@ suite cardano_block_producer_suite = [] {
             const auto raw_data = bp.cbor();
             expect(raw_data.size() >= 512);
             auto block_tuple = cbor::zero2::parse(raw_data);
-            const auto blk = make_block(block_tuple.get(), 123);
+            const block_container blk { 213, block_tuple.get() };
             test_same(6, blk->era());
-            test_same(123, blk.offset());
+            test_same(213, blk.offset());
             test_same(0, blk->height());
             test_same(0, blk->slot());
             expect(blk->signature_ok());
@@ -55,7 +55,7 @@ suite cardano_block_producer_suite = [] {
                 bp.prev_hash = prev_hash;
                 const auto block_data = bp.cbor();
                 auto block_tuple = cbor::zero2::parse(block_data);
-                const auto blk = make_block(block_tuple.get(), chain.size());
+                const block_container blk { chain.size(), block_tuple.get() };
                 expect(blk->era() == 6_ull);
                 expect(blk.offset() == chain.size());
                 expect(blk->height() == height);
@@ -87,7 +87,7 @@ suite cardano_block_producer_suite = [] {
             const auto raw_data = bp.cbor();
             expect(raw_data.size() >= 512);
             auto block_tuple = cbor::zero2::parse(raw_data);
-            const auto blk = make_block(block_tuple.get(), 123);
+            const block_container blk { 123, block_tuple.get() };
             test_same(6, blk->era());
             test_same(123, blk.offset());
             test_same(0, blk->height());

@@ -4,7 +4,6 @@
  * This code is distributed under the license specified in:
  * https://github.com/sierkov/daedalus-turbo/blob/main/LICENSE */
 
-#include <dt/atomic.hpp>
 #include <dt/common/benchmark.hpp>
 #include <dt/scheduler.hpp>
 

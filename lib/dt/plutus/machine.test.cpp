@@ -84,7 +84,7 @@ namespace {
         return m.evaluate(s.program());
     }
 
-    void test_script(const std::filesystem::path &path, const optional_budget &budget={}, const std::source_location &loc=std::source_location::current())
+    void test_script(const std::filesystem::path &path, const optional_budget &budget={}, const reflection::source_location &loc=reflection::source_location::current())
     {
         plutus::allocator alloc {};
         const auto exp_path = fmt::format("{}.uplc.expected", (path.parent_path() / path.stem()).string());

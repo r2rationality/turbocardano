@@ -30,8 +30,8 @@ namespace daedalus_turbo::cardano::mary {
                 const auto name_bytes = name_v.bytes();
                 auto &coin_v = p_it.read_val(std::move(name_v));
                 switch (coin_v.type()) {
-                    case cbor::major_type::uint: p_m.emplace_hint(p_m.end(), name_bytes, narrow_cast<int64_t>(coin_v.uint())); break;
-                    case cbor::major_type::nint: p_m.emplace_hint(p_m.end(), name_bytes, -narrow_cast<int64_t>(coin_v.nint())); break;
+                    case cbor::major_type::uint: p_m.emplace_hint(p_m.end(), name_bytes, numeric_cast<int64_t>(coin_v.uint())); break;
+                    case cbor::major_type::nint: p_m.emplace_hint(p_m.end(), name_bytes, -numeric_cast<int64_t>(coin_v.nint())); break;
                     [[unlikely]] default: throw error(fmt::format("expecting an int but got {}", coin_v.type()));
                 }
             }
@@ -139,7 +139,7 @@ namespace daedalus_turbo::cardano::mary {
 
     uint32_t block::body_size() const
     {
-        return narrow_cast<uint32_t>(_raw.size());
+        return numeric_cast<uint32_t>(_raw.size());
     }
 
     const cardano::block_header_base &block::header() const

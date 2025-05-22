@@ -193,12 +193,12 @@ namespace daedalus_turbo::cardano {
             switch (typ) {
                 case 0: upd.min_fee_a.emplace(u.uint()); break;
                 case 1: upd.min_fee_b.emplace(u.uint()); break;
-                case 2: upd.max_block_body_size.emplace(narrow_cast<uint32_t>(u.uint())); break;
-                case 3: upd.max_transaction_size.emplace(narrow_cast<uint32_t>(u.uint())); break;
-                case 4: upd.max_block_header_size.emplace(narrow_cast<uint16_t>(u.uint())); break;
+                case 2: upd.max_block_body_size.emplace(numeric_cast<uint32_t>(u.uint())); break;
+                case 3: upd.max_transaction_size.emplace(numeric_cast<uint32_t>(u.uint())); break;
+                case 4: upd.max_block_header_size.emplace(numeric_cast<uint16_t>(u.uint())); break;
                 case 5: upd.key_deposit.emplace(u.uint()); break;
                 case 6: upd.pool_deposit.emplace(u.uint()); break;
-                case 7: upd.e_max.emplace(narrow_cast<uint32_t>(u.uint())); break;
+                case 7: upd.e_max.emplace(numeric_cast<uint32_t>(u.uint())); break;
                 case 8: upd.n_opt.emplace(u.uint()); break;
                 case 9: upd.pool_pledge_influence = decltype(upd.pool_pledge_influence)::value_type::from_cbor(u); break;
                 case 10: upd.expansion_rate = decltype(upd.expansion_rate)::value_type::from_cbor(u); break;
@@ -214,12 +214,12 @@ namespace daedalus_turbo::cardano {
                 case 24: upd.max_collateral_inputs.emplace(u.uint()); break;
                 case 25: upd.pool_voting_thresholds = decltype(upd.pool_voting_thresholds)::value_type::from_cbor(u); break;
                 case 26: upd.drep_voting_thresholds = decltype(upd.drep_voting_thresholds)::value_type::from_cbor(u); break;
-                case 27: upd.committee_min_size.emplace(narrow_cast<uint16_t>(u.uint())); break;
-                case 28: upd.committee_max_term_length.emplace(narrow_cast<uint32_t>(u.uint())); break;
-                case 29: upd.gov_action_lifetime.emplace(narrow_cast<uint32_t>(u.uint())); break;
+                case 27: upd.committee_min_size.emplace(numeric_cast<uint16_t>(u.uint())); break;
+                case 28: upd.committee_max_term_length.emplace(numeric_cast<uint32_t>(u.uint())); break;
+                case 29: upd.gov_action_lifetime.emplace(numeric_cast<uint32_t>(u.uint())); break;
                 case 30: upd.gov_action_deposit.emplace(u.uint()); break;
                 case 31: upd.drep_deposit.emplace(u.uint()); break;
-                case 32: upd.drep_activity.emplace(narrow_cast<uint32_t>(u.uint())); break;
+                case 32: upd.drep_activity.emplace(numeric_cast<uint32_t>(u.uint())); break;
                 case 33: upd.min_fee_ref_script_cost_per_byte = decltype(upd.min_fee_ref_script_cost_per_byte)::value_type::from_cbor(u); break;
                 default: throw error(fmt::format("unsupported conway param update: {}", u.to_string()));
             }
@@ -362,7 +362,7 @@ namespace daedalus_turbo::cardano {
     gov_action_id_t gov_action_id_t::from_cbor(cbor::zero2::value &v)
     {
         auto &it = v.array();
-        return { it.read().bytes(), narrow_cast<uint16_t>(it.read().uint()) };
+        return { it.read().bytes(), numeric_cast<uint16_t>(it.read().uint()) };
     }
 
     void gov_action_id_t::to_cbor(era_encoder &enc) const

@@ -20,17 +20,18 @@ suite sync_p2p_suite = [] {
         auto &ps = peer_selection_simple::get();
         mock_chain_config mock_cfg {};
         const auto good_chain = gen_chain(mock_cfg);
+        const cardano::config ccfg { good_chain.cfg };
         cardano_client_manager_mock ccm { good_chain.data };
         "success"_test = [&] {
             std::filesystem::remove_all(data_dir);
-            chunk_registry cr { data_dir, chunk_registry::mode::validate, good_chain.cfg };
+            chunk_registry cr { data_dir, chunk_registry::mode::validate, ccfg };
             p2p::syncer s { cr, ps, ccm };
             expect(s.sync(s.find_peer()));
             test_same(cr.num_blocks(), 9);
         };
         "no work"_test = [&] {
             std::filesystem::remove_all(data_dir);
-            chunk_registry cr { data_dir, chunk_registry::mode::validate, good_chain.cfg };
+            chunk_registry cr { data_dir, chunk_registry::mode::validate, ccfg };
             p2p::syncer s { cr, ps, ccm };
             expect(s.sync(s.find_peer()));
             test_same(cr.num_blocks(), 9);
@@ -42,7 +43,7 @@ suite sync_p2p_suite = [] {
             test_mock_cfg.failure_height = 7;
             const auto chain = gen_chain(test_mock_cfg);
             std::filesystem::remove_all(data_dir);
-            chunk_registry cr { data_dir, chunk_registry::mode::validate, chain.cfg };
+            chunk_registry cr { data_dir, chunk_registry::mode::validate, ccfg };
             cardano_client_manager_mock test_ccm { chain.data };
             p2p::syncer s { cr, ps, test_ccm};
             expect(s.sync(s.find_peer()));
@@ -52,7 +53,7 @@ suite sync_p2p_suite = [] {
         };
         "max_slot"_test = [&] {
             std::filesystem::remove_all(data_dir);
-            chunk_registry cr { data_dir, chunk_registry::mode::validate, good_chain.cfg };
+            chunk_registry cr { data_dir, chunk_registry::mode::validate, ccfg };
             p2p::syncer s { cr, ps, ccm };
             expect(s.sync(s.find_peer(), 100));
             test_same(cr.num_blocks(), 6);

@@ -146,6 +146,15 @@ namespace daedalus_turbo::cbor {
             return *this;
         }
 
+        encoder &boolean(const bool val)
+        {
+            if (val)
+                s_true();
+            else
+                s_false();
+            return *this;
+        }
+
         encoder &tag(const uint64_t id)
         {
             _encode_uint_item(major_type::tag, id);

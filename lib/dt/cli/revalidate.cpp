@@ -36,7 +36,7 @@ namespace daedalus_turbo::cli::validate {
                 // remove all previously prepared indices and validator snapshots
                 std::filesystem::remove_all(std::filesystem::path { data_dir } / "index");
                 std::filesystem::remove_all(std::filesystem::path { data_dir } / "validate");
-                chunk_registry cr { data_dir, chunk_registry::mode::validate, configs_dir::get(),
+                chunk_registry cr { data_dir, chunk_registry::mode::validate, cardano::config::get(),
                     scheduler::get(), file_remover::get(), false };
                 _parse_progress.total = max_block->end_offset;
                 cr.accept_anything_or_throw({}, max_block, [&]{

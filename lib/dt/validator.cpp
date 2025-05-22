@@ -540,7 +540,7 @@ namespace daedalus_turbo::validator {
                         cbor::zero2::decoder dec { raw_data };
                         while (!dec.done()) {
                             auto &block_tuple = dec.read();
-                            auto blk = cardano::make_block(block_tuple, chunk.offset + block_tuple.data_begin() - raw_data.data(), _cr.config());
+                            const cardano::block_container blk { numeric_cast<uint64_t>(chunk.offset + block_tuple.data_begin() - raw_data.data()), block_tuple, _cr.config() };
                             if (blk.offset() >= state_start_offset) {
                                 for (auto &idxr: chunk_indexers)
                                     idxr->index(blk);

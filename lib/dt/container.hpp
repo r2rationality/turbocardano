@@ -54,11 +54,11 @@ namespace daedalus_turbo {
         using base_type = boost::container::flat_map<K, V>;
         using base_type::base_type;
 
-        const typename base_type::value_type &at(const size_t idx) const
+        const typename base_type::value_type &nth_or_die(const size_t idx) const
         {
             if (const auto it = base_type::nth(idx); it != base_type::end()) [[likely]]
                 return *it;
-            throw error(fmt::format("flat_map index out of range: {} >= {}", idx, base_type::size()));
+            throw error(fmt::format("attempted to reference a missing index: {}", idx));
         }
     };
 }

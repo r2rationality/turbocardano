@@ -4,7 +4,6 @@
  * This code is distributed under the license specified in:
  * https://github.com/sierkov/daedalus-turbo/blob/main/LICENSE */
 
-#include <dt/atomic.hpp>
 #include <dt/cardano/ledger/shelley.hpp>
 #include <dt/cardano/ledger/updates.hpp>
 #include <dt/cardano/shelley/block.hpp>
@@ -687,11 +686,11 @@ namespace daedalus_turbo::cardano::ledger::shelley {
                     for (const auto &[txo_id, txo_data]: part) {
                         part_balance += txo_data.coin;
                     }
-                    atomic_add(total_balance, part_balance);
+                    total_balance.fetch_add(part_balance, std::memory_order_relaxed);
                 });
             }
         });
-        return total_balance.load();
+        return total_balance.load(std::memory_order_relaxed);
     }
 
     void state::withdraw_reward(const stake_ident &stake_id, const uint64_t amount)
@@ -1140,11 +1139,11 @@ namespace daedalus_turbo::cardano::ledger::shelley {
                         }
                         ++it;
                     }
-                    atomic_add(total_balance, part_balance);
+                    total_balance.fetch_add(part_balance, std::memory_order_relaxed);
                 });
             }
         });
-        return total_balance.load();
+        return total_balance.load(std::memory_order_relaxed);
     }
 
     std::optional<cardano::stake_ident> state::_extract_stake_id(const cardano::address &addr) const
@@ -1357,8 +1356,8 @@ namespace daedalus_turbo::cardano::ledger::shelley {
             },
             [&](auto &&res, auto, auto) {
                 const auto [part_total, part_filtered] = std::any_cast<std::pair<uint64_t, uint64_t>>(std::move(res));
-                atomic_add(total, part_total);
-                atomic_add(filtered, part_filtered);
+                total.fetch_add(part_total, std::memory_order_relaxed);
+                filtered.fetch_add(part_filtered, std::memory_order_relaxed);
             }
         );
         logger::trace("epoch: {} staking_rewards total: {} filtered: {} diff: {}",
@@ -1521,7 +1520,7 @@ namespace daedalus_turbo::cardano::ledger::shelley {
                             }
                         }
                         part_updates[part_idx] = std::move(pool_dist_updates);
-                        atomic_add(treasury_update, part_treasury_update);
+                        treasury_update.fetch_add(part_treasury_update, std::memory_order_relaxed);
                     });
                 }
             }

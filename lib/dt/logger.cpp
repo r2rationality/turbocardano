@@ -88,7 +88,7 @@ namespace daedalus_turbo::logger {
             logger.set_level(spdlog::level::debug);
         }
         logger.flush_on(spdlog::level::debug);
-        logger.debug("Installation directory: {}", install_path(""));
+        logger.log(spdlog::level::debug, fmt::format("Installation directory: {}", install_path("")));
         return logger;
     }
 
@@ -104,19 +104,19 @@ namespace daedalus_turbo::logger {
         // with spdlog being one of them
         switch (lev) {
             case level::trace:
-                get().trace("{}", msg);
+                get().log(spdlog::level::trace, msg);
                 break;
             case level::debug:
-                get().debug("{}", msg);
+                get().log(spdlog::level::debug, msg);
                 break;
             case level::info:
-                get().info("{}", msg);
+                get().log(spdlog::level::info, msg);
                 break;
             case level::warn:
-                get().warn("{}", msg);
+                get().log(spdlog::level::warn, msg);
                 break;
             case level::error: {
-                get().error("{}", msg);
+                get().log(spdlog::level::err, msg);
                 mutex::scoped_lock lk { last_error_mutex };
                 last_error_ptr = std::make_shared<std::string>(msg);
                 break;

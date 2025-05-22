@@ -239,7 +239,7 @@ namespace daedalus_turbo::cardano::ledger::shelley {
         {
             if (val) {
                 enc.uint(idx);
-                enc.uint(narrow_cast<uint64_t>(*val));
+                enc.uint(numeric_cast<uint64_t>(*val));
                 return 1;
             }
             return 0;

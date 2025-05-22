@@ -1081,7 +1081,7 @@ namespace daedalus_turbo::plutus {
 
     const reward_id_t &context::withdraw_at(const uint64_t r_idx) const
     {
-        return dynamic_cast<const shelley::tx_base &>(*_tx).withdrawals().at(r_idx).first;
+        return dynamic_cast<const shelley::tx_base &>(*_tx).withdrawals().nth_or_die(r_idx).first;
     }
 
     const cert_t &context::cert_at(const uint64_t r_idx) const
@@ -1096,7 +1096,7 @@ namespace daedalus_turbo::plutus {
 
     buffer context::mint_at(const uint64_t r_idx) const
     {
-        return dynamic_cast<const mary::tx_base &>(*_tx).mints().at(r_idx).first;
+        return dynamic_cast<const mary::tx_base &>(*_tx).mints().nth_or_die(r_idx).first;
     }
 
     const stored_txo &context::input_at(const uint64_t r_idx) const

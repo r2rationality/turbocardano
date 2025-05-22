@@ -1,17 +1,16 @@
+#pragma once
 /* This file is part of Daedalus Turbo project: https://github.com/sierkov/daedalus-turbo/
  * Copyright (c) 2022-2023 Alex Sierkov (alex dot sierkov at gmail dot com)
  * Copyright (c) 2024-2025 R2 Rationality OÜ (info at r2rationality dot com)
  * This code is distributed under the license specified in:
  * https://github.com/sierkov/daedalus-turbo/blob/main/LICENSE */
-#ifndef DAEDALUS_TURBO_CHUNK_REGISTRY_HPP
-#define DAEDALUS_TURBO_CHUNK_REGISTRY_HPP
 
 #include <algorithm>
 #include <map>
 #include <set>
 #include <string>
-#include <dt/atomic.hpp>
 #include <dt/cardano/common/config.hpp>
+#include <dt/cardano.hpp>
 #include <dt/file.hpp>
 #include <dt/file-remover.hpp>
 #include <dt/indexer.hpp>
@@ -180,6 +179,79 @@ namespace daedalus_turbo {
         using chunk_list = std::vector<chunk_info>;
         using chunk_reverse_iterator = chunk_map::const_reverse_iterator;
 
+        struct const_iterator {
+            const_iterator() =delete;
+
+            const_iterator(const const_iterator &o) noexcept:
+                _cr { o._cr },
+                _chunk_it { o._chunk_it },
+                _block_no { o._block_no }
+            {
+            }
+
+            const_iterator &operator=(const const_iterator &o)
+            {
+                if (&_cr != &o._cr) [[unlikely]]
+                    throw error(fmt::format("an attempt to assing an iterator across different instances of chunk_registry"));
+                _chunk_it = o._chunk_it;
+                _block_no = o._block_no;
+                _chunk_cache.reset();
+                return *this;
+            }
+
+            bool operator==(const const_iterator &o) const
+            {
+                return static_cast<int>(&_cr == &o._cr) & static_cast<int>(_chunk_it == o._chunk_it) & static_cast<int>(_block_no == o._block_no);
+            }
+
+            const storage::block_info &operator*() const
+            {
+                return _chunk_it->second.blocks.at(_block_no);
+            }
+
+            const storage::block_info *operator->() const
+            {
+                return &_chunk_it->second.blocks.at(_block_no);
+            }
+
+            cardano::parsed_header header() const;
+            uint8_vector block_data() const;
+            std::pair<uint8_vector, const_iterator> chunk_remaining_data(const_iterator last_it) const;
+
+            const_iterator &operator++()
+            {
+                if (_chunk_it != _cr._chunks.end()) {
+                    ++_block_no;
+                    if (_block_no == _chunk_it->second.blocks.size()) [[likely]] {
+                        ++_chunk_it;
+                        _block_no = 0;
+                    }
+                }
+                return *this;
+            }
+        private:
+            friend chunk_registry;
+
+            struct chunk_cache {
+                std::string full_path;
+                write_vector data;
+            };
+
+            const chunk_registry &_cr;
+            chunk_map::const_iterator _chunk_it;
+            size_t _block_no = 0;
+            mutable std::optional<chunk_cache> _chunk_cache {};
+
+            const_iterator(const chunk_registry &cr, const chunk_map::const_iterator chunk_it, const size_t block_no) noexcept:
+                _cr { cr },
+                _chunk_it { chunk_it },
+                _block_no { block_no }
+            {
+            }
+
+            buffer _prep_chunk_cache() const;
+        };
+
         struct active_transaction {
             cardano::optional_point start {};
             std::optional<progress_point> target {};
@@ -230,91 +302,50 @@ namespace daedalus_turbo {
         }
 
         explicit chunk_registry(const std::string &data_dir, mode mode=mode::validate,
-            const configs &cfg=configs_dir::get(), scheduler &sched=scheduler::get(), file_remover &fr=file_remover::get(),
+            cardano::config ccfg=cardano::config::get(), scheduler &sched=scheduler::get(), file_remover &fr=file_remover::get(),
             bool auto_maintenance=true);
         ~chunk_registry();
 
-        void register_processor(const chunk_processor &p)
+        // Interoperability
+
+        void register_processor(const chunk_processor &p);
+        void remove_processor(const chunk_processor &p);
+        void report_progress(const std::string_view name, const progress_point &tip) const;
+
+        std::optional<active_transaction> tx() const
         {
-            _processors.emplace(&p);
+            return _transaction;
         }
 
-        void remove_processor(const chunk_processor &p)
+        void validation_failure_handler(const std::function<void(uint64_t)> &);
+        const indexer::incremental &indexer() const;
+        const validator::incremental &validator() const;
+
+        const cardano::config &config() const
         {
-            _processors.erase(&p);
+            return _cardano_cfg;
         }
 
-        void maintenance()
+        scheduler &sched() const
         {
-            if (valid_end_offset() != max_end_offset()) {
-                logger::warn("the local chain is not in a consistent state, performing maintenance ...");
-                truncate(tip());
-                remover().remove();
-            } else {
-                logger::info("the local chain is in a consistent state");
-            }
+            return _sched;
         }
 
-        void report_progress(const std::string_view name, const progress_point &tip) const
+        file_remover &remover() const
         {
-            if (_transaction) [[likely]] {
-                uint64_t rel_pos = 0;
-                uint64_t rel_target = 0;
-                // prefer to compute the progress using offsets, fallback to slots if not available
-                if (_transaction->target->end_offset) {
-                    rel_pos = tip.end_offset;
-                    rel_target = _transaction->target->end_offset;
-                    if (_transaction->start) {
-                        rel_pos -= _transaction->start->end_offset;
-                        rel_target -= _transaction->start->end_offset;
-                    }
-                } else {
-                    rel_pos = tip.slot;
-                    rel_target = _transaction->target->slot;
-                    if (_transaction->start) {
-                        rel_pos -= _transaction->start->slot;
-                        rel_target -= _transaction->start->slot;
-                    }
-                }
-                uint64_t prev_pos = 0;
-                {
-                    mutex::scoped_lock lk { _tx_progress_mutex };
-                    if (const auto [it, created] = _tx_progress_max.try_emplace(std::string { name }, rel_pos); !created) {
-                        prev_pos = it->second;
-                        if (it->second < rel_pos)
-                            it->second = rel_pos;
-                    }
-                }
-                if (prev_pos < rel_pos) {
-                    for (const auto *p: _processors) {
-                        if (p->on_progress)
-                            p->on_progress(name, rel_pos, rel_target);
-                    }
-                }
-            } else {
-                throw error("report_progress can be called only inside of a transaction");
-            }
+            return _file_remover;
         }
 
         // data accessors
 
-        std::string rel_path(const std::filesystem::path &full_path) const
+        const_iterator cbegin() const
         {
-            auto canon_path = std::filesystem::weakly_canonical(full_path);
-            auto [diffBegin, diffEnd] = std::mismatch(_db_dir.begin(), _db_dir.end(), canon_path.begin());
-            if (diffBegin != _db_dir.end())
-                throw error(fmt::format("the supplied path '{}' is not inside the host directory '{}'", canon_path.string(), _db_dir.string()));
-            return std::filesystem::relative(canon_path, _db_dir).string();
+            return { *this, _chunks.begin(), 0 };
         }
 
-        std::string full_path(const std::filesystem::path &rel_path) const
+        const_iterator cend() const
         {
-            auto canon_path = std::filesystem::weakly_canonical(_db_dir / rel_path);
-            auto [diffBegin, diffEnd] = std::mismatch(_db_dir.begin(), _db_dir.end(), canon_path.begin());
-            if (diffBegin != _db_dir.end())
-                throw error(fmt::format("the supplied path '{}' does not resolve into the host directory '{}'", canon_path.string(), _db_dir.string()));
-            std::filesystem::create_directories(canon_path.parent_path());
-            return canon_path.string();
+            return { *this, _chunks.end(), 0 };
         }
 
         const chunk_map &chunks() const
@@ -349,47 +380,6 @@ namespace daedalus_turbo {
             return _has_epoch(epoch, lk);
         }
 
-        epoch_info epoch(uint64_t epoch) const
-        {
-            epoch_info::chunk_list chunks {};
-            auto chunk_it = std::lower_bound(_chunks.begin(), _chunks.end(), epoch,
-                [this](const auto &el, const auto &epoch) { return make_slot(el.second.first_slot).epoch() < epoch; });
-            for (; chunk_it != _chunks.end() && make_slot(chunk_it->second.first_slot).epoch() == epoch; ++chunk_it) {
-                chunks.emplace_back(&chunk_it->second);
-            }
-            return { std::move(chunks) };
-        }
-
-        std::optional<chunk_info> last_chunk() const
-        {
-            if (!_chunks.empty()) [[likely]]
-                return _chunks.rbegin()->second;
-            return {};
-        }
-
-        std::optional<storage::block_info> last_valid_block() const
-        {
-            const auto end_offset = valid_end_offset();
-            if (end_offset) [[likely]] {
-                const auto chunk_it = _find_chunk_by_offset(end_offset - 1);
-                if (chunk_it == _chunks.end()) [[unlikely]]
-                    throw error("internal error: chunk_registry state is inconsistent!");
-                const auto block_it = _find_block_by_offset(chunk_it, end_offset - 1);
-                if (block_it == chunk_it->second.blocks.end()) [[unlikely]]
-                    throw error("internal error: chunk_registry state is inconsistent!");
-                return *block_it;
-            }
-            return {};
-        }
-
-        std::optional<storage::block_info> last_block() const
-        {
-            if (!_chunks.empty()) [[likely]] {
-                return _chunks.rbegin()->second.blocks.back();
-            }
-            return {};
-        }
-
         uint64_t block_height(const uint64_t slot, const buffer hash) const
         {
             uint64_t h = 0;
@@ -413,13 +403,6 @@ namespace daedalus_turbo {
         cardano::slot make_slot(uint64_t slot_) const
         {
             return { slot_, _cardano_cfg };
-        }
-
-        uint64_t max_slot() const
-        {
-            if (!_chunks.empty()) [[likely]]
-                return _chunks.rbegin()->second.last_slot;
-            return 0;
         }
 
         uint64_t num_bytes() const
@@ -446,36 +429,6 @@ namespace daedalus_turbo {
         {
             return std::accumulate(_chunks.begin(), _chunks.end(), static_cast<size_t>(0),
                 [](auto sum, const auto &val) { return sum + val.second.blocks.size(); });
-        }
-
-        const daedalus_turbo::configs &configs() const
-        {
-            return _cfg;
-        }
-
-        const cardano::config &config() const
-        {
-            return _cardano_cfg;
-        }
-
-        scheduler &sched() const
-        {
-            return _sched;
-        }
-
-        file_remover &remover() const
-        {
-            return _file_remover;
-        }
-
-        std::optional<active_transaction> tx() const
-        {
-            return _transaction;
-        }
-
-        const std::filesystem::path &data_dir() const
-        {
-            return _data_dir;
         }
 
         const storage::chunk_info *find_chunk_by_offset_no_throw(const uint64_t offset) const
@@ -528,24 +481,32 @@ namespace daedalus_turbo {
         std::optional<storage::block_info> latest_block_after_or_at_slot(uint64_t slot) const;
         std::optional<storage::block_info> latest_block_before_or_at_slot(uint64_t slot) const;
 
-        std::optional<storage::block_info> find_block_by_slot_no_throw(const uint64_t slot, const cardano::block_hash &hash) const
+        const_iterator find_block(const cardano::point2 &p) const
         {
-            if (auto chunk_it = _find_chunk_by_slot(slot); chunk_it != _chunks.end()) [[likely]] {
-                if (auto block_it = _find_block_by_slot(chunk_it, slot); block_it != chunk_it->second.blocks.end()) [[likely]] {
-                    if (block_it->slot == slot) {
+            if (auto chunk_it = _find_chunk_by_slot(p.slot); chunk_it != _chunks.end()) [[likely]] {
+                if (auto block_it = _find_block_by_slot(chunk_it, p.slot); block_it != chunk_it->second.blocks.end()) [[likely]] {
+                    if (block_it->slot == p.slot) {
                         for (;;) {
-                            if (block_it->hash == hash) [[likely]]
-                                return *block_it;
+                            if (block_it->hash == p.hash) [[likely]]
+                                return { *this, chunk_it, numeric_cast<size_t>(block_it - chunk_it->second.blocks.begin()) };
                             if (++block_it == chunk_it->second.blocks.end()) [[unlikely]] {
                                 if (++chunk_it == _chunks.end()) [[unlikely]]
                                     break;
                                 block_it = chunk_it->second.blocks.begin();
                             }
-                            if (block_it->slot != slot)
+                            if (block_it->slot != p.slot)
                                 break;
                         }
                     }
                 }
+            }
+            return cend();
+        }
+
+        std::optional<storage::block_info> find_block_by_slot_no_throw(const uint64_t slot, const cardano::block_hash &hash) const
+        {
+            if (const auto it = find_block(cardano::point2 { slot, hash }); it != cend()) [[likely]] {
+                return { *it };
             }
             return {};
         }
@@ -633,6 +594,103 @@ namespace daedalus_turbo {
             return count_blocks(start_point, last_slot);
         }
 
+        cardano::amount unspent_reward(const cardano::stake_ident &id) const;
+        cardano::tail_relative_stake_map tail_relative_stake() const;
+
+
+        cardano::optional_point tip() const;
+        cardano::optional_point core_tip() const;
+        cardano::optional_point immutable_tip() const;
+
+        std::optional<chunk_info> last_chunk() const
+        {
+            if (!_chunks.empty()) [[likely]]
+                return _chunks.rbegin()->second;
+            return {};
+        }
+
+        std::optional<storage::block_info> last_valid_block() const
+        {
+            const auto end_offset = valid_end_offset();
+            if (end_offset) [[likely]] {
+                const auto chunk_it = _find_chunk_by_offset(end_offset - 1);
+                if (chunk_it == _chunks.end()) [[unlikely]]
+                    throw error("internal error: chunk_registry state is inconsistent!");
+                const auto block_it = _find_block_by_offset(chunk_it, end_offset - 1);
+                if (block_it == chunk_it->second.blocks.end()) [[unlikely]]
+                    throw error("internal error: chunk_registry state is inconsistent!");
+                return *block_it;
+            }
+            return {};
+        }
+
+        std::optional<storage::block_info> last_block() const
+        {
+            if (!_chunks.empty()) [[likely]] {
+                return _chunks.rbegin()->second.blocks.back();
+            }
+            return {};
+        }
+
+        uint64_t max_slot() const
+        {
+            if (!_chunks.empty()) [[likely]]
+                return _chunks.rbegin()->second.last_slot;
+            return 0;
+        }
+
+        uint64_t valid_end_offset() const
+        {
+            uint64_t valid_end = _my_end_offset();
+            for (const auto *p: _processors) {
+                if (p->end_offset) {
+                    const auto proc_end = p->end_offset();
+                    if (proc_end < valid_end)
+                        valid_end = proc_end;
+                }
+            }
+            return valid_end;
+        }
+
+        uint64_t max_end_offset() const
+        {
+            uint64_t max_end = _my_end_offset();
+            for (const auto *p: _processors) {
+                if (p->end_offset) {
+                    const auto proc_end = p->end_offset();
+                    if (proc_end > max_end)
+                        max_end = proc_end;
+                }
+            }
+            return max_end;
+        }
+
+        // block data access
+
+        const std::filesystem::path &data_dir() const
+        {
+            return _data_dir;
+        }
+
+        std::string rel_path(const std::filesystem::path &full_path) const
+        {
+            auto canon_path = std::filesystem::weakly_canonical(full_path);
+            auto [diffBegin, diffEnd] = std::mismatch(_db_dir.begin(), _db_dir.end(), canon_path.begin());
+            if (diffBegin != _db_dir.end())
+                throw error(fmt::format("the supplied path '{}' is not inside the host directory '{}'", canon_path.string(), _db_dir.string()));
+            return std::filesystem::relative(canon_path, _db_dir).string();
+        }
+
+        std::string full_path(const std::filesystem::path &rel_path) const
+        {
+            auto canon_path = std::filesystem::weakly_canonical(_db_dir / rel_path);
+            auto [diffBegin, diffEnd] = std::mismatch(_db_dir.begin(), _db_dir.end(), canon_path.begin());
+            if (diffBegin != _db_dir.end())
+                throw error(fmt::format("the supplied path '{}' does not resolve into the host directory '{}'", canon_path.string(), _db_dir.string()));
+            std::filesystem::create_directories(canon_path.parent_path());
+            return canon_path.string();
+        }
+
         uint64_t read_holding_chunk(uint8_vector &chunk_data, const uint64_t offset) const
         {
             if (offset >= num_bytes())
@@ -677,52 +735,37 @@ namespace daedalus_turbo {
             _commit_tx();
         }
 
-        std::string add(const uint64_t offset, const std::string &local_path)
+        std::string add_compressed(const uint64_t offset, uint8_vector compressed, uint8_vector uncompressed)
         {
+            const auto data_hash = blake2b<blake2b_256_hash>(uncompressed);
+            const auto rel_path = fmt::format("chunk/{}.zstd.tmp", data_hash);
+            const auto local_path = full_path(rel_path);
+            file::write(local_path, compressed);
+            return add(offset, local_path, std::move(uncompressed));
+        }
+
+        std::string add(const uint64_t offset, const std::string &local_path, std::optional<uint8_vector> uncompressed={})
+        {
+            // TODO: add a fast path for data beyond earliest known invalid offset
             if (!_transaction)
                 throw error("add can be executed only inside of a transaction!");
             const auto compressed = file::read(local_path);
-            const auto data = zstd::decompress(compressed);
-            auto [parsed_chunk, ex_ptr] = _parse(offset, data, compressed.size());
+            if (!uncompressed)
+                uncompressed.emplace(zstd::decompress(compressed));
+            auto [parsed_chunk, ex_ptr] = _parse(offset, *uncompressed, compressed.size());
             const auto final_path = full_path(parsed_chunk.rel_path());
             if (!parsed_chunk.blocks.empty()) {
                 if (!ex_ptr) {
                     if (local_path != final_path)
                         std::filesystem::rename(local_path, final_path);
                 } else {
-                    zstd::write(final_path, static_cast<buffer>(data).subbuf(0, parsed_chunk.block_data_size()));
+                    zstd::write(final_path, static_cast<buffer>(*uncompressed).subbuf(0, parsed_chunk.block_data_size()));
                 }
                 _add(std::move(parsed_chunk));
             }
             if (ex_ptr)
                 std::rethrow_exception(ex_ptr);
             return final_path;
-        }
-
-        uint64_t valid_end_offset() const
-        {
-            uint64_t valid_end = _my_end_offset();
-            for (const auto *p: _processors) {
-                if (p->end_offset) {
-                    const auto proc_end = p->end_offset();
-                    if (proc_end < valid_end)
-                        valid_end = proc_end;
-                }
-            }
-            return valid_end;
-        }
-
-        uint64_t max_end_offset() const
-        {
-            uint64_t max_end = _my_end_offset();
-            for (const auto *p: _processors) {
-                if (p->end_offset) {
-                    const auto proc_end = p->end_offset();
-                    if (proc_end > max_end)
-                        max_end = proc_end;
-                }
-            }
-            return max_end;
         }
 
         [[nodiscard]] std::exception_ptr accept_progress(const cardano::optional_point &start, const std::optional<progress_point> &target, const std::function<void()> &action)
@@ -748,22 +791,15 @@ namespace daedalus_turbo {
                 std::rethrow_exception(ex_ptr);
         }
 
-        void validation_failure_handler(const std::function<void(uint64_t)> &);
-        const indexer::incremental &indexer() const;
-        const validator::incremental &validator() const;
-        cardano::amount unspent_reward(const cardano::stake_ident &id) const;
-        cardano::tail_relative_stake_map tail_relative_stake() const;
-        cardano::optional_point tip() const;
-        cardano::optional_point core_tip() const;
-        cardano::optional_point immutable_tip() const;
+        // data export
+
         cardano::optional_slot can_export() const;
         void node_export(const std::filesystem::path &node_dir, const cardano::point &tip, bool ledger_only=false) const;
         std::string node_export_ledger(const std::filesystem::path &ledger_dir, const cardano::optional_point &imm_tip, int prio=1000) const;
     private:
         const std::filesystem::path _data_dir;
         const std::filesystem::path _db_dir;
-        const daedalus_turbo::configs &_cfg;
-        const cardano::config _cardano_cfg { _cfg };
+        const cardano::config _cardano_cfg;
         scheduler &_sched;
         file_remover &_file_remover;
         set<const chunk_processor *> _processors {}; // initialize before indexer and validator who call register_processor/remove_processor
@@ -784,8 +820,20 @@ namespace daedalus_turbo {
         vector<chunk_info> _truncated_chunks {};
         static thread_local uint8_vector _read_buffer;
 
+        void _maintenance();
         void _node_export_chain(const std::filesystem::path &immutable_dir, const std::filesystem::path &volatile_dir, int prio_base=100) const;
         std::pair<chunk_info, std::exception_ptr> _parse(const uint64_t offset, const buffer &raw_data, const size_t compressed_size) const;
+
+        epoch_info _epoch(const uint64_t epoch) const
+        {
+            epoch_info::chunk_list chunks {};
+            auto chunk_it = std::lower_bound(_chunks.begin(), _chunks.end(), epoch,
+                [this](const auto &el, const auto &epoch) { return make_slot(el.second.first_slot).epoch() < epoch; });
+            for (; chunk_it != _chunks.end() && make_slot(chunk_it->second.first_slot).epoch() == epoch; ++chunk_it) {
+                chunks.emplace_back(&chunk_it->second);
+            }
+            return { std::move(chunks) };
+        }
 
         void _my_truncate(const cardano::optional_point &new_tip, const bool track_changes)
         {
@@ -1075,7 +1123,7 @@ namespace daedalus_turbo {
             while (end_offset > _notify_end_offset && (_notify_next_epoch < max_epoch || (force && _notify_next_epoch == max_epoch))) {
                 // in unit-tests chunks may have non-continuous epochs
                 if (_has_epoch(_notify_next_epoch, update_lk)) {
-                    const auto einfo = epoch(_notify_next_epoch);
+                    const auto einfo = _epoch(_notify_next_epoch);
                     epoch_info::chunk_list filtered_chunks {};
                     for (const auto *chunk: einfo.chunks()) {
                         if (chunk->offset >= _notify_end_offset)
@@ -1164,5 +1212,3 @@ namespace fmt {
         }
     };
 }
-
-#endif // !DAEDALUS_TURBO_CHUNK_REGISTRY_HPP

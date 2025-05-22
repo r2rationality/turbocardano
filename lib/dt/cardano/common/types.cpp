@@ -18,6 +18,32 @@
 namespace daedalus_turbo::cardano {
     using namespace crypto;
 
+    point2 point2::from_cbor(cbor::zero2::value &v)
+    {
+        auto &it = v.array();
+        return { it.read().uint(), it.read().bytes() };
+    }
+
+    void point2::to_cbor(cbor::encoder &enc) const
+    {
+        enc.array(2);
+        enc.uint(slot);
+        enc.bytes(hash);
+    }
+
+    point3 point3::from_cbor(cbor::zero2::value &v)
+    {
+        auto &it = v.array();
+        return { point2::from_cbor(it.read()), it.read().uint() };
+    }
+
+    void point3::to_cbor(cbor::encoder &enc) const
+    {
+        enc.array(2);
+        point2::to_cbor(enc);
+        enc.uint(height);
+    }
+
     void address::to_cbor(era_encoder &enc) const
     {
         if (is_byron() && _bytes[0] == 0x83) {
@@ -187,7 +213,7 @@ namespace daedalus_turbo::cardano {
     }
 
     cert_loc_t::cert_loc_t(const uint64_t s, const uint64_t t, const uint64_t c):
-        slot { s }, tx_idx { narrow_cast<uint32_t>(t) }, cert_idx { narrow_cast<uint32_t>(c) }
+        slot { s }, tx_idx { numeric_cast<uint32_t>(t) }, cert_idx { numeric_cast<uint32_t>(c) }
     {
     }
 
@@ -468,8 +494,8 @@ namespace daedalus_turbo::cardano {
         for (size_t i = 0; !it.done() && i < names.size(); ++i) {
             auto &val = it.read();
             switch (const auto typ = val.type(); typ) {
-                case cbor::major_type::uint: res.emplace_back(names[i], narrow_cast<int64_t>(val.uint())); break;
-                case cbor::major_type::nint: res.emplace_back(names[i], -narrow_cast<int64_t>(val.nint())); break;
+                case cbor::major_type::uint: res.emplace_back(names[i], numeric_cast<int64_t>(val.uint())); break;
+                case cbor::major_type::nint: res.emplace_back(names[i], -numeric_cast<int64_t>(val.nint())); break;
                 default: throw error(fmt::format("unsupported plutus_cost_model value type: {}", typ));
             }
         }
@@ -917,7 +943,7 @@ namespace daedalus_turbo::cardano {
     byron_addr::byron_addr(cbor::zero2::array_reader &it, cbor::zero2::value &v):
         _root { it.read().bytes() },
         _attrs { it.read().data_raw() },
-        _type { narrow_cast<uint8_t>(it.read().uint()) },
+        _type { numeric_cast<uint8_t>(it.read().uint()) },
         _bytes { v.data_raw() }
     {
     }
@@ -1039,7 +1065,7 @@ namespace daedalus_turbo::cardano {
         if (bytes.size() > _data.size()) [[unlikely]]
             throw error(fmt::format("asset names must have 32 bytes max but got {}!", bytes.size()));
         memcpy(_data.data(), bytes.data(), bytes.size());
-        _size = narrow_cast<uint8_t>(bytes.size());
+        _size = numeric_cast<uint8_t>(bytes.size());
     }
 
     void asset_name_t::to_cbor(era_encoder &enc) const

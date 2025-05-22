@@ -189,7 +189,7 @@ namespace daedalus_turbo::cardano::alonzo {
 
     uint32_t block::body_size() const
     {
-        return narrow_cast<uint32_t>(_raw.size());
+        return numeric_cast<uint32_t>(_raw.size());
     }
 
     const cardano::block_header_base &block::header() const

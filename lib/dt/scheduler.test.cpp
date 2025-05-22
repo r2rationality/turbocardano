@@ -7,7 +7,6 @@
 #include <iostream>
 #include <vector>
 #include <string>
-#include <dt/atomic.hpp>
 #include <dt/common/test.hpp>
 #include <dt/scheduler.hpp>
 #include <dt/util.hpp>
@@ -232,7 +231,8 @@ suite scheduler_suite = [] {
             scheduler s { 2 };
             std::atomic_size_t num_cancelled = 0;
             s.on_result("task1", [&](auto &&/*res*/) {
-                atomic_add(num_cancelled, s.cancel([](const auto &name, const auto &param) { return name == "task1" && param && std::any_cast<bool>(*param) == true; }));
+                const auto num_c = s.cancel([](const auto &name, const auto &param) { return name == "task1" && param && std::any_cast<bool>(*param) == true; });
+                num_cancelled.fetch_add(num_c, std::memory_order_relaxed);
             });
             for (size_t i = 0; i < 1000; ++i) {
                 // slow higher-priority tasks

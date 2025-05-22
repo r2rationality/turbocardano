@@ -122,7 +122,7 @@ suite cardano_common_suite = [] {
             size_t num_delegs = 0;
             while (!dec.done()) {
                 auto &block_tuple = dec.read();
-                const auto blk = cardano::make_block(block_tuple, block_tuple.data_begin() - chunk.data());
+                const block_container blk { numeric_cast<uint64_t>(block_tuple.data_begin() - chunk.data()), block_tuple };
                 blk->foreach_tx([&](const auto &tx) {
                     tx.foreach_cert([&](const auto &c) {
                         std::visit([&](const auto &cv) {
@@ -145,7 +145,7 @@ suite cardano_common_suite = [] {
             size_t num_regs = 0;
             while (!dec.done()) {
                 auto &block_tuple = dec.read();
-                const auto blk = cardano::make_block(block_tuple, block_tuple.data_begin() - chunk.data());
+                const block_container blk { numeric_cast<uint64_t>(block_tuple.data_begin() - chunk.data()), block_tuple };
                 blk->foreach_tx([&](const auto &tx) {
                     tx.foreach_cert([&](const auto &c) {
                         std::visit([&](const auto &cv) {

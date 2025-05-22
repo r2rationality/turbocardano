@@ -10,9 +10,9 @@
 
 namespace daedalus_turbo {
     chunk_registry::chunk_registry(const std::string &data_dir, const mode mode,
-        const daedalus_turbo::configs &cfg, scheduler &sched, file_remover &fr, const bool auto_maintenance)
+        cardano::config ccfg, scheduler &sched, file_remover &fr, const bool auto_maintenance)
         : _data_dir { data_dir }, _db_dir { init_db_dir((_data_dir / "compressed").string()) },
-            _cfg { cfg }, _sched { sched }, _file_remover { fr },
+            _cardano_cfg { std::move(ccfg) }, _sched { sched }, _file_remover { fr },
             _state_path { (_db_dir / "state.bin").string() },
             _state_path_pre { (_db_dir / "state-pre.bin").string() }
     {
@@ -59,10 +59,72 @@ namespace daedalus_turbo {
         }
         logger::info("chunk_registry has data up to offset {}", num_bytes());
         if (auto_maintenance)
-            maintenance();
+            _maintenance();
     }
 
     chunk_registry::~chunk_registry() =default;
+
+    void chunk_registry::register_processor(const chunk_processor &p)
+    {
+        _processors.emplace(&p);
+    }
+
+    void chunk_registry::remove_processor(const chunk_processor &p)
+    {
+        _processors.erase(&p);
+    }
+
+    void chunk_registry::report_progress(const std::string_view name, const progress_point &tip) const
+    {
+        if (_transaction) [[likely]] {
+            uint64_t rel_pos = 0;
+            uint64_t rel_target = 0;
+            // prefer to compute the progress using offsets, fallback to slots if not available
+            if (_transaction->target->end_offset) {
+                rel_pos = tip.end_offset;
+                rel_target = _transaction->target->end_offset;
+                if (_transaction->start) {
+                    rel_pos -= _transaction->start->end_offset;
+                    rel_target -= _transaction->start->end_offset;
+                }
+            } else {
+                rel_pos = tip.slot;
+                rel_target = _transaction->target->slot;
+                if (_transaction->start) {
+                    rel_pos -= _transaction->start->slot;
+                    rel_target -= _transaction->start->slot;
+                }
+            }
+            uint64_t prev_pos = 0;
+                {
+                mutex::scoped_lock lk { _tx_progress_mutex };
+                if (const auto [it, created] = _tx_progress_max.try_emplace(std::string { name }, rel_pos); !created) {
+                    prev_pos = it->second;
+                    if (it->second < rel_pos)
+                        it->second = rel_pos;
+                }
+                }
+            if (prev_pos < rel_pos) {
+                for (const auto *p: _processors) {
+                    if (p->on_progress)
+                        p->on_progress(name, rel_pos, rel_target);
+                }
+            }
+        } else {
+            throw error("report_progress can be called only inside of a transaction");
+        }
+    }
+
+    void chunk_registry::_maintenance()
+    {
+        if (valid_end_offset() != max_end_offset()) {
+            logger::warn("the local chain is not in a consistent state, performing maintenance ...");
+            truncate(tip());
+            remover().remove();
+        } else {
+            logger::info("the local chain is in a consistent state");
+        }
+    }
 
     void chunk_registry::validation_failure_handler(const std::function<void(uint64_t)> &handler)
     {
@@ -254,7 +316,7 @@ namespace daedalus_turbo {
                         pri_ws.write(buffer::from(host_to_net<uint32_t>(next_block_offset)));
                     pri_ws.write(buffer::from(host_to_net<uint32_t>(next_block_offset)));
                 }
-                const auto new_done_blocks = atomic_add(*done_bytes, data_size);
+                const auto new_done_blocks = done_bytes->fetch_add(data_size, std::memory_order_relaxed) + data_size;
                 progress::get().update("chunk-export", new_done_blocks, total_bytes);
             });
         }
@@ -285,7 +347,7 @@ namespace daedalus_turbo {
                     static_cast<buffer>(volatile_data).subbuf(start_offset, file_size));
                 volatile_offset += file_size;
                 ++volatile_file_no;
-                const auto new_done_blocks = atomic_add(*done_bytes, file_size);
+                const auto new_done_blocks = done_bytes->fetch_add(file_size, std::memory_order_relaxed) + file_size;
                 progress::get().update("chunk-export", new_done_blocks, total_bytes);
             }
         }
@@ -380,7 +442,7 @@ namespace daedalus_turbo {
         while (!dec.done()) {
             try {
                 auto &block_tuple = dec.read();
-                auto blk_ptr = cardano::make_block(block_tuple, chunk.offset + block_tuple.data_begin() - raw_data.data(), _cardano_cfg);
+                const cardano::block_container blk_ptr { numeric_cast<uint64_t>(chunk.offset + block_tuple.data_begin() - raw_data.data()), block_tuple, _cardano_cfg };
                 {
                     const auto &blk = *blk_ptr;
                     const auto slot = blk.slot();
@@ -434,7 +496,7 @@ namespace daedalus_turbo {
             chunk.data_size = ok_data.size();
             const auto compressed = zstd::compress(ok_data);
             chunk.compressed_size = compressed.size();
-            file::write(chunk.rel_path(), compressed);
+            file::write(full_path(chunk.rel_path()), compressed);
         }
         for (const auto *p: _processors) {
             if (p->on_chunk_add)
@@ -445,5 +507,57 @@ namespace daedalus_turbo {
         const auto num_parsed = _tx_progress_parse.fetch_add(chunk.data_size, std::memory_order_relaxed) + chunk.data_size;
         report_progress("parse", { chunk.last_slot,  _transaction->start_offset() + num_parsed });
         return std::make_pair(std::move(chunk), std::move(ex_ptr));
+    }
+
+    buffer chunk_registry::const_iterator::_prep_chunk_cache() const
+    {
+        const auto rel_path = _chunk_it->second.rel_path();
+        const auto path = _cr.full_path(_chunk_it->second.rel_path());
+        if (!_chunk_cache || _chunk_cache->full_path != path || _chunk_it->second.data_size != _chunk_cache->data.size()) {
+            _chunk_cache.emplace(path, zstd::read(path));
+        }
+        return _chunk_cache->data;
+    }
+
+    cardano::parsed_header chunk_registry::const_iterator::header() const
+    {
+        const auto bytes = _prep_chunk_cache();
+        const auto &blk = operator*();
+        // + 1 is the offset of the first entry in the block array which is the header
+        const auto file_offset = blk.offset + blk.header_offset + 1 - _chunk_it->second.offset;
+        return { blk.era, static_cast<buffer>(bytes).subbuf(file_offset,  blk.header_size), _cr.config() };
+    }
+
+    uint8_vector chunk_registry::const_iterator::block_data() const
+    {
+        const auto bytes = _prep_chunk_cache();
+        const auto &blk = operator*();
+        // + 1 is the offset of the first entry in the block array which is the header
+        const auto file_offset = blk.offset - _chunk_it->second.offset;
+        return { bytes.subbuf(file_offset,  blk.size) };
+    }
+
+    std::pair<uint8_vector, chunk_registry::const_iterator>
+    chunk_registry::const_iterator::chunk_remaining_data(const const_iterator last_it) const
+    {
+        if (*this == last_it) [[unlikely]]
+            return std::make_pair(uint8_vector {}, last_it);
+        if (**this == _chunk_it->second.blocks.front() && last_it._chunk_it != _chunk_it) {
+            const auto path = _cr.full_path(_chunk_it->second.rel_path());
+            return std::make_pair(file::read<uint8_vector>(path), const_iterator { _cr, std::next(_chunk_it), 0 });
+        }
+        const auto bytes = _prep_chunk_cache();
+        const auto &blk = operator*();
+        const auto file_offset = blk.offset - _chunk_it->second.offset;
+        if (last_it._chunk_it == _chunk_it && last_it._block_no < _chunk_it->second.blocks.size()) {
+            return std::make_pair(
+                zstd::compress(bytes.subbuf(file_offset, last_it->offset - blk.offset), 3),
+                last_it
+            );
+        }
+        return std::make_pair(
+            zstd::compress(bytes.subbuf(file_offset), 3),
+            const_iterator { _cr, std::next(_chunk_it), 0 }
+        );
     }
 }

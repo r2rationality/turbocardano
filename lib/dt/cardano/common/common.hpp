@@ -178,7 +178,7 @@ namespace daedalus_turbo::cardano {
 
     struct block_header_base {
         block_header_base(const uint64_t era, const cardano::config &cfg):
-            _era { narrow_cast<uint8_t>(era) }, _cfg { cfg }
+            _era { numeric_cast<uint8_t>(era) }, _cfg { cfg }
         {
         }
 
@@ -195,6 +195,11 @@ namespace daedalus_turbo::cardano {
         const cardano::config &config() const
         {
             return _cfg;
+        }
+
+        point2 point2() const
+        {
+            return { slot(), hash() };
         }
 
         virtual ~block_header_base() =default;
@@ -267,7 +272,7 @@ namespace daedalus_turbo::cardano {
         block_base() =delete;
 
         block_base(const uint64_t offset, const uint64_t hdr_offset):
-            _offset { offset }, _hdr_offset { narrow_cast<uint16_t>(hdr_offset) }
+            _offset { offset }, _hdr_offset { numeric_cast<uint16_t>(hdr_offset) }
         {
         }
 
@@ -294,6 +299,11 @@ namespace daedalus_turbo::cardano {
         cardano::slot slot_object() const
         {
             return { slot(), config() };
+        }
+
+        point2 point2() const
+        {
+            return header().point2();
         }
 
         uint64_t era() const
@@ -519,9 +529,24 @@ namespace daedalus_turbo::cardano {
             return offset + size;
         }
 
+        [[nodiscard]] cardano::point2 point2() const
+        {
+            return { slot, hash };
+        }
+
+        [[nodiscard]] cardano::point3 point3() const
+        {
+            return { slot, hash, height };
+        }
+
         [[nodiscard]] cardano::point point() const
         {
             return { hash, slot, height, end_offset() };
+        }
+
+        bool operator==(const block_info &o) const
+        {
+            return slot == o.slot && hash == o.hash && offset == o.offset;
         }
     };
 
@@ -586,7 +611,7 @@ namespace daedalus_turbo::cardano {
 
         uint32_t size() const
         {
-            return narrow_cast<uint32_t>(raw().size());
+            return numeric_cast<uint32_t>(raw().size());
         }
     private:
         using storage_type = byte_array<1120>;
@@ -598,7 +623,7 @@ namespace daedalus_turbo::cardano {
         static storage_type _make(uint8_t era, uint64_t offset, cbor::zero2::value &block_tuple, cbor::zero2::value &block, const config &cfg);
 
         block_container(const uint64_t offset, cbor::zero2::array_reader &it, cbor::zero2::value &block_tuple, const config &cfg=cardano::config::get()):
-            _era { narrow_cast<uint8_t>(it.read().uint()) },
+            _era { numeric_cast<uint8_t>(it.read().uint()) },
             _val { _make(_era, offset, block_tuple, it.read(), cfg) },
             _raw { block_tuple.data_raw() }
         {
@@ -617,7 +642,7 @@ namespace daedalus_turbo::cardano {
 
         tx_base(const block_base &blk, const uint64_t blk_offset, const size_t idx, const bool invalid):
             _blk { blk },
-            _blk_offset { narrow_cast<uint32_t>(blk_offset) },
+            _blk_offset { numeric_cast<uint32_t>(blk_offset) },
             _idx { tx_idx_cast(idx) },
             _invalid { invalid }
         {
@@ -695,7 +720,7 @@ namespace daedalus_turbo::cardano {
 
         uint32_t size() const
         {
-            return narrow_cast<uint32_t>(raw().size());
+            return numeric_cast<uint32_t>(raw().size());
         }
 
         buffer witness_raw() const
@@ -784,8 +809,6 @@ namespace daedalus_turbo::cardano {
 
         impl_storage _impl;
     };
-
-    extern block_container make_block(cbor::zero2::value &block_tuple, uint64_t offset, const config &cfg=cardano::config::get());
 }
 
 namespace fmt {

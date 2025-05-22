@@ -30,7 +30,7 @@ namespace daedalus_turbo::storage {
         cardano::block_hash last_block_hash {};
         uint64_t offset = 0;
         // fields that are not serialized to json:
-        vector<block_info> blocks {};
+        block_list blocks {};
 
         constexpr static auto serialize(auto &archive, auto &self)
         {

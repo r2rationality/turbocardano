@@ -7,6 +7,7 @@
 #include <dt/cli.hpp>
 #include <dt/cli/common.hpp>
 #include <dt/chunk-registry.hpp>
+#include <dt/memory.hpp>
 
 namespace daedalus_turbo::cli::tip {
     struct cmd: command {
@@ -22,7 +23,7 @@ namespace daedalus_turbo::cli::tip {
         {
             const auto &data_dir = args.at(0);
             const auto mode = common::cr_mode(opts);
-            chunk_registry cr { data_dir, mode };
+            const chunk_registry cr { data_dir, mode };
             const auto tip = cr.tip();
             logger::info("the local tip: {}", tip);
             if (mode == chunk_registry::mode::validate) {
@@ -34,6 +35,7 @@ namespace daedalus_turbo::cli::tip {
             }
             if (tip)
                 logger::info("the latest slot: {}", cr.make_slot(tip->slot));
+            logger::info("peak memory usage: {} MB", memory::max_usage_mb());
         }
     };
     static auto instance = command::reg(std::make_shared<cmd>());

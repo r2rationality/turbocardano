@@ -34,7 +34,7 @@ namespace daedalus_turbo {
     };
 
     template<typename T>
-    void test_close(const T &exp, const T &act, T eps=1e-4, const std::source_location &loc=std::source_location::current())
+    void test_close(const T &exp, const T &act, T eps=1e-4, const reflection::source_location &loc=reflection::source_location::current())
     {
         if (exp) {
             const auto e = std::fabs(act - exp) / act;
@@ -51,32 +51,30 @@ namespace daedalus_turbo {
         { std::is_trivially_constructible_v<X, Y> };
     };
 
-    template<typename T>
-    bool test_same(const T &x, const T &y, const std::source_location &loc=std::source_location::current())
+    template<typename T, typename Y>
+    bool expect_equal(const T &exp, const Y &act, const reflection::source_location &loc=reflection::source_location::current())
     {
-        const auto res = x == y;
-        expect(res, loc) << fmt::format("{} != {}", x, y);
+        const auto res = act == exp;
+        expect(res, loc) << fmt::format("{} != {}", exp, act);
         return res;
+    }
+
+    template<typename T>
+    bool test_same(const T &x, const T &y, const reflection::source_location &loc=reflection::source_location::current())
+    {
+        return expect_equal(x, y, loc);
     }
 
     template<typename X, convertible_to_y<X> Y>
-    bool test_same(const X &x, const Y &y, const std::source_location &loc=std::source_location::current())
+    bool test_same(const X &x, const Y &y, const reflection::source_location &loc=reflection::source_location::current())
     {
         const auto res = x == static_cast<X>(y);
         expect(res, loc) << fmt::format("{} != {}", x, y);
         return res;
     }
 
-    /*template<typename X, convertible_to_y<X> Y>
-    bool test_same(const Y &y, const X &x, const std::source_location &loc=std::source_location::current())
-    {
-        const auto res = x == static_cast<X>(y);
-        expect(res, loc) << fmt::format("{} != {}", x, y);
-        return res;
-    }*/
-
     template<typename T, typename Y>
-    bool test_same(const std::string &name, const T &x, const Y &y, const std::source_location &loc=std::source_location::current())
+    bool test_same(const std::string &name, const T &x, const Y &y, const reflection::source_location &loc=reflection::source_location::current())
     {
         const auto res = x == static_cast<T>(y);
         expect(res, loc) << fmt::format("{}: {} != {}", name, x, y);

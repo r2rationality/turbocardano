@@ -31,7 +31,7 @@ namespace daedalus_turbo::cbor::zero2 {
 
     struct incomplete_error: error {
         incomplete_error():
-            error("cbor value data must contain at least one byte!")
+            error("cbor value stream has terminated prematurely!")
         {
         }
     };
@@ -213,6 +213,15 @@ namespace daedalus_turbo::cbor::zero2 {
         value(const uint8_t *data_begin, decoder &parent);
 
         value &at(size_t pos);
+
+        bool boolean()
+        {
+            switch (const auto spec = _reader_cast<special_reader>().read(); spec) {
+                case special_val::s_true: return true;
+                case special_val::s_false: return false;
+                [[unlikely]] default: throw error(fmt::format("expected for a boolean but got: {}!", spec));
+            }
+        }
 
         uint64_t uint()
         {
@@ -1034,7 +1043,7 @@ namespace daedalus_turbo::cbor::zero2 {
     {
         for (size_t i = 0; i < 1024; ++i) {
             if (const auto *chunk = next_chunk(_dec_level); !chunk) {
-                _parent(this)._dec.step1();
+                _parent(this)._dec.step(1);
                 _parent(this)._dec.pop();
                 _parent(this)._mark_end();
                 return;
@@ -1095,7 +1104,7 @@ namespace daedalus_turbo::cbor::zero2 {
     {
         for (size_t i = 0; i < 1024; ++i) {
             if (const auto *chunk = next_chunk(_dec_level); !chunk) {
-                _parent(this)._dec.step1();
+                _parent(this)._dec.step(1);
                 _parent(this)._dec.pop();
                 _parent(this)._mark_end();
                 return;
@@ -1132,6 +1141,7 @@ namespace daedalus_turbo::cbor::zero2 {
         if (!_parent(this)._dec.done(_dec_level)) {
             if (*_parent(this)._dec.next() != 0xFF)
                 return false;
+            // the 0xFF byte is not consumed here so that repeated calls to done return the same result
         }
         return true;
     }
@@ -1154,7 +1164,7 @@ namespace daedalus_turbo::cbor::zero2 {
         while (!done()) {
             read();
         }
-        _parent(this)._dec.step1();
+        _parent(this)._dec.step(1);
         _parent(this)._dec.pop();
         _parent(this)._mark_end();
     }
@@ -1188,6 +1198,7 @@ namespace daedalus_turbo::cbor::zero2 {
         if (!_parent(this)._dec.done(_dec_level)) {
             if (*_parent(this)._dec.next() != 0xFF)
                 return false;
+            // the 0xFF byte is not consumed here so that repeated calls to done return the same result
         }
         return true;
     }
@@ -1209,7 +1220,7 @@ namespace daedalus_turbo::cbor::zero2 {
             auto &key = read_key();
             read_val(std::move(key));
         }
-        _parent(this)._dec.step1();
+        _parent(this)._dec.step(1);
         _parent(this)._dec.pop();
         _parent(this)._mark_end();
     }
@@ -1298,10 +1309,10 @@ namespace daedalus_turbo::cbor::zero2 {
                             out_it = fmt::format_to(out_it, "\n");
                         }
                     }
+                    if (i > max_seq_to_expand)
+                        out_it = fmt::format_to(out_it, "{:{}}    ...\n", "", depth * 4);
                     out_it = fmt::format_to(out_it, "{:{}}", "", depth * 4);
                 }
-                if (i > max_seq_to_expand)
-                    out_it = fmt::format_to(out_it, "{:{}}    ...\n", "", depth * 4);
                 return fmt::format_to(out_it, "]({}size: {})", v.indefinite() ? "unbounded " : "", i);
             }
             case major_type::map: {

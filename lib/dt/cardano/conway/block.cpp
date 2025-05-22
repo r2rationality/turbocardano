@@ -163,7 +163,7 @@ namespace daedalus_turbo::cardano::conway {
             _proposals.reserve(proposals->size());
             size_t prop_idx = 0;
             for (auto &&p: *proposals) {
-                _proposals.emplace_hint(_proposals.end(), gov_action_id_t { hash(), narrow_cast<uint16_t>(prop_idx++) }, std::move(p));
+                _proposals.emplace_hint(_proposals.end(), gov_action_id_t { hash(), numeric_cast<uint16_t>(prop_idx++) }, std::move(p));
             }
         }
     }
@@ -290,7 +290,7 @@ namespace daedalus_turbo::cardano::conway {
 
     uint32_t block::body_size() const
     {
-        return narrow_cast<uint32_t>(_raw.size());
+        return numeric_cast<uint32_t>(_raw.size());
     }
 
     const cardano::block_header_base &block::header() const

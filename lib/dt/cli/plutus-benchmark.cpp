@@ -109,7 +109,7 @@ namespace daedalus_turbo::cli::plutus_benchmark {
             if (items.size() != 4)
                 throw error(fmt::format("script name must encode 4 fields but got: {}", stem));
             return { tx_hash::from_hex(items[0]), script_hash::from_hex(items[2]),
-                narrow_cast<uint16_t>(std::stoul(items[1])), script_type_from_str(items[3])
+                numeric_cast<uint16_t>(std::stoul(items[1])), script_type_from_str(items[3])
             };
         }
     };

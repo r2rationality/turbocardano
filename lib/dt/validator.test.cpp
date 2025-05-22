@@ -23,7 +23,7 @@ suite validator_suite = [] {
             const auto chunk1_path = fmt::format("{}/{}", data_dir, chunk1_name);
             const auto chain1 = gen_chain();
             zstd::write(chunk1_path, chain1.data);
-            chunk_registry cr { data_dir, chunk_registry::mode::validate, chain1.cfg };
+            chunk_registry cr { data_dir, chunk_registry::mode::validate, cardano::config { chain1.cfg } };
             test_same(cr.valid_end_offset(), 0);
             const auto ex_ptr = cr.accept_progress({}, chain1.tip, [&] {
                 cr.add(0, chunk1_path);
@@ -37,7 +37,7 @@ suite validator_suite = [] {
             const auto chunk1_path = fmt::format("{}/{}", data_dir, chunk1_name);
             const auto chain1 = gen_chain();
             zstd::write(chunk1_path, chain1.data);
-            chunk_registry cr { data_dir, chunk_registry::mode::validate, chain1.cfg };
+            chunk_registry cr { data_dir, chunk_registry::mode::validate, cardano::config { chain1.cfg } };
             expect(cr.valid_end_offset() == 0_ull);
             const auto ex_ptr = cr.accept_progress({}, chain1.tip, [&] {
                 throw error("some failure, rollback now");
@@ -52,7 +52,7 @@ suite validator_suite = [] {
             const auto chunk1_path = fmt::format("{}/{}", data_dir, chunk1_name);
             const auto chain1 = gen_chain();
             zstd::write(chunk1_path, chain1.data);
-            chunk_registry cr { data_dir, chunk_registry::mode::validate, chain1.cfg };
+            chunk_registry cr { data_dir, chunk_registry::mode::validate, cardano::config { chain1.cfg } };
             expect(cr.valid_end_offset() == 0_ull);
             const auto ex_ptr = cr.accept_progress({}, chain1.tip, [&] {
                 cr.add(0, chunk1_path);
@@ -68,7 +68,7 @@ suite validator_suite = [] {
             const auto chunk1_path = fmt::format("{}/{}", data_dir, chunk1_name);
             const auto chain1 = gen_chain({ .failure_height=failure_height });
             zstd::write(chunk1_path, chain1.data);
-            chunk_registry cr { data_dir, chunk_registry::mode::validate, chain1.cfg };
+            chunk_registry cr { data_dir, chunk_registry::mode::validate, cardano::config { chain1.cfg } };
             expect(cr.valid_end_offset() == 0_ull);
             const auto ex_ptr = cr.accept_progress({}, chain1.tip, [&] {
                 cr.add(0, chunk1_path);

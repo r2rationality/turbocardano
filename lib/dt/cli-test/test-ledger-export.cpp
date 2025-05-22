@@ -7,7 +7,7 @@
 #include <dt/cli.hpp>
 #include <dt/cbor/compare.hpp>
 #include <dt/requirements.hpp>
-#include <dt/sync/turbo.hpp>
+#include <dt/sync/p2p.hpp>
 
 namespace daedalus_turbo::cli::test_ledger_export {
     using namespace cardano::ledger;
@@ -28,7 +28,7 @@ namespace daedalus_turbo::cli::test_ledger_export {
             const auto &data_dir = args.at(0);
             const auto &orig_dir = args.at(1);
             chunk_registry cr { data_dir };
-            sync::turbo::syncer syncr { cr };
+            sync::p2p::syncer syncr { cr };
             std::optional<std::string> host {};
             if (const auto opt_it = opts.find("host"); opt_it != opts.end() && opt_it->second)
                 host = *opt_it->second;
@@ -52,8 +52,12 @@ namespace daedalus_turbo::cli::test_ledger_export {
                         logger::info("truncating the local chain to {}", new_tip);
                         cr.truncate(new_tip);
                     }
-                    if (const auto tip = cr.tip(); !tip || tip->slot < epoch_last_slot - 200)
-                        syncr.sync(syncr.find_peer(host), epoch_last_slot, sync::validation_mode_t::none);
+                    if (const auto tip = cr.tip(); !tip || tip->slot < epoch_last_slot - 200) {
+                        std::optional<cardano::network::address> addr {};
+                        if (host)
+                            addr.emplace(*host, "3001");
+                        syncr.sync(syncr.find_peer(addr), epoch_last_slot, sync::validation_mode_t::none);
+                    }
                     if (const auto tip = cr.tip(); tip) {
                         task.emplace(fmt::format("{}/{}-{}", orig_dir, epoch, tip->slot), cr.node_export_ledger(data_dir, tip));
                     }

@@ -16,7 +16,7 @@
 #include <dt/ed25519.hpp>
 #include <dt/json.hpp>
 #include <dt/kes.hpp>
-#include <dt/narrow-cast.hpp>
+#include <dt/common/numeric-cast.hpp>
 #include <dt/partitioned-map.hpp>
 #include <dt/rational.hpp>
 #include <dt/static-map.hpp>
@@ -42,6 +42,8 @@ namespace daedalus_turbo {
 }
 
 namespace daedalus_turbo::cardano {
+    static constexpr size_t max_data_struct_size = size_t { 8 } << 30;
+
     auto decode_versioned(cbor::zero2::value &v, auto proc)
     {
         auto &it = v.array();
@@ -230,8 +232,8 @@ namespace daedalus_turbo::cardano {
         return res;
     }
 
-    template<typename M>
-    void map_to_cbor(era_encoder &enc, const M &m)
+    template<typename M, typename ENC>
+    void map_to_cbor(ENC &enc, const M &m)
     {
         enc.map_compact(m.size(), [&] {
             for (const auto &[k, v]: m) {
@@ -241,7 +243,7 @@ namespace daedalus_turbo::cardano {
         });
     }
 
-    template<typename K, typename V>
+    template<typename K, typename V, typename ENC=era_encoder>
     struct map_t: flat_map<K, V> {
         using base_type = flat_map<K, V>;
         using base_type::base_type;
@@ -249,8 +251,14 @@ namespace daedalus_turbo::cardano {
         static map_t from_cbor(cbor::zero2::value &v)
         {
             map_t res {};
-            if (!v.indefinite())
-                res.reserve(v.special_uint());
+            if (!v.indefinite()) {
+                static constexpr size_t max_size = max_data_struct_size / (sizeof(K) + sizeof(V));
+                static_assert(max_size > 0);
+                const auto sz = v.special_uint();
+                if (sz > max_size) [[unlikely]]
+                    throw error(fmt::format("the requested map size is unrealistically big: {}!", sz));
+                res.reserve(sz);
+            }
             auto &it = v.map();
             while (!it.done()) {
                 auto &key = it.read_key();
@@ -261,30 +269,36 @@ namespace daedalus_turbo::cardano {
             return res;
         }
 
-        void to_cbor(era_encoder &enc) const
+        void to_cbor(ENC &enc) const
         {
             map_to_cbor(enc, *this);
         }
     };
 
-    template<typename T>
+    template<typename T, typename ENC=era_encoder>
     struct vector_t: vector<T> {
         using base_type = vector<T>;
         using base_type::base_type;
 
-        static vector_t<T> from_cbor(cbor::zero2::value &v)
+        static vector_t from_cbor(cbor::zero2::value &v)
         {
-            vector_t<T> tmp {};
-            if (!v.indefinite())
-                tmp.reserve(v.special_uint());
+            vector_t res {};
+            if (!v.indefinite()) {
+                static constexpr size_t max_size = max_data_struct_size / sizeof(T);
+                static_assert(max_size > 0);
+                const auto sz = v.special_uint();
+                if (sz > max_size) [[unlikely]]
+                    throw error(fmt::format("the requested vector size is unrealistically big: {}!", sz));
+                res.reserve(sz);
+            }
             auto &it = v.array();
             while (!it.done()) {
-                tmp.emplace_back(value_from_cbor<T>(it.read()));
+                res.emplace_back(value_from_cbor<T>(it.read()));
             }
-            return tmp;
+            return res;
         }
 
-        void to_cbor(era_encoder &enc) const
+        void to_cbor(ENC &enc) const
         {
             enc.array_compact(base_type::size(), [&] {
                 for (const auto &v: *this)
@@ -426,14 +440,54 @@ namespace daedalus_turbo::cardano {
         const cardano::config &_cfg;
     };
 
+    struct point2 {
+        uint64_t slot = 0;
+        block_hash hash {};
+
+        static point2 from_cbor(cbor::zero2::value &v);
+        void to_cbor(cbor::encoder &enc) const;
+
+        bool operator<(const point2 &o) const
+        {
+            return slot < o.slot;
+        }
+
+        bool operator==(const point2 &o) const
+        {
+            return hash == o.hash && slot == o.slot;
+        }
+    };
+
+    struct point3: point2 {
+        uint64_t height = 0;
+
+        static point3 from_cbor(cbor::zero2::value &v);
+        void to_cbor(cbor::encoder &enc) const;
+    };
+
     struct point {
         block_hash hash {};
         uint64_t slot = 0;
         uint64_t height = 0;
         uint64_t end_offset = 0;
 
+        static point from_point3(const point3 &o)
+        {
+            return { o.hash, o.slot, o.height, 0 };
+        }
+
         static point from_ledger_cbor(cbor::zero2::value &v);
         static point from_cbor(cbor::zero2::value &v);
+
+        operator point2() const
+        {
+            return { slot, hash };
+        }
+
+        operator point3() const
+        {
+            return { slot, hash, height };
+        }
 
         bool operator<(const point &o) const
         {
@@ -445,8 +499,13 @@ namespace daedalus_turbo::cardano {
             return hash == o.hash && slot == o.slot;
         }
     };
-    using point_pair = std::pair<point, point>;
-    using point_list = std::vector<point>;
+
+    struct intersection_info_t {
+        std::optional<point2> isect;
+        point3 tip;
+    };
+
+    using point2_list = vector_t<point2, cbor::encoder>;
     using optional_point = std::optional<point>;
 
     struct optional_slot: std::optional<uint64_t> {
@@ -2115,6 +2174,22 @@ namespace fmt {
         template<typename FormatContext>
         auto format(const auto &a, FormatContext &ctx) const -> decltype(ctx.out()) {
             return fmt::format_to(ctx.out(), "{} ADA", daedalus_turbo::cardano::amount_pure { a.coins });
+        }
+    };
+
+    template<>
+    struct formatter<daedalus_turbo::cardano::point2>: formatter<int> {
+        template<typename FormatContext>
+        auto format(const auto &v, FormatContext &ctx) const -> decltype(ctx.out()) {
+            return fmt::format_to(ctx.out(), "({}, {})", v.slot, v.hash);
+        }
+    };
+
+    template<>
+    struct formatter<daedalus_turbo::cardano::point3>: formatter<int> {
+        template<typename FormatContext>
+        auto format(const auto &v, FormatContext &ctx) const -> decltype(ctx.out()) {
+            return fmt::format_to(ctx.out(), "({}, {}, {})", v.slot, v.hash, v.height);
         }
     };
 

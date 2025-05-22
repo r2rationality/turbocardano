@@ -195,7 +195,7 @@ namespace daedalus_turbo::storage {
                     cbor::zero2::decoder dec { data };
                     while (!dec.done()) {
                         auto &block_tuple = dec.read();
-                        const auto blk = cardano::make_block(block_tuple, chunk->offset + block_tuple.data_begin() - data.data(), cr.config());
+                        cardano::block_container blk { chunk->offset + numeric_cast<uint64_t>(block_tuple.data_begin() - data.data()), block_tuple, cr.config() };
                         try {
                             on_block(tmp, blk);
                         } catch (const std::exception &ex) {

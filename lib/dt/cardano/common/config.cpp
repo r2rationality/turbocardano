@@ -138,7 +138,7 @@ namespace daedalus_turbo::cardano {
     config::config(const configs &cfg)
         : byron_genesis { cfg.at(std::filesystem::path { json::value_to<std::string>(cfg.at("config").at("ByronGenesisFile")) }.stem().string()) },
         byron_genesis_hash { _verify_hash_byron(cfg.at("config").at("ByronGenesisHash").as_string(), byron_genesis) },
-        byron_protocol_magic { json::value_to<uint64_t>(byron_genesis.at("protocolConsts").at("protocolMagic")) },
+        byron_protocol_magic { json::value_to<uint32_t>(byron_genesis.at("protocolConsts").at("protocolMagic")) },
         byron_start_time { json::value_to<uint64_t>(byron_genesis.at("startTime")) },
         byron_epoch_length { 21600 },
         byron_slot_duration { std::stoull(json::value_to<std::string>(byron_genesis.at("blockVersionData").as_object().at("slotDuration"))) / 1000 },

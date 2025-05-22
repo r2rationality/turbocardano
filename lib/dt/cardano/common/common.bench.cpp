@@ -70,7 +70,7 @@ suite cardano_common_bench_suite = [] {
             cbor::zero2::decoder dec { chunk };
             expect(!dec.done());
             auto &block_tuple = dec.read();
-            auto blk = cardano::make_block(block_tuple, 0);
+            const cardano::block_container blk { 0, block_tuple };
             const auto &blk_ref = *blk;
             expect(blk_ref.slot() == extract_slot(block_tuple));
             size_t num_iter = 100'000'000;

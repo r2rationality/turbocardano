@@ -7,7 +7,6 @@
 #include <dt/chunk-registry.hpp>
 #include <dt/index/common.hpp>
 #include <dt/scheduler.hpp>
-#include <dt/sync/local.hpp>
 
 namespace daedalus_turbo {
     thread_local uint8_vector chunk_registry::_read_buffer {};

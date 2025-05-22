@@ -94,7 +94,7 @@ namespace daedalus_turbo::sync {
                 }
             }
             auto pblock = std::make_unique<parsed_block>(bp.cbor());
-            chain.data << pblock->data;
+            chain.data << *pblock->data;
             prev_hash = pblock->blk->hash();
             chain.tip = { pblock->blk->hash(), pblock->blk->slot(), pblock->blk->height() };
             chain.blocks.emplace_back(std::move(pblock));
@@ -130,7 +130,7 @@ namespace daedalus_turbo::sync {
                 throw error(fmt::format("nonconsecutive epochs: epoch {} came after {}", block_epoch, epochs.size()));
             auto &epoch_data = epochs.at(block_epoch);
             epoch_data.blocks.emplace_back(blk.get());
-            epoch_data.data << blk->data;
+            epoch_data.data << *blk->data;
             epoch_data.last_slot = blk->blk->slot();
             epoch_data.last_block_hash = blk->blk->hash();
         }
@@ -179,13 +179,13 @@ namespace daedalus_turbo::sync {
         cbor::zero2::decoder dec { _raw_data };
         while (!dec.done()) {
             auto &blk_tuple = dec.read();
-            _blocks.emplace_back(std::make_unique<block_container>(narrow_cast<uint64_t>(blk_tuple.data_begin() - _raw_data.data()), blk_tuple));
+            _blocks.emplace_back(std::make_unique<block_container>(numeric_cast<uint64_t>(blk_tuple.data_begin() - _raw_data.data()), blk_tuple));
         }
         if (_blocks.empty())
             throw error("test chain cannot be empty!");
     }
 
-    void cardano_client_mock::_fetch_blocks_impl(const point &from, const point &to, const block_handler &handler)
+    void cardano_client_mock::_fetch_blocks_impl(const point2 &from, const point2 &to, const block_handler &handler)
     {
         std::optional<block_list::const_iterator> intersection {};
         for (auto it = _blocks.begin(); it != _blocks.end(); ++it) {
@@ -195,11 +195,11 @@ namespace daedalus_turbo::sync {
             }
         }
         if (!intersection) {
-            handler(block_response { {}, error_msg { "The requested from block is unknown!" } });
+            handler(block_response_t { error_msg { "The requested from block is unknown!" } });
             return;
         }
         for (auto it = *intersection; it != _blocks.end(); ++it) {
-            if (!handler({ std::make_unique<parsed_block>((**it).raw()) }) || (**it)->hash() == to.hash)
+            if (!handler({ msg_block_t { (**it).raw() } }) || (**it)->hash() == to.hash)
                 break;
         }
     }

@@ -17,7 +17,7 @@ suite cardano_byron_bench_suite = [] {
         cbor::zero2::decoder dec { chunk };
         dec.read(); // skip EBB block
         auto &block_tuple = dec.read();
-        auto blk = cardano::make_block(block_tuple, block_tuple.data_begin() - chunk.data());
+        const cardano::block_container blk { numeric_cast<uint64_t>(block_tuple.data_begin() - chunk.data()), block_tuple };
         expect(blk->signature_ok());
         size_t num_iters = 10000;
         benchmark_r("byron/signature_ok", 2000.0, 3, [&] {

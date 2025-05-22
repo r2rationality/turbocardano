@@ -77,20 +77,20 @@ namespace daedalus_turbo {
     };
 
     template<Countable T>
-    static void benchmark(const string_view name, const double min_rate, const size_t num_iter, const T &action, const std::source_location &src_loc=std::source_location::current())
+    static void benchmark(const string_view name, const double min_rate, const size_t num_iter, const T &action)
     {
         boost::ut::test(name) = [=] {
             const double rate = benchmark_throughput(name, num_iter, action);
-            boost::ut::expect(rate >= min_rate, src_loc) << rate << " < " << min_rate;
+            boost::ut::expect(rate >= min_rate) << rate << " < " << min_rate;
         };
     }
 
     template<typename T>
-    static void benchmark_r(const string_view name, const double min_rate, const size_t num_iter, const T &action, const std::source_location &src_loc=std::source_location::current())
+    static void benchmark_r(const string_view name, const double min_rate, const size_t num_iter, const T &action)
     {
         boost::ut::test(name) = [=] {
             const double rate = benchmark_rate(name, num_iter, action);
-            boost::ut::expect(rate >= min_rate, src_loc) << rate << " < " << min_rate;
+            boost::ut::expect(rate >= min_rate) << rate << " < " << min_rate;
         };
     }
 }

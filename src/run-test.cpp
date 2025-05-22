@@ -26,6 +26,7 @@ int main(const int argc, const char **argv)
 #endif
     using namespace daedalus_turbo;
     consider_bin_dir(argv[0]);
+    logger::debug("run-test {}", argv[0]);
     if (argc >= 2) {
         std::cerr << "using test-filter mask: " << argv[1] << '\n';
         boost::ut::cfg<boost::ut::override> = { .filter = argv[1] };

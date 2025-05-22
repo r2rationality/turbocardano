@@ -109,9 +109,9 @@ namespace daedalus_turbo::plutus {
                 if constexpr (std::is_same_v<T, variable>) {
                     if (const auto ptr_opt = _lookup_opt(env, v.idx); ptr_opt)
                         return _discharge(**ptr_opt, level, var_idx_diff);
-                    return term { _alloc, variable { narrow_cast<size_t>(static_cast<int64_t>(v.idx) + var_idx_diff) } };
+                    return term { _alloc, variable { numeric_cast<size_t>(static_cast<int64_t>(v.idx) + var_idx_diff) } };
                 } else if constexpr (std::is_same_v<T, t_lambda>) {
-                    return term { _alloc, t_lambda { narrow_cast<size_t>(level), _discharge_term(env, v.expr, level + 1, level - static_cast<int64_t>(v.var_idx)) } };
+                    return term { _alloc, t_lambda { numeric_cast<size_t>(level), _discharge_term(env, v.expr, level + 1, level - static_cast<int64_t>(v.var_idx)) } };
                 } else if constexpr (std::is_same_v<T, apply>) {
                     return term { _alloc, apply { _discharge_term(env, v.func, level, var_idx_diff), _discharge_term(env, v.arg, level, var_idx_diff) } };
                 } else if constexpr (std::is_same_v<T, force>) {

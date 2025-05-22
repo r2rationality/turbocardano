@@ -274,21 +274,21 @@ namespace daedalus_turbo::cardano::byron {
                         auto &vx = bvermod_it.skip(2).read();
                         auto &vx_it = vx.array();
                         if (!vx_it.done()) {
-                            upd.max_block_body_size = narrow_cast<uint32_t>(vx_it.read().uint());
+                            upd.max_block_body_size = numeric_cast<uint32_t>(vx_it.read().uint());
                         }
                     }
                     {
                         auto &vx = bvermod_it.read();
                         auto &vx_it = vx.array();
                         if (!vx_it.done()) {
-                            upd.max_block_header_size = narrow_cast<uint32_t>(vx_it.read().uint());
+                            upd.max_block_header_size = numeric_cast<uint32_t>(vx_it.read().uint());
                         }
                     }
                     {
                         auto &vx = bvermod_it.read();
                         auto &vx_it = vx.array();
                         if (!vx_it.done()) {
-                            upd.max_transaction_size = narrow_cast<uint32_t>(vx_it.read().uint());
+                            upd.max_transaction_size = numeric_cast<uint32_t>(vx_it.read().uint());
                         }
                     }
                 }
@@ -348,7 +348,7 @@ namespace daedalus_turbo::cardano::byron {
 
     uint32_t block::body_size() const
     {
-        return narrow_cast<uint32_t>(_raw.size());
+        return numeric_cast<uint32_t>(_raw.size());
     }
 
     const block_header_base &block::header() const

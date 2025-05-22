@@ -6,7 +6,7 @@
 
 #include <dt/cbor/compare.hpp>
 #include <dt/cli.hpp>
-#include <dt/sync/turbo.hpp>
+#include <dt/sync/p2p.hpp>
 
 namespace daedalus_turbo::cli::test_iterative_sync {
     using namespace cardano::ledger;
@@ -23,7 +23,7 @@ namespace daedalus_turbo::cli::test_iterative_sync {
         {
             const auto &data_dir = args.at(0);
             chunk_registry cr { data_dir };
-            sync::turbo::syncer syncr { cr };
+            sync::p2p::syncer syncr { cr };
             for (size_t epoch_to = 208; epoch_to < 228; ++epoch_to) {
                 const auto slot_to = cardano::slot::from_epoch(epoch_to, cr.config());
                 if (const auto tip = cr.tip(); tip && tip->slot > slot_to) {

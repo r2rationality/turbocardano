@@ -393,10 +393,10 @@ namespace daedalus_turbo::txwit {
                 return {
                     .tx_id=tx.hash(),
                     .tx_loc=tx_loc,
-                    .tx_size=narrow_cast<uint32_t>(tx.size()),
+                    .tx_size=numeric_cast<uint32_t>(tx.size()),
                     .fee=tx.block().era() > 1 ? tx.fee() : 0,
-                    .slot=narrow_cast<uint32_t>(tx.block().slot()),
-                    .era=narrow_cast<uint8_t>(tx.block().era())
+                    .slot=numeric_cast<uint32_t>(tx.block().slot()),
+                    .era=numeric_cast<uint8_t>(tx.block().era())
                 };
             }
         };
@@ -443,9 +443,9 @@ namespace daedalus_turbo::txwit {
                 auto &stats = part.stats;
                 auto &max = part.max_stats;
                 if (!max.max_block_body_size || *max.max_block_body_size < blk->body_size())
-                    max.max_block_body_size = narrow_cast<uint32_t>(blk->body_size());
+                    max.max_block_body_size = numeric_cast<uint32_t>(blk->body_size());
                 if (!max.max_block_header_size || *max.max_block_header_size < blk->header().size())
-                    max.max_block_header_size = narrow_cast<uint16_t>(blk->header().size());
+                    max.max_block_header_size = numeric_cast<uint16_t>(blk->header().size());
                 blk->foreach_update_proposal([&](const auto &prop) {
                     part.updates.emplace_back(blk->slot(), prop);
                 });
@@ -461,7 +461,7 @@ namespace daedalus_turbo::txwit {
                     if (tx.block().era() > 1)
                         tx_checks.balances.out_coin += tx.fee();
                     if (!max.max_tx_size || *max.max_tx_size < tx.raw().size())
-                        max.max_tx_size = narrow_cast<uint32_t>(tx.raw().size());
+                        max.max_tx_size = numeric_cast<uint32_t>(tx.raw().size());
                     size_t num_redeemers = 0;
                     if (const auto start_slot = tx.validity_start(); start_slot) {
                         if (*start_slot > blk->slot()) [[unlikely]]
@@ -1049,7 +1049,7 @@ namespace daedalus_turbo::txwit {
                 cbor::zero2::decoder dec { data };
                 while (!dec.done()) {
                     auto &block_tuple = dec.read();
-                    const auto blk = make_block(block_tuple, chunk.offset + block_tuple.data_begin() - data.data(), cr.config());
+                    const block_container blk { numeric_cast<uint64_t>(chunk.offset + block_tuple.data_begin() - data.data()), block_tuple, cr.config() };
                     // Byron epoch boundary blocks contain no information and therefore are skipped
                     if (blk->era() > 0) [[likely]] {
                         try {

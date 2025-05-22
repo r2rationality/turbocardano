@@ -260,7 +260,7 @@ suite index_common_suite = [] {
                 cbor::zero2::decoder dec { raw_data };
                 while (!dec.done()) {
                     auto &block_tuple = dec.read();
-                    auto blk = cardano::make_block(block_tuple, block_tuple.data_begin() - raw_data.data());
+                    const cardano::block_container blk { numeric_cast<uint64_t>(block_tuple.data_begin() - raw_data.data()), block_tuple };
                     ch_idxr->index(blk);
                 }
             }

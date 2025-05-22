@@ -6,7 +6,7 @@
 
 #include <algorithm>
 #include <dt/cardano.hpp>
-#include <dt/cardano/common/network.hpp>
+#include <dt/cardano/network/common.hpp>
 #include <dt/sync/p2p.hpp>
 #include <dt/chunk-registry.hpp>
 
@@ -22,15 +22,16 @@ namespace daedalus_turbo::sync::p2p {
         }
 
         // Finds a peer and the best intersection point
-        [[nodiscard]] std::shared_ptr<sync::peer_info> find_peer(std::optional<cardano::network::address> addr) const
+        [[nodiscard]] std::shared_ptr<sync::peer_info> find_peer(std::optional<network::address> addr, const version_config_t &versions) const
         {
+            logger::info("connection to peer {} requesting versions [{};{}]", addr, versions.min, versions.max);
             if (!addr)
                 addr = _parent.peer_list().next_cardano();
             // Try to fit into a single packet of 1.5KB
-            auto client = _client_manager.connect(*addr);
+            auto client = _client_manager.connect(*addr, versions);
             if (_parent.local_chain().num_chunks() == 0) {
                 auto tip = client->find_tip_sync();
-                return std::make_shared<peer_info>(std::move(client), std::move(tip));
+                return std::make_shared<peer_info>(std::move(client), point::from_point3(tip));
             }
 
             // iteratively determine the chunk containing the intersection point
@@ -39,19 +40,19 @@ namespace daedalus_turbo::sync::p2p {
             static constexpr size_t points_per_query = 24;
             for (uint64_t chunk_dist = std::distance(first_chunk_it, last_chunk_it); chunk_dist > 1; chunk_dist = std::distance(first_chunk_it, last_chunk_it)) {
                 const auto step_size = std::max(static_cast<uint64_t>(1), chunk_dist / points_per_query);
-                point_list points {};
+                point2_list points {};
                 for (auto chunk_it = first_chunk_it; chunk_it != last_chunk_it; std::ranges::advance(chunk_it, step_size, last_chunk_it)) {
-                    points.emplace_back(chunk_it->second.first_block_hash(), chunk_it->second.first_slot);
+                    points.emplace_back(chunk_it->second.first_slot, chunk_it->second.first_block_hash());
                 }
                 // ensure that the last chunk is always present
                 if (points.back().hash != _parent.local_chain().last_chunk()->first_block_hash())
-                    points.emplace_back(_parent.local_chain().last_chunk()->first_block_hash(), _parent.local_chain().last_chunk()->first_slot);
+                    points.emplace_back(_parent.local_chain().last_chunk()->first_slot, _parent.local_chain().last_chunk()->first_block_hash());
 
                 // points must be in the reverse order
                 std::reverse(points.begin(), points.end());
                 const auto intersection = client->find_intersection_sync(points);
                 if (!intersection.isect)
-                    return std::make_shared<peer_info>(std::move(client), std::move(intersection.tip));
+                    return std::make_shared<peer_info>(std::move(client), point::from_point3(intersection.tip));
 
                 first_chunk_it = _parent.local_chain().find_slot_it(intersection.isect->slot);
                 last_chunk_it = first_chunk_it;
@@ -60,15 +61,42 @@ namespace daedalus_turbo::sync::p2p {
             if (std::distance(first_chunk_it, last_chunk_it) != 1)
                 throw error("internal error: wasn't able to find a chunk for the intersection point!");
 
+
+            size_t first_block_no = 0;
+            size_t last_block_no = first_chunk_it->second.blocks.size();
+            while (last_block_no > first_block_no + points_per_query) {
+                const auto step = std::max(size_t { 1 }, (last_block_no - first_block_no) / points_per_query);
+
+                // determine the block of the intersection point
+                point2_list points {};
+                for (size_t block_no = first_block_no; block_no < last_block_no; block_no += step) {
+                    const auto &blk = first_chunk_it->second.blocks.at(block_no);
+                    points.emplace_back(blk.slot, blk.hash);
+                }
+                std::ranges::reverse(points);
+                const auto intersection = client->find_intersection_sync(points);
+                if (!intersection.isect)
+                    throw error("internal error: wasn't able to narrow down the intersection point to a block!");
+
+                const auto b_it = std::find_if(first_chunk_it->second.blocks.begin(), first_chunk_it->second.blocks.end(), [&](const auto &blk) {
+                    return blk.slot == intersection.isect->slot && blk.hash == intersection.isect->hash;
+                });
+                if (b_it == first_chunk_it->second.blocks.end()) [[unlikely]]
+                    throw error(fmt::format("failed to find a local block {}:{}", intersection.isect->slot, intersection.isect->hash));
+                first_block_no = b_it - first_chunk_it->second.blocks.begin();
+            }
+
             // determine the block of the intersection point
-            point_list points {};
-            for (const auto &block: first_chunk_it->second.blocks)
-                points.emplace_back(block.hash, block.slot, block.height, block.end_offset());
+            point2_list points {};
+            for (size_t block_no = first_block_no; block_no < last_block_no; ++block_no) {
+                const auto &blk = first_chunk_it->second.blocks.at(block_no);
+                points.emplace_back(blk.slot, blk.hash);
+            }
             std::ranges::reverse(points);
             const auto intersection = client->find_intersection_sync(points);
             if (!intersection.isect)
                 throw error("internal error: wasn't able to narrow down the intersection point to a block!");
-            return std::make_shared<peer_info>(std::move(client), std::move(intersection.tip),
+            return std::make_shared<peer_info>(std::move(client), point::from_point3(intersection.tip),
                 _parent.local_chain().find_block_by_slot(intersection.isect->slot, intersection.isect->hash).point());
         }
 
@@ -122,15 +150,32 @@ namespace daedalus_turbo::sync::p2p {
             if (!headers.empty() && (!max_slot || headers.front().slot <= *max_slot)) {
                 // current implementation of fetch_blocks does not leave its connection in a working state
                 std::optional<std::string> err {};
-                peer.client().fetch_blocks(headers.front(), tip, [&](auto &&resp) {
-                    if (resp.err) {
-                        err = std::move(*resp.err);
-                        return false;
-                    }
-                    if (_invalid_first_offset.load() || (max_slot && resp.block->blk->slot() > *max_slot))
-                        return false;
-                    _add_block(resp.block->blk);
-                    return true;
+                peer.client().fetch_blocks(headers.front(), tip, [&](auto resp) {
+                    return std::visit([&](auto &&rv) -> bool {
+                        using T = std::decay_t<decltype(rv)>;
+                        if constexpr (std::is_same_v<T, client::error_msg>) {
+                            err = std::move(rv);
+                            return false;
+                        } else if constexpr (std::is_same_v<T, client::msg_block_t>) {
+                            auto blk = std::make_unique<parsed_block>(rv.bytes);
+                            if (_invalid_first_offset.load() || (max_slot && blk->blk->slot() > *max_slot))
+                                return false;
+                            _add_block(blk->blk);
+                            return true;
+                        } else if constexpr (std::is_same_v<T, client::msg_compressed_blocks_t>) {
+                            if (rv.encoding != 1) [[unlikely]] {
+                                logger::error("unsupported encoding: {}", rv.encoding);
+                                return false;
+                            }
+                            // the comma operator has no ordering guarantees so must decompress before the data is moved
+                            auto uncompressed = rv.bytes();
+                            _add_chunk(std::move(uncompressed), std::move(rv.payload));
+                            return true;
+                        } else {
+                            logger::error("unsupported message: {}", typeid(T).name());
+                            return false;
+                        }
+                    }, std::move(resp));
                 });
                 peer.client().process(&_parent.local_chain().sched());
                 if (err)
@@ -138,22 +183,23 @@ namespace daedalus_turbo::sync::p2p {
             }
         }
 
+        void _add_chunk(uint8_vector uncompressed, std::optional<uint8_vector> compressed={})
+        {
+            const auto chunk_offset = _next_chunk_offset;
+            _next_chunk_offset += uncompressed.size();
+            _parent.local_chain().sched().submit_void("parse", 100, [this, uncompressed=std::move(uncompressed), compressed=std::move(compressed), chunk_offset=chunk_offset]() mutable {
+                if (!compressed)
+                    compressed.emplace(zstd::compress(uncompressed, 3));
+                _parent.local_chain().add_compressed(chunk_offset, std::move(*compressed), std::move(uncompressed));
+            });
+        }
+
         void _save_last_chunk()
         {
             if (!_last_chunk.empty()) {
-                const auto chunk_data = std::make_shared<uint8_vector>(std::move(_last_chunk));
-                const auto chunk_name = fmt::format("{:05d}.zstd", *_last_chunk_id);
-                const auto chunk_path = (_raw_dir / chunk_name).string();
-                const auto chunk_offset = _next_chunk_offset;
+                auto uncompressed = std::move(_last_chunk);
                 _last_chunk.clear();
-                const auto max_valid = _invalid_first_offset.load();
-                if (!max_valid || chunk_offset + chunk_data->size() <= *max_valid) {
-                    _parent.local_chain().sched().submit_void("parse", 100, [this, chunk_offset, chunk_data, chunk_path] {
-                        zstd::write(chunk_path, *chunk_data);
-                        _parent.local_chain().add(chunk_offset, chunk_path);
-                    });
-                    _next_chunk_offset += chunk_data->size();
-                }
+                _add_chunk(std::move(uncompressed));
             }
         }
 
@@ -178,9 +224,9 @@ namespace daedalus_turbo::sync::p2p {
 
     syncer::~syncer() =default;
 
-    [[nodiscard]] std::shared_ptr<sync::peer_info> syncer::find_peer(std::optional<cardano::network::address> addr) const
+    [[nodiscard]] std::shared_ptr<sync::peer_info> syncer::find_peer(std::optional<network::address> addr, const version_config_t &versions) const
     {
-        return _impl->find_peer(addr);
+        return _impl->find_peer(addr, versions);
     }
 
     void syncer::cancel_tasks(const uint64_t max_valid_offset)

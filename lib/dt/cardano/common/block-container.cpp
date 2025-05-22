@@ -21,14 +21,14 @@ namespace daedalus_turbo::cardano {
         static_assert(sizeof(block_storage_type) <= sizeof(block_container::storage_type));
         storage_type val;
         switch (era) {
-            case 0: new (&val) block_storage_type { std::in_place_type<byron::boundary_block>, era, offset, narrow_cast<uint64_t>(block.data_begin() - block_tuple.data_begin()), block, cfg }; break;
-            case 1: new (&val) block_storage_type { std::in_place_type<byron::block>, era, offset, narrow_cast<uint64_t>(block.data_begin() - block_tuple.data_begin()), block, cfg }; break;
-            case 2: new (&val) block_storage_type { std::in_place_type<shelley::block>, era, offset, narrow_cast<uint64_t>(block.data_begin() - block_tuple.data_begin()), block, cfg }; break;
+            case 0: new (&val) block_storage_type { std::in_place_type<byron::boundary_block>, era, offset, numeric_cast<uint64_t>(block.data_begin() - block_tuple.data_begin()), block, cfg }; break;
+            case 1: new (&val) block_storage_type { std::in_place_type<byron::block>, era, offset, numeric_cast<uint64_t>(block.data_begin() - block_tuple.data_begin()), block, cfg }; break;
+            case 2: new (&val) block_storage_type { std::in_place_type<shelley::block>, era, offset, numeric_cast<uint64_t>(block.data_begin() - block_tuple.data_begin()), block, cfg }; break;
             case 3: // same as era=4!
-            case 4: new (&val) block_storage_type { std::in_place_type<mary::block>, era, offset, narrow_cast<uint64_t>(block.data_begin() - block_tuple.data_begin()), block, cfg }; break;
-            case 5: new (&val) block_storage_type { std::in_place_type<alonzo::block>, era, offset, narrow_cast<uint64_t>(block.data_begin() - block_tuple.data_begin()), block, cfg }; break;
-            case 6: new (&val) block_storage_type { std::in_place_type<babbage::block>, era, offset, narrow_cast<uint64_t>(block.data_begin() - block_tuple.data_begin()), block, cfg }; break;
-            case 7: new (&val) block_storage_type { std::in_place_type<conway::block>, era, offset, narrow_cast<uint64_t>(block.data_begin() - block_tuple.data_begin()), block, cfg }; break;
+            case 4: new (&val) block_storage_type { std::in_place_type<mary::block>, era, offset, numeric_cast<uint64_t>(block.data_begin() - block_tuple.data_begin()), block, cfg }; break;
+            case 5: new (&val) block_storage_type { std::in_place_type<alonzo::block>, era, offset, numeric_cast<uint64_t>(block.data_begin() - block_tuple.data_begin()), block, cfg }; break;
+            case 6: new (&val) block_storage_type { std::in_place_type<babbage::block>, era, offset, numeric_cast<uint64_t>(block.data_begin() - block_tuple.data_begin()), block, cfg }; break;
+            case 7: new (&val) block_storage_type { std::in_place_type<conway::block>, era, offset, numeric_cast<uint64_t>(block.data_begin() - block_tuple.data_begin()), block, cfg }; break;
             default: throw cardano_error(fmt::format("unsupported era {}!", era));
         }
         return val;
@@ -42,9 +42,7 @@ namespace daedalus_turbo::cardano {
 
     block_container::~block_container()
     {
-        //auto *val_ptr = reinterpret_cast<block_storage_type *>(&_val);
-        //if (!val_ptr->valueless_by_exception()) [[likely]]
-            reinterpret_cast<block_storage_type *>(&_val)->~block_storage_type();
+        reinterpret_cast<block_storage_type *>(&_val)->~block_storage_type();
     }
 
     const block_base &block_container::base() const

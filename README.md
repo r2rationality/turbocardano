@@ -8,7 +8,10 @@
 - [Compilation](#compilation)
 
 # About
-Turbo is a high-performance C++ implementation of key Cardano Node components, originally designed to optimize full personal wallets (e.g., Daedalus). It focuses on efficient data consumption rather than data production, allowing for additional optimizations. Now, the project is evolving to support a broader range of use cases.
+Turbo is a high-performance C++ implementation of key Cardano Node components,
+originally developed to optimize the batch synchronization of full personal wallets (e.g., Daedalus).
+It focuses on efficient data consumption rather than data production, allowing for additional optimizations.
+Now, the project is evolving to support a broader range of use cases.
 
 The technical approach is based on two key ideas:
 - Reducing network bandwidth usage through compression techniques.
@@ -23,14 +26,14 @@ These ideas are further explained in the following research reports:
 # Status
 
 > ⚠️ **Warning**
+>
+> The project is preparing for its next release, which will reorganize the networking infrastructure in accordance with [CIP 0150](https://github.com/cardano-foundation/CIPs/pull/993).
+>
+> As part of this transition, the **Turbo proxies** (which previously supported historical network-based examples) have been disabled. This means that:
+> - Some older examples and pre-built binaries may not function correctly.
+> - You may encounter errors or unexpected behavior with features relying on those proxies.
 > 
-> The project is currently preparing for the next release, which will reorganize the networking infrastructure based on [CIP 0150](https://github.com/cardano-foundation/CIPs/pull/993).
-> 
-> As a result, the Turbo proxies that supported the existing network-based examples have been disabled.
-> Because of this, the examples listed below may not function as intended.
-> This will be addressed in the next release.
-> 
-> If you have any questions or encounter issues, please open a GitHub issue.
+> If you experience issues or have questions, please [open a GitHub issue](#).
 
 With the core functionally mostly complete now, the focus has shifted to testing and integration. Key ongoing efforts include:
 - **Integration:** [Cardano Improvement Proposal 0150 - Block Data Compression](https://github.com/cardano-foundation/CIPs/tree/master/CIP-0150) – Ensuring seamless integration of block data compression with existing infrastructure.
@@ -40,22 +43,28 @@ With the core functionally mostly complete now, the focus has shifted to testing
 - **Safety:** [Memory Safety Verification for critical C++ Code](./doc/memory-safety.md) – Analyzing and mitigating potential memory safety issues.
 
 # Features
-- **Full support for all Cardano eras:** Byron, Shelley, Allegra, Mary, Alonzo, Babbage, and Conway.
+- **Support for all Cardano eras:** Byron, Shelley, Allegra, Mary, Alonzo, Babbage, and Conway.
 - **Efficient blockchain synchronization:**
-  - Incremental synchronization of **compressed blockchain data** over the Internet using the Turbo protocol (improves bandwidth efficiency).
-  - Incremental synchronization using the **standard Cardano Network protocol** (without compression).
-  - Incremental synchronization from a **local Cardano Node** (supports both immutable and volatile files).
+  - Incremental synchronization using the **Cardano Network protocol** without compression.
+  - Incremental synchronization using the **Cardano Network protocol** with [Cardano Improvement Proposal 0150 - Block Data Compression](https://github.com/cardano-foundation/CIPs/tree/master/CIP-0150).
 - **Parallelized validation mechanisms:**
   - Consensus validation according to Ouroboros Praos/Genesis rules.
   - Parallelized transaction witness validation via the [C++ Plutus Machine](lib/dt/plutus).
   - Consensus-based witness validation ("Turbo validation"), as detailed in [On the Security of Wallet Nodes in the Cardano Blockchain](./doc/2024-sierkov-on-wallet-security.pdf)
 - **Optimized blockchain data storage:**
   - Compressed local storage of blockchain data (**~4.5x reduction in size**).
-- **Advanced transaction and balance queying mechanisms**
+- **Advanced transaction and balance querying mechanisms**
   - Interactive balance and transaction history reconstruction for both stake and payment addresses.
   - Searchable transaction data with fast query capabilities.
-- **Standalone Desktop UI:**
-  - A **fully local** blockchain explorer with real-time transaction tracking and historical analysis.
+
+## Features deprecated due to lack of funding
+- **Standalone Desktop UI**
+  - A fully local blockchain explorer with real-time transaction tracking and historical analysis.
+  - Pre-built Windows and Mac binaries.
+
+- **Turbo Protocol Synchronization**
+  - Incremental synchronization of compressed blockchain data over HTTP protocol (improving bandwidth efficiency).
+  - Incremental synchronization from a local Cardano Node.
 
 # Requirements
 - **CPU:** A modern processor with at least 8 physical cores (minimum equivalent: Orange Pi 5 Plus or better). The software will not run on weaker CPUs.
@@ -71,12 +80,6 @@ With the core functionally mostly complete now, the focus has shifted to testing
 
 # Test it yourself
 
-One can test the software using two methods:
-- Building the software from the source code using Docker
-- Downloading and installing a prebuilt binary
-
-Each is described in more detail below.
-
 ## Command line interface
 
 ### Prerequisites
@@ -88,7 +91,7 @@ To test the command line interface, you need the following software packages ins
 
 Clone this repository and make it your working directory:
 ```
-git clone --depth=1 https://github.com/sierkov/daedalus-turbo.git dt
+git clone --depth=1 https://github.com/r2rationality/turbocardano.git dt
 cd dt
 ```
 
@@ -97,24 +100,40 @@ Build the test Docker container:
 docker build -t dt -f Dockerfile.test .
 ```
 
-Start the test container, with `<cardano-dir>` being the host's directory to store the blockchain data:
+Start the test container, with `<turbo-dir>` being the host's directory to store the blockchain data:
 ```
-docker run -it --rm -v <cardano-dir>:/data/cardano dt
+docker run -it --rm -v <turbo-dir>:/data dt
 ```
 
 All the following commands are to be run within the container started by the previous command.
 
-Download, validate, and prepare for querying a copy of the Cardano blockchain from a network of compressing proxies with entry points listed in [etc/mainnet/turbo.json](etc/mainnet/turbo.json):
+Download, validate, and prepare for querying a copy of the Cardano blockchain from Cardano bootstrap nodes:
 ```
-./dt sync-turbo /data/cardano
+./dt sync /data/cardano --max-slot=150877935
 ```
 
-Show information about the local chain:
-- the physical tip (most recent valid block);
-- the core tip (confirmed by the majority of active stake);
-- the immutable tip (2160 blocks behind).
+> **Note:**  
+> The current bootstrap nodes **do not yet support** [CIP 0150 – Block Data Compression](https://github.com/cardano-foundation/CIPs/tree/master/CIP-0150).  
+> As a result, downloads will be **several times slower** than they will be once compression is enabled in the future.
+
+Show information about the local chain's tip:
 ```
 ./dt tip /data/cardano
+```
+
+Start the experimental Node server with block data compression enabled, listening on 127.0.0.1:3001:
+```
+DT_LOG=/data/server.log ./dt node-api /data/cardano &> /dev/null &
+```
+
+Re-download all data from the local server started by the previous command (with compression enabled):
+```
+./dt sync /data/cardano2 --peer-host=127.0.0.1
+```
+
+Compare the tip:
+```
+./dt tip /data/cardano2
 ```
 
 Reconstruct the latest balance and transaction history of a stake key:
@@ -151,43 +170,10 @@ Evaluate a Plutus script and show its result and costs:
 ```
 ./dt sync-p2p /data/cardano
 ```
-## Pre-built binaries for Windows and Mac (ARM64)
-
-The latest builds of the DT Explorer application can be found in the Assets section of [the latest GitHub release](https://github.com/sierkov/daedalus-turbo/releases/latest) page.
-It shows the new synchronization and history-reconstruction algorithms in a safe and easy-to-test way by working without private keys and directly reconstructing history of any payment and stake address.
-
-### How to install on Windows
-- Download and launch the installer from the Assets section of [the latest release](https://github.com/sierkov/daedalus-turbo/releases/latest) page.
-- Choose locations for the program files and blockchain data (each will be asked individually). For optimal performance, it's important to select your fastest SSD drive if you have multiple storage devices. 
-
-Windows builds have been tested with Windows 11 (earlier versions may work but have yet to be be tested).
-
-### How to install on Mac
-- Download the Mac image from the Assets section of [the latest release](https://github.com/sierkov/daedalus-turbo/releases/latest) page.
-- Open the image. This is a development (unsigned) image, so Mac OS will ask you if you trust the developer: [See Apple's explanation and instructions](https://support.apple.com/en-is/guide/mac-help/mh40616/mac).
-- Copy dt-explorer app to your Applications folder.
-- Both program and blockchain data will be stored in that folder, so when deleted all used space will be recovered.
-- Launch the app from the Applications folder. If Mac OS says that the app is damaged, open a terminal and run ```sudo xattr -rc /Applications/dt-explorer.app```.
-
-Mac builds have been tested with Mac OS Sonoma (earlier versions may work but have yet to be be tested).
-
-### How to use
-- Synchronization (full or partial) always happens at the app's launch; to catch up, simply restart the app. If you restart before the synchronization is finished, the app will reuse already downloaded data but may reprocess and revalidate some of them.
-- History reconstruction happens through a simple search for a transaction, stake, or payment address, either entered explicitly or when clicked as part of blockchain exploration. The easiest starting point for most users would be to search for their own stake address (e.g.: stake1uxw70wgydj63u4faymujuunnu9w2976pfeh89lnqcw03pksulgcrg), as its history will be the most representative of their wallet's history.
-- When searching for Cardano addresses starting with "addr1" prefix, the app may ask you if want to explore the payment or stake history. The reason for that is that many cardano addresses contain two keys. If in doubt, select stake history as it will normally discover more transactions. This is necessary so that the app can work without private keys. However, when integrated into Daedalus, the same aglorithms can reconstruct the full wallet history by finding all payment and stake keys generated from a wallet private key.
-- Once synchronized, users can turn off their Internet connection and test history reconstruction with new transaction or stake addresses to prove that the app reconstructs all histories interactively and uses only the downloaded blockchain data.
 
 # Spread the word
-Many in the Cardano community, including some developers of Daedalus, don't believe that it's possible to make it noticeably faster. This leads to a situation in which the development is not focused on its performance. If you're persuaded by the evidence presented here, share it on social media with those around you. Changing the beliefs of people can be harder than building top-notch technology. So, every single tweet and Facebook post makes a difference. Thank you!
-
-# Supporting network infrastructure
-The high-speed delivery of blockchain data depends on a network of compressing proxies (Cardano nodes that can share their local chain with other nodes in a compressed format and which are needed until the support for compressed data transfers becomes part of the regular Cardano network protocol). The current network configuration is sufficient to support up to 100'000 high-speed (with a download speed of 200+ Mbps) full blockchain synchronizations per year and orders of magnitude more incremental ones. The plan how to scale the network capacity
-to support a billion clients is presented in the [Scalability of Bulk Synchronization in the Cardano Blockchain](./doc/2023_Sierkov_CardanoBulkSynchronization.pdf) paper.
-
-# Quality
-The accuracy of the ledger state reconstruction has been tested by recreating the ledger state from raw blockchain data at the end (the presented method batches updates) of each post-Shelley epoch up to the mainnet's epoch 426, exporting it into the Cardano Node format, and comparing it with the snapshot produced by Cardano Node version 10.1.4. The source code of the tools used for the comparison is located in [lib/dt/cli-test/test-ledger-export.cpp](lib/dt/cli-test/test-ledger-export.cpp).
-
-The indexing and history-reconstruction code has been tested using a sample of ten thousand randomly-selected stake keys. For 100% of those, the reconstructed ADA balance (excluding rewards) precisely matched the stake recorded in the ledger snapshot produced by Cardano Node. The testing was performed with slot number 106012751 at the tip of the blockchain. The code of the test is located in the [lib/dt/cli-test/test-stake-balances.cpp](lib/dt/cli-test/test-stake-balances.cpp) file.
+Many in the Cardano community, including some Cardano core developers, don't believe that it's possible to make Cardano Node noticeably faster.
+This leads to a situation in which the development is not focused on its performance. If you're persuaded by the evidence presented here, share it on social media with those around you. Changing the beliefs of people can be harder than building top-notch technology. So, every single tweet and Facebook post makes a difference. Thank you!
 
 # Compilation
 The **recommended build method** uses Docker and is the only approach that is regularly tested.
@@ -267,7 +253,7 @@ cmake --build cmake-build-release -j -t dt
    brew link boost@1.85
    brew install node@22
    brew link node@22
-   brewk install botan@2
+   brew install botan@2
    brew link botan@2
    ```
 3. Prepare cmake build files in cmake-build-release directory (the name is used in build scripts so stay be the same):

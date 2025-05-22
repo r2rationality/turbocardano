@@ -25,7 +25,7 @@ namespace {
             cbor::zero2::decoder dec { chunk };
             while (!dec.done()) {
                 auto &block_tuple = dec.read();
-                auto blk = cardano::make_block(block_tuple, block_tuple.data_begin() - chunk.data());
+                const cardano::block_container blk { numeric_cast<uint64_t>(block_tuple.data_begin() - chunk.data()), block_tuple };
             }
             total_size += chunk.size();
         }

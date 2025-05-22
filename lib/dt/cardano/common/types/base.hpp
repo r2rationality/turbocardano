@@ -77,7 +77,7 @@ namespace daedalus_turbo::cardano {
     template<integral_c T>
     T value_from_cbor(cbor::zero2::value &v)
     {
-        return narrow_cast<T>(v.uint());
+        return numeric_cast<T>(v.uint());
     }
 
     template<constructible_from_buffer_c T>
@@ -86,8 +86,8 @@ namespace daedalus_turbo::cardano {
         return v.bytes();
     }
 
-    template<typename T>
-    void value_to_cbor(era_encoder &enc, const T &v) {
+    template<typename T, typename ENC>
+    void value_to_cbor(ENC &enc, const T &v) {
         if constexpr (std::is_same_v<uint64_t, T>) {
             enc.uint(v);
         } else if constexpr (std::is_same_v<uint32_t, T>) {

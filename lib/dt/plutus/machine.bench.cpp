@@ -23,8 +23,7 @@ suite plutus_machine_bench_suite = [] {
                 return 1;
             });
             const auto mbr_rate = benchmark_rate("allocator", 1'000'000, [&] {
-                const auto p = alloc.make<value::value_type>(plutus::constant { alloc, bint_type { alloc, 22 } });
-                const volatile auto p2 = p;
+                ankerl::nanobench::doNotOptimizeAway(alloc.make<value::value_type>(plutus::constant { alloc, bint_type { alloc, 22 } }));
                 return 1;
             });
             expect(sptr_rate > mbr_rate) << mbr_rate << sptr_rate;

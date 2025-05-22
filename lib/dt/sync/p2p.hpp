@@ -7,7 +7,6 @@
 #define DAEDALUS_TURBO_SYNC_P2P_HPP
 
 #include <dt/cardano/common/common.hpp>
-#include <dt/http/download-queue.hpp>
 #include <dt/sync/base.hpp>
 
 namespace daedalus_turbo::sync::p2p {
@@ -56,7 +55,7 @@ namespace daedalus_turbo::sync::p2p {
         explicit syncer(chunk_registry &cr, peer_selection &ps=peer_selection_simple::get(),
             cardano::network::client_manager &cnc=cardano::network::client_manager_async::get());
         ~syncer() override;
-        [[nodiscard]] std::shared_ptr<sync::peer_info> find_peer(std::optional<cardano::network::address> addr={}) const;
+        [[nodiscard]] std::shared_ptr<sync::peer_info> find_peer(std::optional<network::address> addr={}, const version_config_t &versions={}) const;
         void cancel_tasks(uint64_t max_valid_offset) override;
         void sync_attempt(sync::peer_info &peer, cardano::optional_slot max_slot) override;
     private:

@@ -194,14 +194,14 @@ namespace daedalus_turbo::cardano::shelley {
     }
 
     block_header::body_t::body_t(cbor::zero2::array_reader &it, cbor::zero2::value &v, const cardano::config &cfg):
-        block_number { narrow_cast<uint32_t>(it.read().uint()) },
-        slot { narrow_cast<uint32_t>(it.read().uint()) },
+        block_number { numeric_cast<uint32_t>(it.read().uint()) },
+        slot { numeric_cast<uint32_t>(it.read().uint()) },
         prev_hash { prev_hash_from_cbor(it.read(), cfg) },
         issuer_vkey { it.read().bytes() },
         vrf_vkey { it.read().bytes() },
         nonce_vrf { vrf_cert::from_cbor(it.read()) },
         leader_vrf { vrf_cert::from_cbor(it.read()) },
-        body_size { narrow_cast<uint32_t>(it.read().uint()) },
+        body_size { numeric_cast<uint32_t>(it.read().uint()) },
         body_hash { it.read().bytes() },
         op_cert {
             it.read().bytes(),
@@ -298,7 +298,7 @@ namespace daedalus_turbo::cardano::shelley {
 
     uint32_t block::body_size() const
     {
-        return narrow_cast<uint32_t>(_raw.size());
+        return numeric_cast<uint32_t>(_raw.size());
     }
 
     const block_header_base &block::header() const

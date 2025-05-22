@@ -5,7 +5,7 @@
  * https://github.com/sierkov/daedalus-turbo/blob/main/LICENSE */
 
 #include <dt/file.hpp>
-#include <dt/narrow-cast.hpp>
+#include <dt/common/numeric-cast.hpp>
 #include <dt/plutus/uplc.hpp>
 #include <utfcpp/utf8.h>
 
@@ -664,7 +664,7 @@ namespace daedalus_turbo::plutus::uplc {
             const auto it = std::find(_vars.rbegin(), _vars.rend(), name);
             if (it == _vars.rend()) [[unlikely]]
                 throw error(fmt::format("unknown variable '{}' at pos: {}", name, _pos));
-            return { _alloc, variable { narrow_cast<size_t>(it.base() - 1 - _vars.begin()) } };
+            return { _alloc, variable { numeric_cast<size_t>(it.base() - 1 - _vars.begin()) } };
         }
 
         term _decode_term()

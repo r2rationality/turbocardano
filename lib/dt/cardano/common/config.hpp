@@ -13,7 +13,7 @@ namespace daedalus_turbo::cardano {
     struct config {
         const config_json byron_genesis;
         const block_hash byron_genesis_hash;
-        const uint64_t byron_protocol_magic;
+        const uint32_t byron_protocol_magic;
         const uint64_t byron_start_time;
         const uint64_t byron_epoch_length;
         const uint64_t byron_slot_duration;

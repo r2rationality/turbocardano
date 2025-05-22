@@ -47,7 +47,7 @@ namespace daedalus_turbo::index::block_fees {
                         donations += d;
                 }
             });
-            idx.emplace_back(blk->slot(), blk->issuer_hash(), fees, donations, blk.offset() + blk.size(), narrow_cast<uint8_t>(blk->era()));
+            idx.emplace_back(blk->slot(), blk->issuer_hash(), fees, donations, blk.offset() + blk.size(), numeric_cast<uint8_t>(blk->era()));
         }
     };
     using indexer = indexer_one_epoch<chunk_indexer>;
