@@ -197,9 +197,7 @@ Additionally on Windows:
 ## Tested environments and compilers
 - Ubuntu Linux 24.04 with GCC 13.2
 - Ubuntu Linux 24.04 with Clang 18
-- Mac OS Sonoma 14.2.1 with Clang 17.0.6 installed with ```brew install llvm@17```
 - Windows 11 with Visual C++ 19.39.33520.0 that comes with Visual Studio 2022 Community Edition
-- Windows 11 with GCC 13.2 that comes with MinGW64
 
 ## Build the command line version
 Verify the presence of the necessary libraries and generate build files in `cmake-build-release` directory for a release build:
@@ -211,69 +209,3 @@ Build `dt` binary using all available CPU cores (will be available in `cmake-bui
 ```
 cmake --build cmake-build-release -j -t dt
 ```
-
-## Build the Windows installer
-1. Download and install [Microsoft Visual Studio Community 2022](https://visualstudio.microsoft.com/vs/community/)
-2. In the Visual Studio installer, enable "Desktop development with C++" workload.
-3. Download and install [NSIS installer compiler 3.10](https://nsis.sourceforge.io/Download).
-4. Download and install [Node.js 22](https://nsis.sourceforge.io/Download)
-5. Open a CMD terminal and navigate to the DT source code directory.
-6. Set up the necessary Visual Studio environment variables for a command line build:
-   ```
-   "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvars64.bat"
-   ```
-7. Use vcpkg to install the required packages specified in ```vcpkg.json```:
-   ```
-   vcpkg install
-   ```
-8. Configure the build with CMake:
-   ```
-   cmake -B build-win-release -G Ninja -DCMAKE_BUILD_TYPE=Release --toolchain="%VCPKG_ROOT%\scripts\buildsystems\vcpkg.cmake"
-   ```
-9. Build the DT binaries:
-   ```
-   cmake --build build-win-release --config Release -j -t dt -t ui
-   ```
-10. Switch to the build directory:
-    ```
-    cd build-win-release
-    ```
-11. Build the Windows installer:
-    ```
-    cpack --config CPackConfig.cmake
-    ```
-12. The installer will be stored in build-win-release directory.
-
-## Build the Mac Arm64 disk image
-1. Open a terminal window and navigate to the directory with DT source code.
-2. Install the necessary packages with brew:
-   ```
-   brew install cmake ninja fmt libsodium llvm@17 secp256k1 spdlog zstd
-   brew install boost@1.85
-   brew link boost@1.85
-   brew install node@22
-   brew link node@22
-   brew install botan@2
-   brew link botan@2
-   ```
-3. Prepare cmake build files in cmake-build-release directory (the name is used in build scripts so stay be the same):
-   ```
-   cmake -B cmake-build-release -G Ninja
-   ```
-4. Build the Mac binaries
-   ```
-   cmake --build cmake-build-release -j -t dt
-   ```
-5. Switch to the UI directory:
-   ```
-   cd ui
-   ```
-6. Install the necessary NPM packages:
-   ```
-   npm i
-   ```
-7. Build the Mac disk image:
-   ```
-   npm run pkg-mac
-   ```
-8. The resulting disk image will be stored in the ui directory.
