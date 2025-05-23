@@ -126,9 +126,9 @@ namespace daedalus_turbo::cardano::network {
         static boost::asio::awaitable<uint8_vector> _read_response(tcp::socket &socket, const mini_protocol mp_id)
         {
             segment_info recv_info {};
-            co_await boost::asio::async_read(socket, boost::asio::buffer(&recv_info, sizeof(recv_info)), boost::asio::use_awaitable);
+            co_await _wait_with_deadline(boost::asio::async_read(socket, boost::asio::buffer(&recv_info, sizeof(recv_info)), boost::asio::use_awaitable));
             uint8_vector recv_payload(recv_info.payload_size());
-            co_await boost::asio::async_read(socket, boost::asio::buffer(recv_payload.data(), recv_payload.size()), boost::asio::use_awaitable);
+            co_await _wait_with_deadline(boost::asio::async_read(socket, boost::asio::buffer(recv_payload.data(), recv_payload.size()), boost::asio::use_awaitable));
             if (recv_info.mode() != channel_mode::responder || recv_info.mini_protocol_id() != mp_id) {
                 logger::error("unexpected message: mode: {} mini_protocol_id: {} body size: {} body: {}",
                     static_cast<int>(recv_info.mode()), static_cast<uint16_t>(recv_info.mini_protocol_id()), recv_payload.size(),
@@ -148,27 +148,18 @@ namespace daedalus_turbo::cardano::network {
             segment_info send_info { micros, channel_mode::initiator, mp_id, static_cast<uint16_t>(data.size()) };
             segment << buffer::from(send_info);
             segment << data;
-            co_await async_write(socket, boost::asio::const_buffer { segment.data(), segment.size() }, boost::asio::use_awaitable);
+            co_await _wait_with_deadline(async_write(socket, boost::asio::const_buffer { segment.data(), segment.size() }, boost::asio::use_awaitable));
             co_return co_await _read_response(socket, mp_id);
         }
 
         boost::asio::awaitable<tcp::socket> _connect_and_handshake()
         {
-            auto results = co_await _resolver.async_resolve(_addr.host, _addr.port, boost::asio::use_awaitable);
+            auto results = co_await _wait_with_deadline(_resolver.async_resolve(_addr.host, _addr.port, boost::asio::use_awaitable));
             if (results.empty())
                 throw error(fmt::format("DNS resolve for {}:{} returned no results!", _addr.host, _addr.port));
             tcp::socket socket { _asio_worker->io_context() };
-
-            using namespace boost::asio::experimental::awaitable_operators;
-            auto executor = co_await boost::asio::this_coro::executor;
-            auto deadline = boost::asio::steady_timer { executor, std::chrono::seconds { 5 } };
-            co_await (
-                socket.async_connect(*results.begin(), boost::asio::use_awaitable)
-                || deadline.async_wait(boost::asio::use_awaitable)
-            );
-            if (socket.is_open()) [[likely]] {
-                deadline.cancel();
-            } else {
+            co_await _wait_with_deadline(socket.async_connect(*results.begin(), boost::asio::use_awaitable));
+            if (!socket.is_open()) [[likely]] {
                 throw error(fmt::format("failed to connect to {} within the allotted timeframe", _addr));
             }
 
@@ -240,6 +231,26 @@ namespace daedalus_turbo::cardano::network {
             }
         }
 
+        struct timer_stopped_t {};
+        static boost::asio::awaitable<timer_stopped_t> _wait_for_timer(const std::chrono::seconds deadline)
+        {
+            auto executor = co_await boost::asio::this_coro::executor;
+            auto timer = boost::asio::steady_timer { executor, deadline };
+            co_await timer.async_wait(boost::asio::use_awaitable);
+            co_return timer_stopped_t {};
+        }
+
+        template<typename T>
+        static boost::asio::awaitable<T> _wait_with_deadline(boost::asio::awaitable<T> action, const std::chrono::seconds deadline=std::chrono::seconds { 5 })
+        {
+            using namespace boost::asio::experimental::awaitable_operators;
+            auto res = co_await (std::move(action) || _wait_for_timer(deadline));
+            if (std::holds_alternative<timer_stopped_t>(res)) [[unlikely]]
+                throw error("blockfetch: failed to receive the next block within the allotted timeframe from the peer");
+            if constexpr (!std::is_same_v<T, void>)
+                co_return std::move(std::get<T>(res));
+        }
+
         static boost::asio::awaitable<void> _receive_blocks(tcp::socket &socket, uint8_vector parse_buf, const block_handler &handler)
         {
             for (;;) {
@@ -270,23 +281,7 @@ namespace daedalus_turbo::cardano::network {
                         break;
                     }
                 }
-
-                using namespace boost::asio::experimental::awaitable_operators;
-                auto executor = co_await boost::asio::this_coro::executor;
-                auto deadline = boost::asio::steady_timer { executor, std::chrono::seconds { 5 } };
-                const auto res = co_await (
-                    _read_response(socket, mini_protocol::block_fetch)
-                    || deadline.async_wait(boost::asio::use_awaitable)
-                );
-                std::visit([&](const auto &rv) {
-                    using T = std::decay_t<decltype(rv)>;
-                    if constexpr (std::is_same_v<T, uint8_vector>) {
-                        deadline.cancel();
-                        parse_buf << rv;
-                    } else {
-                        throw error("blockfetch: failed to receive the next block within the allotted timeframe from the peer");
-                    }
-                }, res);
+                parse_buf << co_await _wait_with_deadline(_read_response(socket, mini_protocol::block_fetch), std::chrono::seconds { 5 });
             }
         }
 
