@@ -270,7 +270,23 @@ namespace daedalus_turbo::cardano::network {
                         break;
                     }
                 }
-                parse_buf << co_await _read_response(socket, mini_protocol::block_fetch);
+
+                using namespace boost::asio::experimental::awaitable_operators;
+                auto executor = co_await boost::asio::this_coro::executor;
+                auto deadline = boost::asio::steady_timer { executor, std::chrono::seconds { 5 } };
+                const auto res = co_await (
+                    _read_response(socket, mini_protocol::block_fetch)
+                    || deadline.async_wait(boost::asio::use_awaitable)
+                );
+                std::visit([&](const auto &rv) {
+                    using T = std::decay_t<decltype(rv)>;
+                    if constexpr (std::is_same_v<T, uint8_vector>) {
+                        deadline.cancel();
+                        parse_buf << rv;
+                    } else {
+                        throw error("blockfetch: failed to receive the next block within the allotted timeframe from the peer");
+                    }
+                }, res);
             }
         }
 
