@@ -112,9 +112,12 @@ Download, validate, and prepare for querying a copy of the Cardano blockchain fr
 ./dt sync /data/cardano --max-slot=150877935
 ```
 
-> **Note:**  
-> The current bootstrap nodes **do not yet support** [CIP 0150 – Block Data Compression](https://github.com/cardano-foundation/CIPs/tree/master/CIP-0150).  
-> As a result, downloads will be **several times slower** than they will be once compression is enabled in the future.
+> **Notes:**  
+> - The current bootstrap nodes **do not yet support** [CIP 0150 – Block Data Compression](https://github.com/cardano-foundation/CIPs/tree/master/CIP-0150).  
+>   As a result, downloads will be **several times slower** than they will be once compression is enabled in the future.
+> - Cardano network peers may sometimes terminate connections unexpectedly.
+>   If your download or synchronization is interrupted, simply re-run the command.
+>   You may need to repeat this process several times to complete the operation.
 
 Show information about the local chain's tip:
 ```
