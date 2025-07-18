@@ -151,10 +151,10 @@ foreach(ITEST_SRC IN LISTS ITEST_SRCS)
     target_link_libraries(${ITEST} PRIVATE lib 3rdparty 3rdparty-cpp)
 endforeach()
 
-file(GLOB_RECURSE TEST_SRCS lib/dt/*.test.cpp)
+file(GLOB_RECURSE TEST_SRCS lib/turbo/*.test.cpp)
 add_executable(run-test src/run-test.cpp ${TEST_SRCS})
 
-file(GLOB_RECURSE BENCH_SRCS lib/dt/*.bench.cpp)
+file(GLOB_RECURSE BENCH_SRCS lib/turbo/*.bench.cpp)
 add_executable(run-bench src/run-test.cpp ${BENCH_SRCS})
 
 foreach(EXE dt run-test run-bench)

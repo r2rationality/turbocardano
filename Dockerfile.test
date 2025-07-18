@@ -1,5 +1,5 @@
 FROM ubuntu:24.04
-LABEL MAINTAINER "Alex Sierkov <alex.sierkov@gmail.com>"
+LABEL MAINTAINER="Alex Sierkov <alex.sierkov@gmail.com>"
 ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update
@@ -29,5 +29,5 @@ RUN cmake -B cmake-build-release -GNinja
 RUN cmake --build cmake-build-release -j -t dt
 RUN mkdir log
 WORKDIR /home/dev/dt/cmake-build-release
-ENV DT_LOG=/home/dev/dt/log/dt.log
+ENV TURBO_LOG_PATH=/home/dev/dt/log/dt.log
 CMD [ "/bin/bash", "/home/dev/docker-test.sh" ]

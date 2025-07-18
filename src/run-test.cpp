@@ -15,16 +15,16 @@
 #endif
 
 #include <iostream>
-#include <dt/common/test.hpp>
-#include <dt/config.hpp>
-#include <dt/logger.hpp>
+#include <turbo/common/logger.hpp>
+#include <turbo/common/test.hpp>
+#include <turbo/config.hpp>
 
 int main(const int argc, const char **argv)
 {
 #ifdef MI_OVERRIDE
     std::cerr << "DT_INIT: mimalloc " << mi_version() << '\n';
 #endif
-    using namespace daedalus_turbo;
+    using namespace turbo;
     consider_bin_dir(argv[0]);
     logger::debug("run-test {}", argv[0]);
     if (argc >= 2) {

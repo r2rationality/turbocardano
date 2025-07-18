@@ -7,14 +7,14 @@
 #ifdef MI_OVERRIDE
 #   include <mimalloc-new-delete.h>
 #endif
-#include <dt/cli.hpp>
+#include <../lib/turbo/common/cli.hpp>
 
 int main(const int argc, const char **argv)
 {
 #ifdef MI_OVERRIDE
     std::cerr << "DT_INIT: mimalloc " << mi_version() << '\n';
 #endif
-    using namespace daedalus_turbo;
+    using namespace turbo;
     consider_bin_dir(argv[0]);
     return cli::run(argc, argv);
 }
