@@ -91,7 +91,7 @@ To test the command line interface, you need the following software packages ins
 
 Clone this repository and make it your working directory:
 ```
-git clone --depth=1 https://github.com/r2rationality/turbocardano.git dt
+git clone --depth=1 --recursive https://github.com/r2rationality/turbocardano.git dt
 cd dt
 ```
 
