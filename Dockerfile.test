@@ -1,5 +1,5 @@
-FROM ubuntu:24.04
-LABEL MAINTAINER="Alex Sierkov <alex.sierkov@gmail.com>"
+FROM ubuntu:24.04 AS builder
+LABEL MAINTAINER="R2 Rationality <info@r2rationality.com>"
 ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update
@@ -11,23 +11,32 @@ RUN awk '{ if (/^%sudo/) { print "%sudo\tALL=(ALL:ALL) NOPASSWD:ALL" } else { pr
 RUN useradd -m -s /bin/bash -G sudo dev
 RUN apt-get install -y build-essential cmake pkg-config gdb libboost1.83-all-dev libboost-url1.83-dev libsecp256k1-dev libsodium-dev libzstd-dev libssl-dev libfmt-dev libspdlog-dev libbotan-2-dev
 RUN apt-get install -y ninja-build
-RUN mkdir /home/dev/dt
-COPY 3rdparty /home/dev/dt/3rdparty
-COPY src /home/dev/dt/src
-COPY lib /home/dev/dt/lib
-COPY etc /home/dev/dt/etc
-COPY data /home/dev/dt/data
-COPY test /home/dev/dt/test
-COPY CMakeLists.txt /home/dev/dt
-COPY docker-test.sh /home/dev
-COPY experiment /home/dev/dt/experiment
+RUN mkdir /home/dev/tada
+COPY 3rdparty /home/dev/tada/3rdparty
+COPY src /home/dev/tada/src
+COPY lib /home/dev/tada/lib
+COPY etc /home/dev/tada/etc
+COPY data /home/dev/tada/data
+COPY test /home/dev/tada/test
+COPY CMakeLists.txt /home/dev/tada
 RUN chown -R dev:dev /home/dev
 
 USER dev
-WORKDIR /home/dev/dt
-RUN cmake -B cmake-build-release -GNinja
-RUN cmake --build cmake-build-release -j -t dt
-RUN mkdir log
-WORKDIR /home/dev/dt/cmake-build-release
-ENV TURBO_LOG_PATH=/home/dev/dt/log/dt.log
-CMD [ "/bin/bash", "/home/dev/docker-test.sh" ]
+WORKDIR /home/dev/tada
+RUN cmake -B build -GNinja
+RUN cmake --build build -j -t tada
+
+FROM ubuntu:24.04
+RUN apt-get update
+RUN apt-get install -y libboost-json1.83.0 libboost-container1.83.0 libboost-coroutine1.83.0 libboost-context1.83.0 \
+    libboost-url1.83.0 libboost-thread1.83.0 libboost-atomic1.83.0 libboost-stacktrace1.83.0 \
+    libfmt9 libspdlog1.12 libzstd1 libssl3t64 libsodium23 libatomic1 libnuma1 libsecp256k1-1 libbotan-2-19
+RUN useradd -m -s /bin/bash -d /opt/tada tada
+USER tada
+WORKDIR /opt/tada
+COPY --chmod=0755 docker-test.sh /opt/tada/bin/docker-start.sh
+COPY --from=builder /home/dev/tada/build/tada /opt/tada/bin/tada
+COPY --from=builder /home/dev/tada/etc /opt/tada/etc
+RUN mkdir data log
+ENV TURBO_LOG_PATH=/opt/tada/log/tada.log
+ENTRYPOINT [ "/opt/tada/bin/tada" ]

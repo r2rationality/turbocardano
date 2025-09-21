@@ -607,9 +607,14 @@ namespace turbo::cardano {
         return _slot % _cfg.byron_epoch_length;
     }
 
+    uint64_t slot::chunk_id(uint64_t slot, const cardano::config &cfg)
+    {
+        return slot / cfg.byron_epoch_length;
+    }
+
     uint64_t slot::chunk_id() const
     {
-        return _slot / _cfg.byron_epoch_length;
+        return chunk_id(_slot, _cfg);
     }
 
     uint64_t slot::unixtime() const

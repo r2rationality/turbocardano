@@ -1,6 +1,7 @@
 /* Copyright (c) 2022-2023 Alex Sierkov (alex dot sierkov at gmail dot com)
  * Copyright (c) 2024-2025 R2 Rationality OÜ (info at r2rationality dot com) */
 
+#include <numeric>
 #include "bytes.hpp"
 #include "test.hpp"
 
@@ -57,12 +58,12 @@ suite turbo_common_bytes_suite = [] {
             expect(throws([&] { a.bit(16); }));
         };
         "do not initialize"_test = [] {
-            // fill the stack with non-zero values
-            {
-                volatile byte_array<4> tmp { 5, 4, 3, 2 };
-            }
-            byte_array<4> a;
-            expect(std::accumulate(a.begin(), a.end(), 0U) != 0U);
+            using my_array_t = byte_array<4>;
+            my_array_t storage { 5, 4, 3, 2 };
+            my_array_t *a = new (&storage) my_array_t;
+            expect(std::accumulate(a->begin(), a->end(), 0U) != 0U);
+            // It's ok to not call a's destructor here
+
         };
         "initialize with zeros"_test = [] {
             byte_array<4> a {};
@@ -107,6 +108,7 @@ suite turbo_common_bytes_suite = [] {
             expect_equal(4, a[3]);
             expect(throws([&] { byte_array<4>::from_hex("01020304050x"); }));
             expect(throws([&] { byte_array<4>::from_hex("0102030405x0"); }));
+            expect_equal(uint8_vector::from_hex("01020304"sv), uint8_vector::from_hex("0x01020304"sv));
         };
         "operator<<"_test = [] {
             using namespace std::string_view_literals;
@@ -146,14 +148,15 @@ suite turbo_common_bytes_suite = [] {
             expect(fmt::format("{}", data) == "F0E1D2C3");
         };
         "secure_array"_test = [] {
+            using my_sec_array_t = secure_byte_array<4>;
+            using my_sec_storage_t = std::aligned_storage<sizeof(my_sec_array_t), alignof(my_sec_array_t)>::type;
             const auto empty = byte_array<4>::from_hex("00000000");
             const auto filled = byte_array<4>::from_hex("DEADBEAF");
-            const uint8_t *data_ptr;
-            {
-                const secure_byte_array<4> sec { filled };
-                data_ptr = sec.data();
-                expect_equal(true, memcmp(sec.data(), filled.data(), filled.size()) == 0);
-            }
+            my_sec_storage_t storage {};
+            my_sec_array_t *sec = new (&storage) my_sec_array_t { filled };
+            const auto *data_ptr = sec->data();
+            expect_equal(true, memcmp(data_ptr, filled.data(), filled.size()) == 0);
+            sec->~secure_byte_array();
             expect_equal(false, memcmp(data_ptr, filled.data(), filled.size()) == 0);
             expect_equal(true, memcmp(data_ptr, empty.data(), empty.size()) == 0);
         };

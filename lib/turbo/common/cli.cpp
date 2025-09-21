@@ -9,10 +9,10 @@
 #endif
 
 namespace turbo::cli {
-    int run(const int argc, const char **argv, const command::command_list &command_list, const std::optional<global_options_proc_t> &global_opts_f)
+    int run(const int argc, const char **argv, const command::command_list &command_list, const std::optional<global_options_t> &global_opts)
     {
         std::set_terminate([]() {
-            logger::error("std::terminate called; uncaught exceptions: {} - terminating", std::uncaught_exceptions());
+            std::cerr << fmt::format("std::terminate called; uncaught exceptions: {} - terminating\n", std::uncaught_exceptions());
             std::abort();
         });
         std::ios_base::sync_with_stdio(false);
@@ -35,7 +35,10 @@ namespace turbo::cli {
             for (const auto &cmd: command_list) {
                 command_meta meta { cmd };
                 cmd->configure(meta.cfg);
-                meta.cfg.opts.emplace("config-dir", "a directory with Cardano configuration files");
+                if (global_opts) {
+                    for (const auto &[name, cfg]: global_opts->opts)
+                        meta.cfg.opts.emplace(name, cfg);
+                }
                 if (const auto [it, created] = commands.try_emplace(meta.cfg.name, std::move(meta)); !created) [[unlikely]]
                     throw error(fmt::format("multiple definitions for {}", meta.cfg.name));
             }
@@ -60,8 +63,8 @@ namespace turbo::cli {
             const auto &meta = cmd_it->second;
             timer t { fmt::format("run {}", cmd), logger::level::info };
             const auto pr = meta.cmd->parse(meta.cfg, args);
-            if (global_opts_f)
-                (*global_opts_f)(pr.opts);
+            if (global_opts)
+                global_opts->proc(pr.opts);
             meta.cmd->run(pr.args, pr.opts);
         } catch (const std::exception &ex) {
             logger::error("{}", ex.what());
@@ -73,7 +76,7 @@ namespace turbo::cli {
         return 0;
     }
 
-    int run(const int argc, const char **argv, const std::optional<global_options_proc_t> &global_opts_f)
+    int run(const int argc, const char **argv, const std::optional<global_options_t> &global_opts_f)
     {
         return run(argc, argv, command::registry(), global_opts_f);
     }

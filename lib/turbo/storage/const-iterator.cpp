@@ -220,7 +220,7 @@ namespace turbo::storage {
         if (*this == last_it) [[unlikely]]
             return std::make_pair(uint8_vector {}, last_it);
         if (**this == _chunk_it->second.blocks.front() && last_it._chunk_it != _chunk_it) {
-            const auto path = full_path(_chunk_it->second.rel_path(), _cr._db_dir);
+            const auto path = full_path(_cr._db_dir, _chunk_it->second.rel_path());
             return std::make_pair(file::read(path), const_iterator { _cr, _chunks, std::next(_chunk_it), 0 });
         }
         const auto bytes = _prep_chunk_cache();

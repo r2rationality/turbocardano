@@ -16,8 +16,9 @@ namespace turbo::sync {
     struct peer_info {
         virtual ~peer_info() =default;
         virtual std::string id() const =0;
-        virtual const cardano::optional_point &tip() const =0;
+        virtual const cardano::point3 &tip() const =0;
         virtual const cardano::optional_point &intersection() const =0;
+        virtual void intersection(const cardano::optional_point &) =0;
     };
 
     struct syncer {

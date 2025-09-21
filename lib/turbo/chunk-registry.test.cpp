@@ -12,13 +12,13 @@ namespace {
     using namespace turbo;
     using boost::ext::ut::v2_1_0::nothrow;
 
-    static void copy_chunk(chunk_registry &dst_cr, const chunk_registry &src_cr, const storage::chunk_info &chunk)
+    void copy_chunk(chunk_registry &dst_cr, const chunk_registry &src_cr, const storage::chunk_info &chunk)
     {
         const auto dst_path = dst_cr.full_path(chunk.rel_path());
         const auto src_path = src_cr.full_path(chunk.rel_path());
         std::filesystem::remove(dst_path);
         std::filesystem::copy(src_path, dst_path);
-        dst_cr.add(dst_cr.num_bytes(), dst_path);
+        dst_cr.add_file(dst_cr.num_bytes(), dst_path);
     }
 }
 
@@ -41,7 +41,7 @@ suite chunk_registry_suite = [] {
             const std::string local_path = install_path(tmp_data_dir + "/chang/9326B83719AEAB06A671EA653EE297F1DA601A4FC279A759503D79F55DA6EEC7.zstd");
             const progress_point target_tip { 133703981, 10746832 };
             const auto ex_ptr = cr.accept_progress({}, target_tip, [&] {
-                cr.add(0, local_path);
+                cr.add_file(0, local_path);
             });
             expect_equal(target_tip.end_offset, cr.num_bytes());
         };
@@ -238,7 +238,7 @@ suite chunk_registry_suite = [] {
                     const auto data = file::read(src_path);
                     const auto compressed = zstd::compress(data);
                     file::write(local_path, compressed);
-                    cr.add(offset, local_path);
+                    cr.add_file(offset, local_path);
                     auto exp_max_epoch = turbo::json::value_to<uint64_t>(j_chunk.at("expMaxEpoch"));
                     auto act_max_epoch = epochs.empty() ? 0 : *epochs.rbegin();
                     expect_equal(act_max_epoch, exp_max_epoch);

@@ -98,7 +98,7 @@ namespace turbo::file {
                 if (pos > 2)
                     return pathstr.substr(0, pos);
                 if (pathstr.size() > 2)
-                    return pathstr.substr(0, 2);
+                    return pathstr.substr(0, 3);
             } else {
                 if (pos > 0)
                     return pathstr.substr(0, pos);
@@ -120,6 +120,13 @@ namespace turbo::file {
         return false;
     }
 
+    void set_install_path_exact(const std::filesystem::path &p)
+    {
+        if (!_path_absolute(p)) [[unlikely]]
+            throw error(fmt::format("file::set_install_path_exact requires and absolute path but got: {}", p));
+        _install_dir() = p;
+    }
+
     void set_install_path(const std::string_view bin_path)
     {
         std::filesystem::path bp{bin_path};
@@ -134,7 +141,7 @@ namespace turbo::file {
                 throw error(fmt::format("set_install_path: bin_path must have at least two parent directories: {}!", bin_path));
             ip = pp;
         }
-        _install_dir() = ip;
+        set_install_path_exact(ip);
     }
 
     std::string install_path(const std::string_view rel_path)

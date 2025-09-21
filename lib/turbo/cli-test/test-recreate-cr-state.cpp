@@ -32,7 +32,7 @@ namespace turbo::cli::test_recreate_cr_state {
                     const auto src_path = fmt::format("{}/compressed/chunk/{}", src_dir, chunk_name);
                     const auto dst_path = cr.full_path(chunk_name);
                     std::filesystem::copy(src_path, dst_path);
-                    cr.add(offset, dst_path);
+                    cr.add_file(offset, dst_path);
                     offset += json::value_to<uint64_t>(j_chunk.at("size"));
                 }
             });

@@ -371,6 +371,7 @@ namespace turbo::cardano {
             return archive(self._slot);
         }
 
+        static uint64_t chunk_id(uint64_t slot, const cardano::config &cfg);
         static slot from_time(const std::chrono::time_point<std::chrono::system_clock> &tp, const cardano::config &cfg);
         static slot from_epoch(const uint64_t epoch, const uint64_t epoch_slot, const cardano::config &cfg);
         static slot from_chunk(const uint64_t chunk, const cardano::config &cfg);

@@ -63,6 +63,7 @@ namespace turbo::cardano::network {
 
         void fetch_blocks_impl(const point2 &from, const point2 &to, const block_handler &handler)
         {
+            logger::debug("fetch_blocks from: {} to: {}", from, to);
             std::scoped_lock lk { _futures_mutex };
             _futures.emplace_back(boost::asio::co_spawn(_asio_worker->io_context(), _fetch_blocks(from, to, handler), boost::asio::use_future));
         }

@@ -10,14 +10,17 @@
 
 namespace turbo::sync::p2p {
     struct peer_info: sync::peer_info {
-        peer_info(std::unique_ptr<cardano::network::client> &&client, const std::optional<cardano::point> &tip,
-            const std::optional<cardano::point> &isect)
-            : _client { std::move(client) }, _tip { tip }, _isect { isect }
+        peer_info(std::unique_ptr<cardano::network::client> &&client, const cardano::point3 &tip,
+                cardano::optional_point isect):
+            _client{std::move(client)},
+            _tip{tip},
+            _isect{std::move(isect)}
         {
         }
 
-        peer_info(std::unique_ptr<cardano::network::client> &&client, const std::optional<cardano::point> &tip)
-            : _client { std::move(client) }, _tip { tip }
+        peer_info(std::unique_ptr<cardano::network::client> &&client, const cardano::point3 &tip):
+            _client{std::move(client)},
+            _tip{tip}
         {
             if (!_client)
                 throw error("client instance must be defined for all p2p peers");
@@ -30,9 +33,14 @@ namespace turbo::sync::p2p {
             return fmt::format("{}", _client->addr());
         }
 
-        const cardano::optional_point &tip() const override
+        const cardano::point3 &tip() const override
         {
             return _tip;
+        }
+
+        void intersection(const cardano::optional_point &new_isect) override
+        {
+            _isect = new_isect;
         }
 
         const cardano::optional_point &intersection() const override
@@ -46,8 +54,8 @@ namespace turbo::sync::p2p {
         }
     private:
         std::unique_ptr<cardano::network::client> _client;
-        std::optional<cardano::point> _tip {};
-        std::optional<cardano::point> _isect {};
+        cardano::point3 _tip;
+        std::optional<cardano::point> _isect{};
     };
 
     struct syncer: sync::syncer {

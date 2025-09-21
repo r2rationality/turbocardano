@@ -49,7 +49,7 @@ With the core functionally mostly complete now, the focus has shifted to testing
   - Incremental synchronization using the **Cardano Network protocol** with [Cardano Improvement Proposal 0150 - Block Data Compression](https://github.com/cardano-foundation/CIPs/tree/master/CIP-0150).
 - **Parallelized validation mechanisms:**
   - Consensus validation according to Ouroboros Praos/Genesis rules.
-  - Parallelized transaction witness validation via the [C++ Plutus Machine](lib/dt/plutus).
+  - Parallelized transaction witness validation via the [C++ Plutus Machine](lib/turbo/plutus).
   - Consensus-based witness validation ("Turbo validation"), as detailed in [On the Security of Wallet Nodes in the Cardano Blockchain](./doc/2024-sierkov-on-wallet-security.pdf)
 - **Optimized blockchain data storage:**
   - Compressed local storage of blockchain data (**~4.5x reduction in size**).
@@ -91,25 +91,25 @@ To test the command line interface, you need the following software packages ins
 
 Clone this repository and make it your working directory:
 ```
-git clone --depth=1 --recursive https://github.com/r2rationality/turbocardano.git dt
-cd dt
+git clone --depth=1 --recursive https://github.com/r2rationality/turbocardano.git tada
+cd tada
 ```
 
 Build the test Docker container:
 ```
-docker build -t dt -f Dockerfile.test .
+docker build -t tada -f Dockerfile.test .
 ```
 
 Start the test container, with `<turbo-dir>` being the host's directory to store the blockchain data:
 ```
-docker run -it --rm -v <turbo-dir>:/data dt
+docker run -it --rm -v <turbo-dir>:/data tada
 ```
 
 All the following commands are to be run within the container started by the previous command.
 
 Download, validate, and prepare for querying a copy of the Cardano blockchain from Cardano bootstrap nodes:
 ```
-./dt sync /data/cardano --max-slot=150877935
+./tada sync /data/cardano --max-slot=150877935
 ```
 
 > **Notes:**  
@@ -121,57 +121,57 @@ Download, validate, and prepare for querying a copy of the Cardano blockchain fr
 
 Show information about the local chain's tip:
 ```
-./dt tip /data/cardano
+./tada tip /data/cardano
 ```
 
 Start the experimental Node server with block data compression enabled, listening on 127.0.0.1:3001:
 ```
-DT_LOG=/data/server.log ./dt node-api /data/cardano &> /dev/null &
+TURBO_LOG_PATH=/data/server.log ./tada node-api /data/cardano &> /dev/null &
 ```
 
 Re-download all data from the local server started by the previous command (with compression enabled):
 ```
-./dt sync /data/cardano2 --peer-host=127.0.0.1
+./tada sync /data/cardano2 --peer-host=127.0.0.1
 ```
 
 Compare the tip:
 ```
-./dt tip /data/cardano2
+./tada tip /data/cardano2
 ```
 
 Reconstruct the latest balance and transaction history of a stake key:
 ```
-./dt stake-history /data/cardano stake1uxw70wgydj63u4faymujuunnu9w2976pfeh89lnqcw03pksulgcrg
+./tada stake-history /data/cardano stake1uxw70wgydj63u4faymujuunnu9w2976pfeh89lnqcw03pksulgcrg
 ```
 
 Reconstruct the latest balance and transaction history of a payment key:
 ```
-./dt pay-history /data/cardano addr1q86j2ywajjgswgg6a6j6rvf0kzhhrqlma7ucx0f2w0v7stuau7usgm94re2n6fhe9ee88c2u5ta5znnwwtlxpsulzrdqv6rmuj
+./tada pay-history /data/cardano addr1q86j2ywajjgswgg6a6j6rvf0kzhhrqlma7ucx0f2w0v7stuau7usgm94re2n6fhe9ee88c2u5ta5znnwwtlxpsulzrdqv6rmuj
 ```
 
 Show information about a transaction:
 ```
-./dt tx-info /data/cardano 357D47E9916B7FE949265F23120AEED873B35B97FB76B9410C323DDAB5B96D1A
+./tada tx-info /data/cardano 357D47E9916B7FE949265F23120AEED873B35B97FB76B9410C323DDAB5B96D1A
 ```
 
 Evaluate a Plutus script and show its result and costs:
 ```
-./dt plutus-eval ../data/plutus/conformance/example/factorial/factorial.uplc
+./tada plutus-eval ../data/plutus/conformance/example/factorial/factorial.uplc
 ```
 
 (Optional) Revalidate consensus since genesis for benchmark purposes:
 ```
-./dt revalidate /data/cardano
+./tada revalidate /data/cardano
 ```
 
 (Optional) Revalidate transaction witnesses since genesis for benchmark purposes:
 ```
-./dt txwit-all /data/cardano
+./tada txwit-all /data/cardano
 ```
 
 (Optional) Synchronize the local chain from a Cardano Network node (slower since Cardano network protocol lacks compression):
 ```
-./dt sync-p2p /data/cardano
+./tada sync-p2p /data/cardano
 ```
 
 # Spread the word
@@ -208,7 +208,7 @@ Verify the presence of the necessary libraries and generate build files in `cmak
 cmake -B cmake-build-release
 ```
 
-Build `dt` binary using all available CPU cores (will be available in `cmake-build-release` directory):
+Build `tada` binary using all available CPU cores (will be available in `cmake-build-release` directory):
 ```
-cmake --build cmake-build-release -j -t dt
+cmake --build cmake-build-release -j -t tada
 ```

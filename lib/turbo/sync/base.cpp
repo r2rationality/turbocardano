@@ -35,24 +35,22 @@ namespace turbo::sync {
         {
             logger::info("attempting to sync with {} with the tip {}", peer.id(), peer.tip());
             const auto start_tip = _cr.tip();
-            static constexpr size_t max_retries = 1;
-            auto start_point = peer.intersection();
-            optional_progress_point target { peer.tip() };
-            if (target) {
-                // explicitly set the max slot to ensure that the progress is computed correctly
-                if (!max_slot)
-                    max_slot = target->slot;
-                if (max_slot && *max_slot < target->slot) {
-                    logger::info("user override of the target: up to {}", *max_slot);
-                    target = max_slot;
-                }
+            static constexpr size_t max_retries = 3;
+            const auto peer_tip = point::from_point3(peer.tip());
+            progress_point target{peer_tip};
+            // explicitly set the max slot to ensure that the progress is computed correctly
+            if (!max_slot)
+                max_slot = target.slot;
+            if (max_slot && *max_slot < target.slot) {
+                logger::info("user override of the target: up to {}", *max_slot);
+                target = progress_point{*max_slot};
             }
-
-            if (peer.intersection() < target && peer.intersection() < peer.tip()) {
+            if (!peer.intersection() || (peer.intersection() < target && peer.intersection() < peer_tip)) {
                 for (size_t num_retries = max_retries; num_retries; --num_retries) {
-                    logger::info("syncing from {} to {}", start_point, target);
-                    const auto ex_ptr = _cr.accept_progress(start_point, target, [&] {
+                    logger::info("syncing from {} to {}", peer.intersection(), target);
+                    const auto ex_ptr = _cr.accept_progress(peer.intersection(), target, [&] {
                         _cr.validation_failure_handler([this](auto max_valid_offset) {
+                            logger::debug("sync::base: validation_failure_handler");
                             _parent.cancel_tasks(max_valid_offset);
                         });
                         _parent.sync_attempt(peer, max_slot);
@@ -62,27 +60,32 @@ namespace turbo::sync {
                         break;
                     }
                     // reset the retry count if made progress
-                    if (const auto end_tip = _cr.tip(); end_tip && start_point < end_tip) {
-                        num_retries = max_retries;
-                        start_point = end_tip;
+                    if (const auto end_tip = _cr.tip(); end_tip && peer.intersection() < end_tip) {
+                        num_retries = max_retries + 1; // +1 to adjust for the post-cycle-body decrement
+                        peer.intersection(end_tip);
                     }
-                    logger::info("retrying after a failure, number of planned attempts: {}", num_retries);
+                    if (num_retries > 1) {
+                        logger::info("retrying after a failure, attempts left: {}", num_retries - 1);
+                        std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+                    }
                 }
             }
             auto new_local_tip = _cr.tip();
-            if (new_local_tip != start_point && mode != validation_mode_t::none) {
+            if (new_local_tip != peer.intersection() && mode != validation_mode_t::none) {
                 timer t { fmt::format("{} transaction witness validation", mode), logger::level::info };
                 logger::info("the post-download tip: {}", new_local_tip);
-                cardano::optional_point validate_from = start_point;
+                cardano::optional_point validate_from = peer.intersection();
                 if (mode == validation_mode_t::turbo) {
                     const auto tail = _cr.tail_relative_stake();
-                    if (!tail.empty() && tail.begin()->second > 0.5 && start_point < tail.begin()->first)
+                    if (!tail.empty() && tail.begin()->second > 0.5 && peer.intersection() < tail.begin()->first)
                         validate_from = tail.begin()->first;
                 }
                 const auto new_valid_tip = txwit::validate(_cr, validate_from, new_local_tip, txwit::witness_type::all);
                 logger::debug("the new valid tip: {}", new_valid_tip);
-                if (new_valid_tip != new_local_tip)
+                if (new_valid_tip != new_local_tip) {
                     _cr.truncate(new_valid_tip);
+                    new_local_tip = _cr.tip();
+                }
             }
 
             logger::info("the post-txwit tip: {}", new_local_tip);

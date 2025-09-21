@@ -15,9 +15,9 @@ namespace {
 
 suite cardano_kes_suite = [] {
     "cardano::kes"_test = [] {
-        const auto vkey_data = file::read("./data/kes-vkey.bin");
-        const auto sig_data = file::read("./data/kes-sig.bin");
-        const auto msg_data = file::read("./data/kes-msg.bin");
+        const auto vkey_data = file::read("./data/kes-vkey.bin"sv);
+        const auto sig_data = file::read("./data/kes-sig.bin"sv);
+        const auto msg_data = file::read("./data/kes-msg.bin"sv);
         "construct"_test = [&] {
             expect(boost::ut::nothrow([&]{ kes_signature<6> sig(sig_data); })) << "constructor failed";
         };

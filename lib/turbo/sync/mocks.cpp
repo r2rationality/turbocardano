@@ -173,8 +173,10 @@ namespace turbo::sync {
         json::save_pretty_signed(fmt::format("{}/{}", www_dir, "chain.json"), j_chain, sk);
     }
 
-    cardano_client_mock::cardano_client_mock(const network::address &addr, const buffer &raw_data):
-        client { addr }, _raw_data { raw_data }
+    cardano_client_mock::cardano_client_mock(const network::address &addr, const buffer &raw_data, const double fail_rate):
+        client{addr},
+        _raw_data{raw_data},
+        _fail_gen{fail_rate}
     {
         cbor::zero2::decoder dec { _raw_data };
         while (!dec.done()) {
@@ -199,6 +201,10 @@ namespace turbo::sync {
             return;
         }
         for (auto it = *intersection; it != _blocks.end(); ++it) {
+            if (_fail_gen(fmt::format("block #{}", numeric_cast<uint64_t>((**it)->height())))) {
+                handler("random failure");
+                break;
+            }
             if (!handler({ msg_block_t { (**it).raw() } }) || (**it)->hash() == to.hash)
                 break;
         }

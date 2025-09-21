@@ -17,6 +17,7 @@ namespace turbo::cli::sync_p2p {
             cmd.name = "sync";
             cmd.desc = "synchronize the blockchain with a peer on the Cardano Network";
             cmd.args.expect({ "<data-dir>" });
+            cmd.opts.emplace("max-epoch", "do not synchronize beyond this epoch");
             cmd.opts.emplace("max-slot", "do not synchronize beyond this slot");
             cmd.opts.emplace("peer-host", "a Cardano Network host to connect to");
             cmd.opts.try_emplace("peer-port", "a TCP port to use for connecting to a Cardano Network peer", "3001");
@@ -27,17 +28,23 @@ namespace turbo::cli::sync_p2p {
         void run(const arguments &args, const options &opts) const override
         {
             const auto &data_dir = args.at(0);
-            std::optional<network::address> addr {};
-            optional_slot max_slot {};
-            version_config_t versions {};
+            std::optional<network::address> addr{};
+            optional_slot max_slot{};
+            version_config_t versions{};
             if (const auto opt_it = opts.find("max-slot"); opt_it != opts.end() && opt_it->second)
                 max_slot = std::stoull(*opt_it->second);
+            if (const auto opt_it = opts.find("max-epoch"); opt_it != opts.end() && opt_it->second)
+                max_slot = cardano::slot::from_epoch(std::stoull(*opt_it->second),  cardano::config::get().shelley_epoch_length - 1,cardano::config::get());
             if (const auto opt_it = opts.find("version-min"); opt_it != opts.end() && opt_it->second)
                 versions.min = std::stoull(*opt_it->second);
             if (const auto opt_it = opts.find("version-max"); opt_it != opts.end() && opt_it->second)
                 versions.max = std::stoull(*opt_it->second);
             if (const auto opt_it = opts.find("peer-host"); opt_it != opts.end() && opt_it->second)
                 addr.emplace(*opt_it->second, *opts.at("peer-port"));
+            if (max_slot)
+                logger::info("max_slot: {}", slot{*max_slot, cardano::config::get()});
+            if (addr)
+                logger::info("addr: {}", *addr);
             chunk_registry cr { data_dir };
             sync::p2p::syncer syncer { cr };
             const auto peer = syncer.find_peer(addr, versions);

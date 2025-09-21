@@ -307,12 +307,13 @@ namespace turbo {
 
         // state modifying methods
 
+        void maintenance();
         void import(const chunk_registry &src_cr);
-        std::string add_compressed(const uint64_t offset, uint8_vector compressed, uint8_vector uncompressed);
-        std::string add(const uint64_t offset, const std::string &local_path, std::optional<uint8_vector> uncompressed={});
+        void add_buffer(uint64_t offset, uint8_vector uncompressed, std::optional<uint8_vector> compressed={});
+        void add_file(uint64_t offset, const std::string &local_path);
         [[nodiscard]] std::exception_ptr accept_progress(const cardano::optional_point &start, const std::optional<progress_point> &target, const std::function<void()> &action);
         void accept_anything_or_throw(const cardano::optional_point &start, const std::optional<progress_point> &target, const std::function<void()> &action);
-        void accept_progress_or_throw(const cardano::optional_point &start, const std::optional<progress_point> &target, const std::function<void()> &action);
+        //void accept_progress_or_throw(const cardano::optional_point &start, const std::optional<progress_point> &target, const std::function<void()> &action);
         void truncate(const cardano::optional_point &new_tip);
 
         // data export
@@ -346,9 +347,8 @@ namespace turbo {
         chunk_map _truncated_chunks {};
         static thread_local uint8_vector _read_buffer;
 
-        void _maintenance();
         void _node_export_chain(const std::filesystem::path &immutable_dir, const std::filesystem::path &volatile_dir, int prio_base=100) const;
-        std::pair<chunk_info, std::exception_ptr> _parse(const uint64_t offset, const buffer &raw_data, const size_t compressed_size) const;
+        std::pair<chunk_info, std::exception_ptr> _parse(uint64_t offset, const buffer &raw_data, size_t compressed_size) const;
 
         epoch_info _epoch(const uint64_t epoch) const;
         void _my_truncate(const cardano::optional_point &new_tip, const bool track_changes);
@@ -367,6 +367,7 @@ namespace turbo {
         void _commit_tx();
         void _save_state(const std::string &path);
         void _do_truncate(const cardano::optional_point &new_tip, const bool track_changes);
+        std::string _add(const uint64_t offset, const std::string &local_path, buffer uncompressed, uint64_t compressed_size);
         void _add(chunk_info &&chunk, const bool normal=true);
         void _notify_of_updates(mutex::unique_lock &update_lk, bool force=false);
 

@@ -25,17 +25,17 @@ namespace turbo {
         if (override_dir) {
              if (install_dir_ok(*override_dir)) {
                  dir.emplace(*override_dir);
-                 std::cerr << fmt::format("DT_INIT: install dir: {} resolved using the binary-relative path\n", dir);
+                 std::cerr << fmt::format("DINIT: install dir: {} resolved using the binary-relative path\n", dir);
             }
         }
         if (!dir) {
             auto default_dir = std::filesystem::absolute(std::filesystem::current_path());
             if (!install_dir_ok(default_dir)) {
-                std::cerr << fmt::format("DT_INIT: cannot find required configuration files in {}\n", default_dir);
+                std::cerr << fmt::format("INIT: cannot find required configuration files in {}\n", default_dir);
                 std::terminate();
             }
             dir.emplace(std::move(default_dir));
-            std::cerr << fmt::format("DT_INIT: install dir: {} resolved using the current directory\n", dir);
+            std::cerr << fmt::format("INIT: install dir: {} resolved using the current directory\n", dir);
         }
         return *dir;
     }

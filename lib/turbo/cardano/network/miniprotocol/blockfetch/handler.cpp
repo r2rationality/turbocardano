@@ -106,7 +106,7 @@ namespace turbo::cardano::network::miniprotocol::blockfetch {
                 return _respond(send_func, msg_no_blocks_t {});
             _state = st_streaming_t {};
             ++end_it;
-            _send(send_func, [](const bool block_compression, auto &state, auto first_it, auto last_it) -> data_generator_t {
+            _send(send_func, [](const bool block_compression, auto &state, auto first_it, auto last_it, auto end_it) -> data_generator_t {
                 logger::info("blockfetch msg_start_batch");
                 {
                     cbor::encoder enc {};
@@ -116,8 +116,8 @@ namespace turbo::cardano::network::miniprotocol::blockfetch {
                 for (auto it = first_it; it != last_it; ) {
                     cbor::encoder enc {};
                     if (block_compression) {
-                        logger::info("blockfetch msg_compressed_blocks");
                         auto [chunk_rem_data, next_it] = it.chunk_remaining_data(last_it);
+                        logger::info("blockfetch msg_compressed_blocks from {} to {}", it->slot, next_it != end_it ? std::optional{next_it->slot} : std::nullopt);
                         msg_compressed_blocks_t { 1ULL, std::move(chunk_rem_data) }.to_cbor(enc);
                         it = next_it;
                     } else {
@@ -133,7 +133,7 @@ namespace turbo::cardano::network::miniprotocol::blockfetch {
                     co_yield std::move(enc.cbor());
                 }
                 state = st_idle_t {};
-            }(_cfg.block_compression, _state, from_it, end_it));
+            }(_cfg.block_compression, _state, from_it, end_it, _cr->cend()));
         }
 
         void _process_st_idle_msg(const buffer bytes, const protocol_send_func &send_func)

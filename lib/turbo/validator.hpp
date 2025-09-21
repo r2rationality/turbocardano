@@ -12,7 +12,8 @@ namespace turbo::cardano::ledger {
 }
 
 namespace turbo::validator {
-    static constexpr std::string_view validate_leaders_task { "validate-epoch" };
+    static constexpr std::string_view validate_task{"validate"};
+    static constexpr std::string_view validate_leaders_task{"validate-epoch"};
 
     struct snapshot {
         uint64_t epoch;

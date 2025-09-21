@@ -63,7 +63,7 @@ namespace turbo::cli::validate {
                 auto save_path = cr.full_path(chunk.rel_path());
                 sched.submit("parse", 0 + 100 * (_parse_progress.total - chunk.offset) / _parse_progress.total, [&cr, chunk, save_path]() {
                     try {
-                        cr.add(chunk.offset, save_path);
+                        cr.add_file(chunk.offset, save_path);
                     } catch (std::exception &ex) {
                         std::filesystem::path orig_path { save_path };
                         const auto debug_path = cr.full_path(fmt::format("error/{}", orig_path.filename().string()));

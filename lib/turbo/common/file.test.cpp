@@ -2,16 +2,20 @@
  * Copyright (c) 2024-2025 R2 Rationality OÜ (info at r2rationality dot com) */
 
 #include <turbo/common/test.hpp>
+#include <turbo/common/scope-exit.hpp>
 #include "logger.hpp"
 
-using namespace turbo;
+namespace {
+    using namespace turbo;
+}
 
 suite turbo_common_file_suite = [] {
     using boost::ext::ut::v2_1_0::nothrow;
     "turbo::common::file"_test = [] {
         "install_path"_test = [] {
-            expect_equal(std::filesystem::current_path().string(), file::install_path(""));
-            expect(throws([]{ file::set_install_path(""); }));
+            const auto orig_install_dir = file::install_path("");
+            expect_equal(std::filesystem::current_path().string(), orig_install_dir);
+            const scope_exit cleanup{[&]{ file::set_install_path_exact(orig_install_dir + ""); }};
             expect(throws([]{ file::set_install_path("/cli"); }));
             file::set_install_path("/bin/cli");
             expect_equal("/log", file::install_path("log"));

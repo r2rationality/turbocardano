@@ -557,15 +557,18 @@ namespace turbo::validator {
         void _schedule_validation(mutex::unique_lock &&next_task_lk, bool fast)
         {
             // move, so that it unlocks on stack unrolling
-            mutex::unique_lock lk { std::move(next_task_lk) };
+            mutex::unique_lock lk{std::move(next_task_lk)};
             bool exp_false = false;
             if (_validation_running.compare_exchange_strong(exp_false, true)) {
-                _cr.sched().submit("validate", 400, [this, fast] {
+                static const std::string task_name{validate_task};
+                const auto start_offset = _state.end_offset();
+                _cr.sched().submit(task_name, 400, [this, fast, start_offset] {
                     try {
-                        mutex::unique_lock lk2 { _next_task_mutex };
-                        while (_state.end_offset() < _next_end_offset && !_next_tasks.empty()) {
+                        mutex::unique_lock lk2{_next_task_mutex};
+                        if (_state.end_offset() != start_offset) [[unlikely]]
+                            throw error("the application of state has made unexpected progress");
+                        if (start_offset < _next_end_offset && !_next_tasks.empty()) {
                             logger::debug("acquired _next_task mutex and configuring the validation task");
-                            const auto start_offset = _state.end_offset();
                             const auto end_offset = _next_end_offset;
                             const auto tasks = _next_tasks;
                             _next_tasks.clear();
@@ -575,7 +578,7 @@ namespace turbo::validator {
                             _state.merge_same_epoch_subchains();
                             logger::debug("begin applying ledger state updates");
                             _apply_ledger_state_updates(tasks, ready_slices, fast);
-                            if (_state.end_offset() == start_offset)
+                            if (_state.end_offset() == start_offset) [[unlikely]]
                                 throw error("the application of state has failed to make any progress");
                             logger::debug("done applying ledger state updates, acquiring _next_task lock");
                             lk2.lock();
@@ -586,7 +589,7 @@ namespace turbo::validator {
                         _validation_running = false;
                         throw;
                     }
-                });
+                }, chunk_offset_t{start_offset});
             }
         }
 
@@ -695,13 +698,14 @@ namespace turbo::validator {
         {
             const auto first_epoch = tasks.begin()->first;
             const auto last_epoch = tasks.rbegin()->first;
-            timer t { fmt::format("validator::_apply_ledger_state_updates first_epoch: {} last_epoch: {} fast: {}", first_epoch, last_epoch, fast), logger::level::debug };
+            const timer t{fmt::format("validator::_apply_ledger_state_updates first_epoch: {} last_epoch: {} fast: {}", first_epoch, last_epoch, fast), logger::level::debug};
             // add extra snapshots closer to the tip since rollbacks are more likely there
             for (const auto &[e, slots]: tasks) {
-                timer te { fmt::format("apply ledger updates for epoch: {}", e) };
+                logger::debug("validator::_apply_ledger_state_updates: epoch: {} slots: {}-{}",
+                    e, _cr.make_slot(slots.min()).epoch_slot(), _cr.make_slot(slots.max()).epoch_slot());
                 try {
                     _apply_ledger_state_updates_for_epoch(e, slots, fast);
-                    logger::info("applied ledger updates for epoch: {} end offset: {} utxos: {}", _state.epoch(), _state.end_offset(), _state.utxos().size());
+                    logger::info("validator::_apply_ledger_state_updates: complete for epoch: {} end offset: {} utxos: {}", _state.epoch(), _state.end_offset(), _state.utxos().size());
                 } catch (const std::exception &ex) {
                     logger::error("failed to process epoch {} updates: {}", e, ex.what());
                     throw error(fmt::format("failed to process epoch {} updates: {}", e, ex.what()));
@@ -773,7 +777,7 @@ namespace turbo::validator {
                     const auto &uc_nonce = _state.vrf_state().uc_nonce();
                     const auto &uc_leader = _state.vrf_state().uc_leader();
                     static constexpr size_t batch_size = 250;
-                    static std::string task_name { validate_leaders_task };
+                    static const std::string task_name{validate_leaders_task};
                     for (size_t start = 0; start < vrf_updates_ptr->size(); start += batch_size) {
                         auto end = std::min(start + batch_size, vrf_updates_ptr->size());
                         _cr.sched().submit(task_name, -static_cast<int64_t>(epoch), [this, epoch, epoch_min_offset, vrf_updates_ptr, pool_dist_ptr, nonce_epoch, uc_nonce, uc_leader, start, end] {

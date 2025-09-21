@@ -15,9 +15,9 @@ namespace {
 }
 
 suite cardano_kes_bench_suite = [] {
-    auto vkey_data = file::read("./data/kes-vkey.bin");
-    auto sig_data = file::read("./data/kes-sig.bin");
-    auto msg_data = file::read("./data/kes-msg.bin");
+    auto vkey_data = file::read("./data/kes-vkey.bin"sv);
+    auto sig_data = file::read("./data/kes-sig.bin"sv);
+    auto msg_data = file::read("./data/kes-msg.bin"sv);
     "kes"_test = [&] {
         benchmark("kes/create+verify",
             [&] {

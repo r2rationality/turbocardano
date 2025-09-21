@@ -194,9 +194,16 @@ namespace turbo::cli {
         config cfg {};
     };
 
-    using global_options_proc_t = std::function<void(const options &)>;
 
-    extern int run(int argc, const char **argv, const std::optional<global_options_proc_t> &global_opts_f={});
+    struct global_options_t {
+        using proc_t = std::function<void(const options &)>;
+
+        option_config_map opts;
+        proc_t proc;
+    };
+
+
+    extern int run(int argc, const char **argv, const std::optional<global_options_t> &global_opts={});
 
     template<typename T>
     T from_str(const char *str)
@@ -207,5 +214,15 @@ namespace turbo::cli {
         if (errno || end == str || *end != '\0') [[unlikely]]
             throw error_sys(fmt::format("failed to parse {} from '{}'", typeid(T).name(), str));
         return numeric_cast<T>(val);
+    }
+
+    template<typename T>
+    T from_str(const std::string_view str)
+    {
+        T value;
+        const auto [ptr, ec] = std::from_chars(str.data(), str.data() + str.size(), value);
+        if (ec != std::errc() || ptr != str.data() + str.size()) [[unlikely]]
+            throw error(fmt::format("failed to parse {} from '{}'", str, typeid(T).name()));
+        return value;
     }
 }

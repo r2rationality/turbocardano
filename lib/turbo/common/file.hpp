@@ -251,6 +251,13 @@ namespace turbo::file {
         return buf;
     }
 
+    inline uint8_vector read(const std::filesystem::path &path)
+    {
+        uint8_vector buf {};
+        read(path.string(), buf);
+        return buf;
+    }
+
     inline uint8_vector read_all(const std::span<const std::string> &paths)
     {
         uint8_vector data {};
@@ -269,7 +276,19 @@ namespace turbo::file {
         is.read(v.data(), v.size());
     }
 
-    inline void write(const std::string &path, const buffer &buffer) {
+    inline void write(const std::string &path, const buffer &buffer)
+    {
+        const auto tmp_path = fmt::format("{}.tmp", path);
+        {
+            write_stream os { tmp_path };
+            os.write(buffer.data(), buffer.size());
+        }
+        std::filesystem::rename(tmp_path, path);
+    }
+
+    inline void write(const std::filesystem::path &p, const buffer &buffer)
+    {
+        const auto path = p.string();
         const auto tmp_path = fmt::format("{}.tmp", path);
         {
             write_stream os { tmp_path };
@@ -326,6 +345,7 @@ namespace turbo::file {
     using path_str_list = std::vector<std::string>;
 
     extern void set_install_path(std::string_view bin_path);
+    extern void set_install_path_exact(const std::filesystem::path &p);
     extern std::string install_path(std::string_view rel_path);
     extern path_str_list files_with_ext(const std::string_view &dir, const std::string_view &ext);
     extern path_list files_with_ext_path(const std::string_view &dir, const std::string_view &ext);

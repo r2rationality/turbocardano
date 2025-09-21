@@ -665,12 +665,21 @@ namespace turbo::cardano::ledger::shelley {
         auto collected_collateral = _process_timed_updates(std::move(updates.timed));
         _process_utxo_updates(std::move(updates.utxos));
         _process_collateral_use(std::move(collected_collateral));
-        run_pulser_if_ready();
+        // temporarily disabling as reapplying partial epoch updates after rewards computation is unstable now
+        // run_pulser_if_ready();
     }
 
     void state::run_pulser_if_ready()
     {
-        if (_params.protocol_ver.major >= 2 && _epoch_slot >= _cfg.shelley_rewards_ready_slot && !_rewards_ready)
+        const auto run = _params.protocol_ver.major >= 2 && _epoch_slot >= _cfg.shelley_rewards_ready_slot && !_rewards_ready;
+        logger::debug("checking whether rewards pulser shall be run: {}, epoch: {}  epoch_slot: {} protocol_ver: {} rewards_ready: {}",
+            run ? "yes" : "no",
+            _epoch,
+            _epoch_slot,
+            _params.protocol_ver,
+            _rewards_ready
+        );
+        if (run)
             _compute_rewards();
     }
 
@@ -963,6 +972,7 @@ namespace turbo::cardano::ledger::shelley {
 
     void state::start_epoch(std::optional<uint64_t> new_epoch)
     {
+        logger::debug("state::start_epoch: prev_epoch: {} new_epoch: {}", _epoch, new_epoch);
         run_pulser_if_ready();
         if (!new_epoch) {
             // increment the epoch only if seen some data
@@ -1007,9 +1017,7 @@ namespace turbo::cardano::ledger::shelley {
             _delta_fees = _fees_next_reward;
             _fees_next_reward = 0;
             _pulsing_snapshot_slot = cardano::slot::from_epoch(_epoch, _cfg) + _cfg.shelley_randomness_stabilization_window;
-
-            const auto [ refunds_user, refunds_treasury ] = _retire_pools();
-
+            const auto [refunds_user, refunds_treasury] = _retire_pools();
             logger::debug("epoch {} start: treasury: {} reserves: {} user refunds: {} treasury refunds: {}",
                 _epoch, cardano::amount { _treasury }, cardano::amount { _reserves },
                 cardano::amount { refunds_user }, cardano::amount { refunds_treasury });

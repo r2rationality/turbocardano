@@ -83,12 +83,12 @@ elseif(CMAKE_BUILD_TYPE STREQUAL Coverage)
         find_program(LLVM_COV NAMES llvm-cov llvm-cov-18 llvm-cov-17 REQUIRED)
         add_custom_target(coverage
             COMMENT "Running test coverage ..."
-            COMMAND $<TARGET_FILE:run-test> ${COVERAGE_ARGS}
+            COMMAND $<TARGET_FILE:tada-test> ${COVERAGE_ARGS}
             COMMAND echo "Indexing raw profdata"
-            COMMAND ${LLVM_PROFDATA} merge -sparse default.profraw -o run-test.profdata
+            COMMAND ${LLVM_PROFDATA} merge -sparse default.profraw -o tada-test.profdata
             COMMAND echo "Generating coverage report into tmp/coverage"
-            COMMAND ${LLVM_COV} show -show-branches=percent -ignore-filename-regex=lib/dt/cli -ignore-filename-regex=3rdparty/ -format=html -output-dir=tmp/coverage $<TARGET_FILE:run-test> -instr-profile=run-test.profdata
-            DEPENDS run-test
+            COMMAND ${LLVM_COV} show -show-branches=percent -ignore-filename-regex=lib/turbo/cli -ignore-filename-regex=3rdparty/ -format=html -output-dir=tmp/coverage $<TARGET_FILE:tada-test> -instr-profile=tada-test.profdata
+            DEPENDS tada-test
             WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
         )
     else()
@@ -114,30 +114,30 @@ add_subdirectory(3rdparty)
 add_subdirectory(lib)
 target_link_libraries(lib PUBLIC 3rdparty 3rdparty-cpp)
 
-add_executable(dt src/dt.cpp)
+add_executable(tada src/tada.cpp)
 
 set(CMAKE_INSTALL_SYSTEM_RUNTIME_LIBS_SKIP TRUE)
 include(InstallRequiredSystemLibraries)
 install(PROGRAMS ${CMAKE_INSTALL_SYSTEM_RUNTIME_LIBS} DESTINATION bin)
-install(TARGETS dt RUNTIME DESTINATION bin)
+install(TARGETS tada RUNTIME DESTINATION bin)
 install(DIRECTORY etc/ DESTINATION etc)
 if (WIN32)
     if (MINGW)
-        add_custom_command(TARGET dt POST_BUILD COMMAND ldd ${CMAKE_BINARY_DIR}/dt.exe | awk '{ print $$3 }' | grep -vi system > ${CMAKE_BINARY_DIR}/dlls.txt)
-        add_custom_command(TARGET dt POST_BUILD COMMAND cygpath -w -f ${CMAKE_BINARY_DIR}/dlls.txt > ${CMAKE_BINARY_DIR}/dlls-win-path.txt)
+        add_custom_command(TARGET tada POST_BUILD COMMAND ldd ${CMAKE_BINARY_DIR}/tada.exe | awk '{ print $$3 }' | grep -vi system > ${CMAKE_BINARY_DIR}/dlls.txt)
+        add_custom_command(TARGET tada POST_BUILD COMMAND cygpath -w -f ${CMAKE_BINARY_DIR}/dlls.txt > ${CMAKE_BINARY_DIR}/dlls-win-path.txt)
         install(CODE [[
-            file(READ $<TARGET_FILE_DIR:dt>/dlls-win-path.txt DLLS)
+            file(READ $<TARGET_FILE_DIR:tada>/dlls-win-path.txt DLLS)
             string(REPLACE "\n" ";" DLLS_LIST ${DLLS})
             file(COPY ${DLLS_LIST} DESTINATION $<INSTALL_PREFIX>/bin)
         ]])
     else()
         file(TO_NATIVE_PATH ${CMAKE_BINARY_DIR} BIN_DIR_WIN)
-        add_custom_command(TARGET dt POST_BUILD COMMAND dir /b ${BIN_DIR_WIN}\\*.dll > ${BIN_DIR_WIN}\\dlls.txt COMMAND_EXPAND_LISTS)
+        add_custom_command(TARGET tada POST_BUILD COMMAND dir /b ${BIN_DIR_WIN}\\*.dll > ${BIN_DIR_WIN}\\dlls.txt COMMAND_EXPAND_LISTS)
         install(CODE [[
-            file(READ $<TARGET_FILE_DIR:dt>/dlls.txt DLLS)
+            file(READ $<TARGET_FILE_DIR:tada>/dlls.txt DLLS)
             string(REPLACE "\n" ";" DLLS_LIST ${DLLS})
             foreach(lib ${DLLS_LIST})
-                LIST(APPEND DLLS_WITH_PATH "$<TARGET_FILE_DIR:dt>/${lib}")
+                LIST(APPEND DLLS_WITH_PATH "$<TARGET_FILE_DIR:tada>/${lib}")
             endforeach()
             file(COPY ${DLLS_WITH_PATH} DESTINATION $<INSTALL_PREFIX>/bin)
         ]])
@@ -152,12 +152,12 @@ foreach(ITEST_SRC IN LISTS ITEST_SRCS)
 endforeach()
 
 file(GLOB_RECURSE TEST_SRCS lib/turbo/*.test.cpp)
-add_executable(run-test src/run-test.cpp ${TEST_SRCS})
+add_executable(tada-test src/run-test.cpp ${TEST_SRCS})
 
 file(GLOB_RECURSE BENCH_SRCS lib/turbo/*.bench.cpp)
-add_executable(run-bench src/run-test.cpp ${BENCH_SRCS})
+add_executable(tada-bench src/run-test.cpp ${BENCH_SRCS})
 
-foreach(EXE dt run-test run-bench)
+foreach(EXE tada tada-test tada-bench)
     if (WIN32)
         if(CMAKE_BUILD_TYPE STREQUAL "Debug")
             set(MIMALLOC_DLLNAME "mimalloc-debug.dll")
@@ -187,8 +187,8 @@ message("copying test data")
 file(COPY data DESTINATION .)
 
 if(CMAKE_BUILD_TYPE STREQUAL Fuzzer)
-    file(GLOB_RECURSE FUZZ_SRCS lib/dt/*.fuzz.cpp)
-    cmake_path(SET FUZZ_BASE_DIR NORMALIZE "./lib/dt")
+    file(GLOB_RECURSE FUZZ_SRCS lib/turbo/*.fuzz.cpp)
+    cmake_path(SET FUZZ_BASE_DIR NORMALIZE "./lib/turbo")
     cmake_path(ABSOLUTE_PATH FUZZ_BASE_DIR)
     message("fuzz base dir ${FUZZ_BASE_DIR}")
     foreach(FUZZ_SRC IN LISTS FUZZ_SRCS)

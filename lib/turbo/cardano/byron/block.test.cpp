@@ -149,7 +149,7 @@ suite cardano_byron_suite = [] {
         };
 
         "validate signature based from block CBOR"_test = [] {
-            auto buf = file::read("./data/block-slot-1.bin");
+            auto buf = file::read("./data/block-slot-1.bin"sv);
             auto block_tuple = cbor::zero2::parse(buf);
             auto &it = block_tuple.get().array();
             const byron::block blk { it.read().uint(), 0, 2, it.read(), cardano::config::get() };

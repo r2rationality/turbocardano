@@ -4,17 +4,18 @@
  * This code is distributed under the license specified in:
  * https://github.com/sierkov/daedalus-turbo/blob/main/LICENSE */
 
-#ifdef MI_OVERRIDE
-#   include <mimalloc-new-delete.h>
-#endif
-#include <../lib/turbo/common/cli.hpp>
+#include <turbo/common/test.hpp>
+#include "base.hpp"
 
-int main(const int argc, const char **argv)
-{
-#ifdef MI_OVERRIDE
-    std::cerr << "DT_INIT: mimalloc " << mi_version() << '\n';
-#endif
+namespace {
     using namespace turbo;
-    consider_bin_dir(argv[0]);
-    return cli::run(argc, argv);
+    using namespace turbo::sync;
 }
+
+suite turbo_sync_base_suite = [] {
+    "turbo::sync::base"_test = [] {
+        optional_progress_point target{};
+        expect_equal(false, optional_point{} < target);
+        expect_equal(false, optional_point{point{{}, 0U}} < target);
+    };
+};

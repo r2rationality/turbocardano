@@ -63,9 +63,9 @@ suite cardano_vrf_suite = [] {
         };
 
         "verify-praos-leader-vrf"_test = [&] {
-            auto vkey = file::read("./data/vrf-vkey.bin");
-            auto proof = file::read("./data/vrf-leader-proof.bin");
-            auto result = file::read("./data/vrf-leader-result.bin");
+            auto vkey = file::read("./data/vrf-vkey.bin"sv);
+            auto proof = file::read("./data/vrf-leader-proof.bin"sv);
+            auto result = file::read("./data/vrf-leader-result.bin"sv);
         
             uint64_t slot = 4492800;
             auto uc_nonce = uint8_vector::from_hex("12dd0a6a7d0e222a97926da03adb5a7768d31cc7c5c2bd6828e14a7d25fa3a60");
@@ -75,9 +75,9 @@ suite cardano_vrf_suite = [] {
         };
 
         "verify-praos-nonce-vrf"_test = [&] {
-            auto vkey = file::read("./data/vrf-vkey.bin");
-            auto proof = file::read("./data/vrf-nonce-proof.bin");
-            auto result = file::read("./data/vrf-nonce-result.bin");
+            auto vkey = file::read("./data/vrf-vkey.bin"sv);
+            auto proof = file::read("./data/vrf-nonce-proof.bin"sv);
+            auto result = file::read("./data/vrf-nonce-result.bin"sv);
             uint64_t slot = 4492800;
             auto uc_nonce = uint8_vector::from_hex("81e47a19e6b29b0a65b9591762ce5143ed30d0261e5d24a3201752506b20f15c");
             auto epoch_nonce = uint8_vector::from_hex("1a3be38bcbb7911969283716ad7aa550250226b76a61fc51cc9a9a35d9276d81");
@@ -86,7 +86,7 @@ suite cardano_vrf_suite = [] {
         };
 
         "vrf-nonce-from-vrf-result"_test = [] {
-            auto vrf_out = file::read("./data/vrf-nonce-result.bin");
+            auto vrf_out = file::read("./data/vrf-nonce-result.bin"sv);
             expect(vrf_out.size() == 64) << vrf_out.size();
             auto eta_exp = uint8_vector::from_hex("44ce562e2e41da07693b78411c39f68999a1ba0c46f5144f1fab42889edf6311");
             auto eta = crypto::blake2b::digest(vrf_out);
@@ -172,7 +172,7 @@ suite cardano_vrf_suite = [] {
         };*/
 
         "vrf leader-eligibility"_test = [&] {
-            auto result = file::read("./data/vrf2-leader-result.bin");
+            auto result = file::read("./data/vrf2-leader-result.bin"sv);
             expect(result.size() == 64_u);
             rational_u64 leader_stake_rel { 124'225'808'029'661, 17'260'167'504'454'384 };
             expect(vrf_leader_is_eligible(result, 0.05, leader_stake_rel));

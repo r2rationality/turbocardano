@@ -26,7 +26,7 @@ suite validator_suite = [] {
             chunk_registry cr { data_dir, chunk_registry::mode::validate, cardano::config { chain1.cfg } };
             expect_equal(cr.valid_end_offset(), 0);
             const auto ex_ptr = cr.accept_progress({}, chain1.tip, [&] {
-                cr.add(0, chunk1_path);
+                cr.add_file(0, chunk1_path);
             });
             expect(!ex_ptr);
             expect(cr.valid_end_offset() == chain1.data.size()) << cr.valid_end_offset();
@@ -41,7 +41,7 @@ suite validator_suite = [] {
             expect(cr.valid_end_offset() == 0_ull);
             const auto ex_ptr = cr.accept_progress({}, chain1.tip, [&] {
                 throw error("some failure, rollback now");
-                cr.add(0, chunk1_path);
+                cr.add_file(0, chunk1_path);
             });
             expect(static_cast<bool>(ex_ptr));
             expect(cr.valid_end_offset() == 0_ull);
@@ -55,7 +55,7 @@ suite validator_suite = [] {
             chunk_registry cr { data_dir, chunk_registry::mode::validate, cardano::config { chain1.cfg } };
             expect(cr.valid_end_offset() == 0_ull);
             const auto ex_ptr = cr.accept_progress({}, chain1.tip, [&] {
-                cr.add(0, chunk1_path);
+                cr.add_file(0, chunk1_path);
                 throw error("some failure, rollback now");
             });
             expect(!ex_ptr);
@@ -71,7 +71,7 @@ suite validator_suite = [] {
             chunk_registry cr { data_dir, chunk_registry::mode::validate, cardano::config { chain1.cfg } };
             expect(cr.valid_end_offset() == 0_ull);
             const auto ex_ptr = cr.accept_progress({}, chain1.tip, [&] {
-                cr.add(0, chunk1_path);
+                cr.add_file(0, chunk1_path);
             });
             expect(!ex_ptr);
             expect(cr.num_blocks() == failure_height) << cr.num_blocks();

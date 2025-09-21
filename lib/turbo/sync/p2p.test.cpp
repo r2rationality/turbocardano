@@ -83,12 +83,17 @@ suite sync_p2p_suite = [] {
             sync::p2p::syncer s { cr, ps, ccm };
             const auto peer_ptr = s.find_peer();
             auto &peer = dynamic_cast<sync::p2p::peer_info &>(*peer_ptr);
-            expect(!!peer.tip());
-            if (peer.tip()) {
-                expect(peer.tip()->slot > 0);
-                expect(peer.tip()->height > 0);
-            }
+            expect(peer.tip().slot > 0);
+            expect(peer.tip().height > 0);
             expect(!peer.intersection());
+        };
+        "random failures"_test = [&] {
+            cardano_client_manager_mock ccm_rf{good_chain.data, 0.20};
+            std::filesystem::remove_all(data_dir);
+            chunk_registry cr{data_dir, chunk_registry::mode::validate, ccfg};
+            p2p::syncer s{cr, ps, ccm_rf};
+            expect(s.sync(s.find_peer()));
+            expect_equal(cr.num_blocks(), 9);
         };
     };
 };

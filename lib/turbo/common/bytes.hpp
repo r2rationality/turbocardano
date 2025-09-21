@@ -301,7 +301,7 @@ namespace turbo {
         throw error(fmt::format("unexpected character in a hex number: {}!", k));
     }
 
-    inline void init_from_hex(std::span<uint8_t> out, const std::string_view hex)
+    inline void init_from_hex_no_prefix(std::span<uint8_t> out, const std::string_view hex)
     {
         if (hex.size() != out.size() * 2) [[unlikely]]
             throw error(fmt::format("hex string must have {} characters but got {}: {}!", out.size() * 2, hex.size(), hex));
@@ -309,17 +309,26 @@ namespace turbo {
             out[i] = uint_from_hex_hi(hex[i * 2]) | uint_from_hex(hex[i * 2 + 1]);
     }
 
+    inline void init_from_hex(std::span<uint8_t> out, std::string_view hex)
+    {
+        if (hex.starts_with("0x"))
+            hex = hex.substr(2);
+        init_from_hex_no_prefix(out, hex);
+    }
+
     struct uint8_vector: std::vector<uint8_t> {
         using base_type = std::vector<uint8_t>;
         using base_type::base_type;
 
         template<typename C=uint8_vector>
-        static C from_hex(const std::string_view hex)
+        static C from_hex(std::string_view hex)
         {
+            if (hex.starts_with("0x"))
+                hex = hex.substr(2);
             if (hex.size() % 2 != 0) [[unlikely]]
                 throw error(fmt::format("hex string must have an even number of characters but got {}!", hex.size()));
             C data(hex.size() / 2);
-            init_from_hex(data, hex);
+            init_from_hex_no_prefix(data, hex);
             return data;
         }
 

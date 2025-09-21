@@ -51,6 +51,7 @@ namespace turbo::cli::test_ledger_export {
                         logger::info("truncating the local chain to {}", new_tip);
                         cr.truncate(new_tip);
                     }
+                    cr.maintenance();
                     if (const auto tip = cr.tip(); !tip || tip->slot < epoch_last_slot - 200) {
                         std::optional<cardano::network::address> addr {};
                         if (host)
