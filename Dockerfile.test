@@ -39,4 +39,4 @@ COPY --from=builder /home/dev/tada/build/tada /opt/tada/bin/tada
 COPY --from=builder /home/dev/tada/etc /opt/tada/etc
 RUN mkdir data log
 ENV TURBO_LOG_PATH=/opt/tada/log/tada.log
-ENTRYPOINT [ "/opt/tada/bin/tada" ]
+ENTRYPOINT [ "/opt/tada/bin/docker-start.sh" ]
