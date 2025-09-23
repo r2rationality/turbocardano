@@ -33,7 +33,7 @@ namespace turbo::sync {
 
         bool sync(peer_info &peer, cardano::optional_slot max_slot, const validation_mode_t mode)
         {
-            logger::info("attempting to sync with {} with the tip {}", peer.id(), peer.tip());
+            logger::info("attempting to sync with {} with the tip {}; validation mode: {}", peer.id(), peer.tip(), mode);
             const auto start_tip = _cr.tip();
             static constexpr size_t max_retries = 3;
             const auto peer_tip = point::from_point3(peer.tip());

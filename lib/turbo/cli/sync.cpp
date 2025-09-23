@@ -21,6 +21,7 @@ namespace turbo::cli::sync_p2p {
             cmd.opts.emplace("max-slot", "do not synchronize beyond this slot");
             cmd.opts.emplace("peer-host", "a Cardano Network host to connect to");
             cmd.opts.try_emplace("peer-port", "a TCP port to use for connecting to a Cardano Network peer", "3001");
+            cmd.opts.try_emplace("validation", "validation mode to use: none, turbo, full", "turbo");
             cmd.opts.emplace("version-min", "a minimum Cardano protocol version to request");
             cmd.opts.emplace("version-max", "a maximum Cardano protocol version to request");
         }
@@ -45,10 +46,10 @@ namespace turbo::cli::sync_p2p {
                 logger::info("max_slot: {}", slot{*max_slot, cardano::config::get()});
             if (addr)
                 logger::info("addr: {}", *addr);
-            chunk_registry cr { data_dir };
-            sync::p2p::syncer syncer { cr };
+            chunk_registry cr{data_dir};
+            sync::p2p::syncer syncer{cr};
             const auto peer = syncer.find_peer(addr, versions);
-            syncer.sync(peer, max_slot);
+            syncer.sync(peer, max_slot, sync::validation_mode_from_text(opts.at("validation").value()));
         }
     };
     static auto instance = command::reg(std::make_shared<cmd>());
