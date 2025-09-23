@@ -27,11 +27,13 @@ RUN cmake -B build -GNinja
 RUN cmake --build build -j -t tada
 
 FROM ubuntu:24.04
-RUN apt-get update
-RUN apt-get install -y libboost-json1.83.0 libboost-container1.83.0 libboost-coroutine1.83.0 libboost-context1.83.0 \
+RUN apt-get  update
+RUN apt-get install -y sudo libboost-json1.83.0 libboost-container1.83.0 libboost-coroutine1.83.0 libboost-context1.83.0 \
     libboost-url1.83.0 libboost-thread1.83.0 libboost-atomic1.83.0 libboost-stacktrace1.83.0 \
     libfmt9 libspdlog1.12 libzstd1 libssl3t64 libsodium23 libatomic1 libnuma1 libsecp256k1-1 libbotan-2-19
-RUN useradd -m -s /bin/bash -d /opt/tada tada
+RUN cp /etc/sudoers /etc/sudoers.orig
+RUN awk '{ if (/^%sudo/) { print "%sudo\tALL=(ALL:ALL) NOPASSWD:ALL" } else { print } }' /etc/sudoers.orig > /etc/sudoers
+RUN useradd -m -s /bin/bash -d /opt/tada -G sudo tada
 USER tada
 WORKDIR /opt/tada
 COPY --chmod=0755 docker-test.sh /opt/tada/bin/docker-start.sh
