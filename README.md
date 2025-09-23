@@ -100,78 +100,64 @@ Build the test Docker container:
 docker build -t tada -f Dockerfile.test .
 ```
 
-Start the test container, with `<turbo-dir>` being the host's directory to store the blockchain data:
-```
-docker run -it --rm -v <turbo-dir>:/data tada
-```
-
-All the following commands are to be run within the container started by the previous command.
+> **Notes:**
+> - In all the following commands:
+>   - `<turbo-dir>` to be replaced with the host's directory to store blockchain data.
+>   - `<turbo-ip>` to be replaced with the IP address of a server that supports [CIP 0150 – Block Data Compression](https://github.com/cardano-foundation/CIPs/tree/master/CIP-0150).
+> - The current bootstrap nodes **do not yet support CIP-0150**.  
+>   As a result, sync from a bootstrap server will be **four-to-five times slower** than it can be once compression is enabled in the future.
+> - An example of how to launch the experimental service supporting **CIP-0150** is provided below. 
 
 Download, validate, and prepare for querying a copy of the Cardano blockchain from Cardano bootstrap nodes:
 ```
-./tada sync /data/cardano --max-slot=150877935
+docker run -it --rm -v <turbo-dir>:/data tada sync --max-epoch=544 /data
 ```
-
-> **Notes:**  
-> - The current bootstrap nodes **do not yet support** [CIP 0150 – Block Data Compression](https://github.com/cardano-foundation/CIPs/tree/master/CIP-0150).  
->   As a result, downloads will be **several times slower** than they will be once compression is enabled in the future.
-> - Cardano network peers may sometimes terminate connections unexpectedly.
->   If your download or synchronization is interrupted, simply re-run the command.
->   You may need to repeat this process several times to complete the operation.
 
 Show information about the local chain's tip:
 ```
-./tada tip /data/cardano
+docker run -it --rm -v <turbo-dir>:/data tada tip /data
 ```
 
-Start the experimental Node server with block data compression enabled, listening on 127.0.0.1:3001:
+(Optional) Start the experimental Node server with block data compression enabled, listening on 0.0.0.0:3001:
 ```
-TURBO_LOG_PATH=/data/server.log ./tada node-api /data/cardano &> /dev/null &
-```
-
-Re-download all data from the local server started by the previous command (with compression enabled):
-```
-./tada sync /data/cardano2 --peer-host=127.0.0.1
+docker run -it --rm -p 3001:3001 -v <turbo-dir>:/data tada node-api /data --peer-ip=0.0.0.0
 ```
 
-Compare the tip:
+(Optional) Re-download blockchain data from the experimental server started in the previous command (with compression enabled), where:
+- ```<turbo-ip>``` to be replaced with the public IP address of the server started in the previous command.
+
 ```
-./tada tip /data/cardano2
+docker run -it --rm -v <turbo-dir>:/data sync /data --peer-host=<turbo-ip>
 ```
 
 Reconstruct the latest balance and transaction history of a stake key:
 ```
-./tada stake-history /data/cardano stake1uxw70wgydj63u4faymujuunnu9w2976pfeh89lnqcw03pksulgcrg
+docker run -it --rm -v <turbo-dir>:/data stake-history /data stake1uxw70wgydj63u4faymujuunnu9w2976pfeh89lnqcw03pksulgcrg
 ```
 
 Reconstruct the latest balance and transaction history of a payment key:
 ```
-./tada pay-history /data/cardano addr1q86j2ywajjgswgg6a6j6rvf0kzhhrqlma7ucx0f2w0v7stuau7usgm94re2n6fhe9ee88c2u5ta5znnwwtlxpsulzrdqv6rmuj
+docker run -it --rm -v <turbo-dir>:/data pay-history /data addr1q86j2ywajjgswgg6a6j6rvf0kzhhrqlma7ucx0f2w0v7stuau7usgm94re2n6fhe9ee88c2u5ta5znnwwtlxpsulzrdqv6rmuj
 ```
 
 Show information about a transaction:
 ```
-./tada tx-info /data/cardano 357D47E9916B7FE949265F23120AEED873B35B97FB76B9410C323DDAB5B96D1A
+docker run -it --rm -v <turbo-dir>:/data tx-info /data 357D47E9916B7FE949265F23120AEED873B35B97FB76B9410C323DDAB5B96D1A
 ```
 
 Evaluate a Plutus script and show its result and costs:
 ```
-./tada plutus-eval ../data/plutus/conformance/example/factorial/factorial.uplc
+docker run -it --rm -v <turbo-dir>:/data plutus-eval ../data/plutus/conformance/example/factorial/factorial.uplc
 ```
 
 (Optional) Revalidate consensus since genesis for benchmark purposes:
 ```
-./tada revalidate /data/cardano
+docker run -it --rm -v <turbo-dir>:/data revalidate /data/cardano
 ```
 
 (Optional) Revalidate transaction witnesses since genesis for benchmark purposes:
 ```
-./tada txwit-all /data/cardano
-```
-
-(Optional) Synchronize the local chain from a Cardano Network node (slower since Cardano network protocol lacks compression):
-```
-./tada sync-p2p /data/cardano
+docker run -it --rm -v <turbo-dir>:/data txwit-all /data/cardano
 ```
 
 # Spread the word
