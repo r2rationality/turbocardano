@@ -35,11 +35,11 @@ namespace turbo {
     void expect_close(const T &exp, const T &act, T eps=1e-4, const reflection::source_location &loc=reflection::source_location::current())
     {
         if (exp) {
-            const auto e = std::fabs(act - exp) / act;
-            expect(e <= eps, loc) << fmt::format("eps {} is too big for {} and {}", e, exp, act);
+            const auto e = std::fabs(act - exp) / std::fabs(exp);
+            expect(e <= eps, loc) << fmt::format("relative error {} exceeds eps {} for exp={} act={}", e, eps, exp, act);
         } else {
             const auto d = std::fabs(act - exp);
-            expect(d <= eps, loc) << fmt::format("delta {} is too big for {} and {}", d, exp, act);
+            expect(d <= eps, loc) << fmt::format("absolute error {} exceeds eps {} for exp={} act={}", d, eps, exp, act);
         }
     }
 

@@ -54,7 +54,8 @@ namespace fmt {
     };
 
     template <typename T>
-    concept not_serializable_derived_from_base = derived_from_base<T> && turbo::codec::not_serializable_c<T>;
+    concept not_serializable_derived_from_base = derived_from_base<T>
+        && !turbo::codec::archive_formattable_c<T>;
 
     template<>
     struct formatter<std::span<const uint8_t>>: formatter<int> {
@@ -72,7 +73,7 @@ namespace fmt {
     struct formatter<char[SZ]>: formatter<int> {
         template<typename FormatContext>
         auto format(const char v[SZ], FormatContext &ctx) const -> decltype(ctx.out()) {
-            return fmt::format_to(ctx.out(), "{}", std::string_view { v, SZ });
+            return fmt::format_to(ctx.out(), "{}", std::string_view{v, strnlen(v, SZ)});
         }
     };
 
@@ -90,7 +91,7 @@ namespace fmt {
         auto format(const auto &v, FormatContext &ctx) const -> decltype(ctx.out()) {
             auto out_it = fmt::format_to(ctx.out(), "[");
             for (auto it = v.begin(); it != v.end(); ++it) {
-                const std::string sep { std::next(it) == v.end() ? "" : ", " };
+                const char *sep = std::next(it) == v.end() ? "" : ", ";
                 out_it = fmt::format_to(out_it, "{}{}", *it, sep);
             }
             return fmt::format_to(out_it, "]");
@@ -103,7 +104,7 @@ namespace fmt {
         auto format(const auto &v, FormatContext &ctx) const -> decltype(ctx.out()) {
             auto out_it = fmt::format_to(ctx.out(), "[");
             for (auto it = v.begin(); it != v.end(); ++it) {
-                const std::string sep { std::next(it) == v.end() ? "" : ", " };
+                const char *sep = std::next(it) == v.end() ? "" : ", ";
                 out_it = fmt::format_to(out_it, "{}{}", *it, sep);
             }
             return fmt::format_to(out_it, "]");
@@ -116,7 +117,7 @@ namespace fmt {
         auto format(const auto &v, FormatContext &ctx) const -> decltype(ctx.out()) {
             auto out_it = fmt::format_to(ctx.out(), "[");
             for (auto it = v.begin(); it != v.end(); ++it) {
-                const std::string sep { std::next(it) == v.end() ? "" : ", " };
+                const char *sep = std::next(it) == v.end() ? "" : ", ";
                 out_it = fmt::format_to(out_it, "{}{}", *it, sep);
             }
             return fmt::format_to(out_it, "]");
@@ -129,7 +130,7 @@ namespace fmt {
         auto format(const auto &v, FormatContext &ctx) const -> decltype(ctx.out()) {
             auto out_it = fmt::format_to(ctx.out(), "{{");
             for (auto it = v.begin(); it != v.end(); ++it) {
-                const std::string sep { std::next(it) == v.end() ? "" : ", " };
+                const char *sep = std::next(it) == v.end() ? "" : ", ";
                 out_it = fmt::format_to(out_it, "{}={}{}", it->first, it->second, sep);
             }
             return fmt::format_to(out_it, "}}");

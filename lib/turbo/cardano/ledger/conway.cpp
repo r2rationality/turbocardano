@@ -4,6 +4,7 @@
  * This code is distributed under the license specified in:
  * https://github.com/sierkov/daedalus-turbo/blob/main/LICENSE */
 
+#include <algorithm>
 #include <boost/beast/http/status.hpp>
 #include <turbo/cardano/ledger/conway.hpp>
 #include <turbo/cardano/ledger/updates.hpp>
@@ -24,6 +25,31 @@ namespace turbo::cardano::ledger::conway {
         return const_cast<decltype(map.at(key))>(map_nice_at(const_cast<const M &>(map), key));
     }
 
+    static bool _prev_action_as_expected(const gov_action_t &, const enact_state_t &);
+
+    static std::string _gov_action_label(const gov_action_t &ga)
+    {
+        return std::visit<std::string>([](const auto &v) {
+            using T = std::decay_t<decltype(v)>;
+            if constexpr (std::is_same_v<T, gov_action_t::parameter_change_t>)
+                return "parameter_change";
+            if constexpr (std::is_same_v<T, gov_action_t::hard_fork_init_t>)
+                return "hard_fork";
+            if constexpr (std::is_same_v<T, gov_action_t::treasury_withdrawals_t>)
+                return "treasury_withdrawals";
+            if constexpr (std::is_same_v<T, gov_action_t::no_confidence_t>)
+                return "no_confidence";
+            if constexpr (std::is_same_v<T, gov_action_t::update_committee_t>)
+                return "update_committee";
+            if constexpr (std::is_same_v<T, gov_action_t::new_constitution_t>)
+                return "new_constitution";
+            if constexpr (std::is_same_v<T, gov_action_t::info_action_t>)
+                return "info";
+            throw error(fmt::format("unsupported gov action type: {}", typeid(T).name()));
+            return "unsupported";
+        }, ga.val);
+    }
+
     vrf_state::vrf_state(babbage::vrf_state &&o): babbage::vrf_state { std::move(o) }
     {
         _max_epoch_slot = _cfg.shelley_epoch_length - _cfg.shelley_randomness_stabilization_window;
@@ -38,25 +64,39 @@ namespace turbo::cardano::ledger::conway {
                 enc.array(2);
                 enc.uint(0);
                 v.to_cbor(enc);
+            } else if constexpr (std::is_same_v<T, resigned_t>) {
+                enc.array(2);
+                enc.uint(1);
+                v.anchor.to_cbor(enc);
             } else {
                 throw error(fmt::format("unsupported hot_key_t value: {}", typeid(T).name()));
             }
         }, val);
     }
 
-    size_t committee_t::active_size(const member_key_map &hot_keys) const
+    size_t committee_t::active_size(const member_key_map &hot_keys, const uint64_t current_epoch) const
     {
         size_t sz = 0;
-        for (const auto &[cold_id, hot_id]: hot_keys) {
-            if (std::holds_alternative<credential_t>(hot_id.val))
+        for (const auto &[cold_id, expire_epoch]: members) {
+            const auto hot_it = hot_keys.find(cold_id);
+            if (current_epoch <= expire_epoch
+                    && hot_it != hot_keys.end()
+                    && std::holds_alternative<credential_t>(hot_it->second.val))
                 ++sz;
         }
         return sz;
     }
 
-    uint64_t drep_info_t::compute_expire_epoch(const protocol_params &pp, const uint64_t current_epoch)
+    uint64_t drep_info_t::compute_expire_epoch(const protocol_params &pp, const uint64_t current_epoch, const uint64_t dormant_epochs)
     {
-        return current_epoch + pp.drep_activity;
+        return current_epoch + pp.drep_activity - dormant_epochs;
+    }
+
+    uint64_t drep_info_t::compute_reg_expire_epoch(const protocol_params &pp, const uint64_t current_epoch, const uint64_t dormant_epochs)
+    {
+        if (pp.protocol_ver.bootstrap_phase())
+            return current_epoch + pp.drep_activity;
+        return compute_expire_epoch(pp, current_epoch, dormant_epochs);
     }
 
     void drep_info_t::to_cbor(era_encoder &enc) const
@@ -71,7 +111,17 @@ namespace turbo::cardano::ledger::conway {
             enc.array(0);
         }
         enc.uint(deposited);
-        delegs.to_cbor(enc);
+        enc.tag(258);
+        enc.array_compact(delegs.size(), [&] {
+            const auto encode_delegs = [&](const bool script) {
+                for (const auto &deleg: delegs) {
+                    if (deleg.script == script)
+                        deleg.to_cbor(enc);
+                }
+            };
+            encode_delegs(true);
+            encode_delegs(false);
+        });
     }
 
     committee_t committee_t::from_json(const json::value &j)
@@ -90,10 +140,16 @@ namespace turbo::cardano::ledger::conway {
     {
         enc.array(2);
         enc.map_compact(members.size(), [&] {
-            for (const auto &[cred, epoch]: members) {
-                cred.to_cbor(enc);
-                enc.uint(epoch);
-            }
+            const auto encode_members = [&](const bool script) {
+                for (const auto &[cred, epoch]: members) {
+                    if (cred.script == script) {
+                        cred.to_cbor(enc);
+                        enc.uint(epoch);
+                    }
+                }
+            };
+            encode_members(true);
+            encode_members(false);
         });
         threshold.to_cbor(enc);
     }
@@ -152,7 +208,7 @@ namespace turbo::cardano::ledger::conway {
         param_updates.to_cbor(enc);
         hard_forks.to_cbor(enc);
         committee_updates.to_cbor(enc);
-        committee_updates.to_cbor(enc);
+        constitution_updates.to_cbor(enc);
     }
 
     void enact_state_t::to_cbor(era_encoder &enc) const
@@ -197,6 +253,9 @@ namespace turbo::cardano::ledger::conway {
             zpp::deserialize(drep_state, b);
         });
         dec.add([&](const auto b) {
+            zpp::deserialize(committee_hot_keys, b);
+        });
+        dec.add([&](const auto b) {
             zpp::deserialize(drep_voting_power, b);
         });
         dec.add([&](const auto b) {
@@ -216,6 +275,9 @@ namespace turbo::cardano::ledger::conway {
             return zpp::serialize(drep_state);
         });
         enc.add([&](auto) {
+            return zpp::serialize(committee_hot_keys);
+        });
+        enc.add([&](auto) {
             return zpp::serialize(drep_voting_power);
         });
         enc.add([&](auto) {
@@ -232,6 +294,7 @@ namespace turbo::cardano::ledger::conway {
         _params.protocol_ver = pv;
         _params_prev.protocol_ver = pv;
         _ratify_state.new_state.params.protocol_ver = pv;
+        _num_dormant_epochs = 0;
     }
 
     state::state(babbage::state &&o):
@@ -243,6 +306,10 @@ namespace turbo::cardano::ledger::conway {
     {
         _apply_conway_params(_params);
         _params_prev = _params;
+        // The wrapper transitions from Babbage to Conway after the epoch boundary has
+        // already been processed. Count that first Conway epoch as dormant here; no
+        // Conway governance proposals can exist before the era starts.
+        _num_dormant_epochs = 1;
         static const std::string task_name { "conway-update-utxos" };
         _sched.wait_all(task_name,
             [&](const auto &, const auto &submit_f) {
@@ -255,10 +322,8 @@ namespace turbo::cardano::ledger::conway {
                                 if (ptr.slot > slot::from_epoch(_epoch, _cfg)
                                         || ptr.tx_idx >= std::numeric_limits<uint16_t>::max()
                                         || ptr.cert_idx >= std::numeric_limits<uint16_t>::max()) {
-                                    const auto old_addr = txo_data.address_raw;
                                     txo_data.address_raw.resize(29);
                                     txo_data.address_raw << uint8_t { 0 } << uint8_t { 0 } << uint8_t { 0 };
-                                    logger::debug("conway-start: txo_id: {} updated address {} => {}", txo_id, old_addr, txo_data.address_raw);
                                 }
                             }
                         }
@@ -309,7 +374,7 @@ namespace turbo::cardano::ledger::conway {
     void state::_apply_conway_params(protocol_params &p) const
     {
         const auto &co_cfg = _cfg.conway_genesis;
-        p.plutus_cost_models.v3.emplace(plutus_cost_model::from_json(_cfg.plutus_all_cost_models.v3.value(), co_cfg.at("plutusV3CostModel")));
+        p.plutus_cost_models.items.emplace(2, plutus_cost_model::from_json(_cfg.plutus_all_cost_models.at(2), co_cfg.at("plutusV3CostModel")));
         p.pool_voting_thresholds = _cfg.conway_pool_voting_thresholds;
         p.drep_voting_thresholds = _cfg.conway_drep_voting_thresholds;
         p.committee_min_size = json::value_to<uint64_t>(co_cfg.at("committeeMinSize"));
@@ -451,17 +516,22 @@ namespace turbo::cardano::ledger::conway {
             enc << k_enc;
         });
         enc.map_compact(_committee_hot_keys.size(), [&] {
-            for (const auto &[cold_id, hot_id]: _committee_hot_keys) {
-                cold_id.to_cbor(enc);
-                hot_id.to_cbor(enc);
-            }
+            const auto encode_hot_keys = [&](const bool script) {
+                for (const auto &[cold_id, hot_id]: _committee_hot_keys) {
+                    if (cold_id.script == script) {
+                        cold_id.to_cbor(enc);
+                        hot_id.to_cbor(enc);
+                    }
+                }
+            };
+            encode_hot_keys(true);
+            encode_hot_keys(false);
         });
-        enc.uint(0);
+        enc.uint(_num_dormant_epochs);
     }
 
-    void state::delegate_vote(const stake_ident &stake_id, const drep_t &drep, const cert_loc_t &loc)
+    void state::delegate_vote(const stake_ident &stake_id, const drep_t &drep, const cert_loc_t &)
     {
-        logger::debug("slot: {} delegate_vote stake_id: {} drep: {}", slot { loc.slot, _cfg }, stake_id, drep);
         const auto preserve_incorrect_delegation = _params.protocol_ver.bootstrap_phase();
         auto new_drep_it = _drep_state.end();
         if (std::holds_alternative<credential_t>(drep.val))
@@ -489,7 +559,6 @@ namespace turbo::cardano::ledger::conway {
 
     void state::retire_stake(const uint64_t slot, const stake_ident &stake_id, const std::optional<uint64_t> deposit)
     {
-        logger::debug("slot: {} conway::retire_stake id: {} deposit: {}", cardano::slot { slot, _cfg }, stake_id, deposit);
         auto &acc = map_nice_at(_accounts, stake_id);
         if (acc.vote_deleg) {
             if (std::holds_alternative<credential_t>(acc.vote_deleg->val)) {
@@ -509,6 +578,8 @@ namespace turbo::cardano::ledger::conway {
 
     void state::process_cert(const unreg_cert &c, const cert_loc_t &loc)
     {
+        logger::trace("conway unreg_cert stake_id: {} slot: {} tx_idx: {} cert_idx: {} deposit: {}",
+            c.stake_id, cardano::slot { loc.slot, _cfg }, loc.tx_idx, loc.cert_idx, cardano::amount { c.deposit });
         retire_stake(loc.slot, c.stake_id, c.deposit);
     }
 
@@ -519,6 +590,18 @@ namespace turbo::cardano::ledger::conway {
 
     void state::process_cert(const stake_vote_deleg_cert &c, const cert_loc_t &loc)
     {
+        const auto acc_it = _accounts.find(c.stake_id);
+        if (acc_it == _accounts.end() || !acc_it->second.ptr) [[unlikely]] {
+            logger::debug("slot: {} conway stake_vote_deleg_cert stake_id: {} pool_id: {} drep: {} account_known: {} registered: {} reward: {} deposit: {} delegated: {} vote_delegated: {} tx_idx: {} cert_idx: {}",
+                cardano::slot { loc.slot, _cfg }, c.stake_id, c.pool_id, c.drep,
+                acc_it != _accounts.end(),
+                acc_it != _accounts.end() && acc_it->second.ptr.has_value(),
+                cardano::amount { acc_it != _accounts.end() ? acc_it->second.reward : 0 },
+                cardano::amount { acc_it != _accounts.end() ? acc_it->second.deposit : 0 },
+                acc_it != _accounts.end() && acc_it->second.deleg.has_value(),
+                acc_it != _accounts.end() && acc_it->second.vote_deleg.has_value(),
+                loc.tx_idx, loc.cert_idx);
+        }
         delegate_stake(c.stake_id, c.pool_id);
         delegate_vote(c.stake_id, c.drep, loc);
     }
@@ -544,24 +627,39 @@ namespace turbo::cardano::ledger::conway {
 
     void state::process_cert(const auth_committee_hot_cert &c, const cert_loc_t &)
     {
-        logger::debug("epoch: {} cert auth_enact_state.committee_hot_cert cold_id: {} hot_id: {}", _epoch, c.cold_id, c.hot_id);
-        if (_enact_state.committee) {
-            // Do not check for the presence in the committee to allow new members to immediately update their certs
+        const auto known_cold_id = [&] {
+            if (_enact_state.committee && _enact_state.committee->members.contains(c.cold_id))
+                return true;
+            for (const auto &item: _proposals) {
+                const auto &gas = item.second;
+                if (std::holds_alternative<gov_action_t::update_committee_t>(gas.proposal.action.val)) {
+                    const auto &upd = std::get<gov_action_t::update_committee_t>(gas.proposal.action.val);
+                    if (upd.members_to_add.contains(c.cold_id))
+                        return true;
+                }
+            }
+            return false;
+        }();
+        if (known_cold_id) {
             const auto [it, created] = _committee_hot_keys.try_emplace(c.cold_id, c.hot_id);
             if (!created) {
                 if (std::holds_alternative<committee_t::resigned_t>(it->second.val)) [[unlikely]]
                     throw error(fmt::format("an attempt to provide a hot certificate to a resigned committee member: {}", c.cold_id));
                 it->second.val = c.hot_id;
             }
+        } else {
+            throw error(fmt::format("an attempt to provide a hot certificate to an unknown committee cold_id: {}", c.cold_id));
         }
     }
 
     void state::process_cert(const resign_committee_cold_cert &c, const cert_loc_t &)
     {
-        logger::debug("epoch: {} cert resign_committee_cold_cert cold_id: {}", _epoch, c.cold_id);
         if (_enact_state.committee) {
             if (auto it = _committee_hot_keys.find(c.cold_id); it != _committee_hot_keys.end()) [[likely]] {
-                it->second.val = committee_t::resigned_t {};
+                committee_t::resigned_t resigned {};
+                if (c.anchor)
+                    resigned.anchor.emplace(*c.anchor);
+                it->second.val = std::move(resigned);
             } else {
                 throw error(fmt::format("an unknown resigning committee cold_id: {}", c.cold_id));
             }
@@ -570,16 +668,18 @@ namespace turbo::cardano::ledger::conway {
 
     void state::process_cert(const reg_drep_cert &c, const cert_loc_t &loc)
     {
-        logger::debug("slot: {} reg_drep id: {} anchor: {}", slot { loc.slot, _cfg }, c.drep_id, c.anchor);
-        const auto [it, created] = _drep_state.try_emplace(c.drep_id, c.deposit, c.anchor, drep_info_t::compute_expire_epoch(_params, _epoch));
-        if (!created) [[unlikely]]
+        const slot loc_slot { loc.slot, _cfg };
+        const auto expire_epoch = drep_info_t::compute_reg_expire_epoch(_params, loc_slot.epoch(), _num_dormant_epochs);
+        if (_drep_state.contains(c.drep_id)) [[unlikely]]
             throw error(fmt::format("drep already registered: {}", c.drep_id));
+        if (c.deposit != _params.drep_deposit) [[unlikely]]
+            throw error(fmt::format("reg_drep_cert: expected deposit {} got {}", _params.drep_deposit, c.deposit));
+        _drep_state.try_emplace(c.drep_id, c.deposit, c.anchor, expire_epoch);
         _deposited += c.deposit;
     }
 
-    void state::process_cert(const unreg_drep_cert &c, const cert_loc_t &loc)
+    void state::process_cert(const unreg_drep_cert &c, const cert_loc_t &)
     {
-        logger::debug("slot: {} unreg_drep id: {}", slot { loc.slot, _cfg }, c.drep_id);
         const auto it = _drep_state.find(c.drep_id);
         if (it ==_drep_state.end()) [[unlikely]]
             throw error(fmt::format("unreg_drep_cert: an unknown drep_id: {}", c.drep_id));
@@ -604,46 +704,312 @@ namespace turbo::cardano::ledger::conway {
 
     void state::process_cert(const update_drep_cert &c, const cert_loc_t &loc)
     {
-        logger::debug("slot: {} update_drep id: {} anchor: {}", slot { loc.slot, _cfg }, c.drep_id, c.anchor);
+        const slot loc_slot { loc.slot, _cfg };
         const auto drep_it = _drep_state.find(c.drep_id);
         if (drep_it ==_drep_state.end()) [[unlikely]]
             throw error(fmt::format("unreg_drep_cert: an unknown drep_id: {}", c.drep_id));
         drep_it->second.anchor = c.anchor;
-        drep_it->second.expire_epoch = drep_info_t::compute_expire_epoch(_params, _epoch);
+        drep_it->second.expire_epoch = drep_info_t::compute_expire_epoch(_params, loc_slot.epoch(), _num_dormant_epochs);
         ++drep_it->second.num_updates;
+    }
+
+    static bool _same_parent_group(const gov_action_t &l, const gov_action_t &r)
+    {
+        const auto committee_l = std::holds_alternative<gov_action_t::no_confidence_t>(l.val)
+            || std::holds_alternative<gov_action_t::update_committee_t>(l.val);
+        const auto committee_r = std::holds_alternative<gov_action_t::no_confidence_t>(r.val)
+            || std::holds_alternative<gov_action_t::update_committee_t>(r.val);
+        if (committee_l || committee_r)
+            return committee_l && committee_r;
+        return l.val.index() == r.val.index();
+    }
+
+    static bool _is_bootstrap_action(const gov_action_t &ga)
+    {
+        return std::holds_alternative<gov_action_t::parameter_change_t>(ga.val)
+            || std::holds_alternative<gov_action_t::hard_fork_init_t>(ga.val)
+            || std::holds_alternative<gov_action_t::info_action_t>(ga.val);
+    }
+
+    static bool _gov_action_has_parent(const gov_action_t &ga)
+    {
+        return std::holds_alternative<gov_action_t::parameter_change_t>(ga.val)
+            || std::holds_alternative<gov_action_t::hard_fork_init_t>(ga.val)
+            || std::holds_alternative<gov_action_t::no_confidence_t>(ga.val)
+            || std::holds_alternative<gov_action_t::update_committee_t>(ga.val)
+            || std::holds_alternative<gov_action_t::new_constitution_t>(ga.val);
+    }
+
+    static optional_gov_action_id_t _gov_action_parent(const gov_action_t &ga)
+    {
+        return std::visit([](const auto &a) -> optional_gov_action_id_t {
+            using T = std::decay_t<decltype(a)>;
+            if constexpr (std::is_same_v<T, gov_action_t::parameter_change_t>
+                || std::is_same_v<T, gov_action_t::hard_fork_init_t>
+                || std::is_same_v<T, gov_action_t::no_confidence_t>
+                || std::is_same_v<T, gov_action_t::update_committee_t>
+                || std::is_same_v<T, gov_action_t::new_constitution_t>) {
+                return a.prev_action_id;
+            } else {
+                return {};
+            }
+        }, ga.val);
+    }
+
+    static bool _protocol_version_can_follow(const protocol_version &prev, const protocol_version &next)
+    {
+        return (next.major == prev.major + 1 && next.minor == 0)
+            || (next.major == prev.major && next.minor == prev.minor + 1);
+    }
+
+    static bool _param_update_well_formed(const param_update_t &upd, const protocol_version &pv)
+    {
+        bool has_update = false;
+        const auto has = [&](const auto &v) {
+            has_update |= v.has_value();
+        };
+        const auto non_zero = [&](const auto &v) {
+            has(v);
+            return !v || *v != 0;
+        };
+
+        if (!non_zero(upd.max_block_body_size)
+                || !non_zero(upd.max_transaction_size)
+                || !non_zero(upd.max_block_header_size)
+                || !non_zero(upd.max_value_size)
+                || !non_zero(upd.max_collateral_pct)
+                || !non_zero(upd.committee_max_term_length)
+                || !non_zero(upd.gov_action_lifetime)
+                || !non_zero(upd.pool_deposit)
+                || !non_zero(upd.gov_action_deposit)
+                || !non_zero(upd.drep_deposit))
+            return false;
+        if (!pv.bootstrap_phase() && upd.lovelace_per_utxo_byte && *upd.lovelace_per_utxo_byte == 0)
+            return false;
+        if (pv.major >= 11 && upd.n_opt && *upd.n_opt == 0)
+            return false;
+
+        has(upd.min_fee_a);
+        has(upd.min_fee_b);
+        has(upd.key_deposit);
+        has(upd.e_max);
+        has(upd.n_opt);
+        has(upd.pool_pledge_influence);
+        has(upd.expansion_rate);
+        has(upd.treasury_growth_rate);
+        has(upd.min_pool_cost);
+        has(upd.lovelace_per_utxo_byte);
+        has(upd.plutus_cost_models);
+        has(upd.ex_unit_prices);
+        has(upd.max_tx_ex_units);
+        has(upd.max_block_ex_units);
+        has(upd.max_collateral_inputs);
+        has(upd.pool_voting_thresholds);
+        has(upd.drep_voting_thresholds);
+        has(upd.committee_min_size);
+        has(upd.drep_activity);
+        has(upd.min_fee_ref_script_cost_per_byte);
+        return has_update;
+    }
+
+    bool state::_has_parent(const gov_action_t &ga) const
+    {
+        const auto has_pending_parent = [&](const optional_gov_action_id_t &prev_action_id) {
+            if (!prev_action_id)
+                return false;
+            const auto it = _proposals.find(*prev_action_id);
+            return it != _proposals.end() && _same_parent_group(ga, it->second.proposal.action);
+        };
+        return std::visit<bool>([&](const auto &a) {
+            using T = std::decay_t<decltype(a)>;
+            if constexpr (std::is_same_v<T, gov_action_t::parameter_change_t>) {
+                return _prev_action_as_expected(ga, _enact_state) || has_pending_parent(a.prev_action_id);
+            } else if constexpr (std::is_same_v<T, gov_action_t::hard_fork_init_t>) {
+                return _prev_action_as_expected(ga, _enact_state) || has_pending_parent(a.prev_action_id);
+            } else if constexpr (std::is_same_v<T, gov_action_t::no_confidence_t>) {
+                return _prev_action_as_expected(ga, _enact_state) || has_pending_parent(a.prev_action_id);
+            } else if constexpr (std::is_same_v<T, gov_action_t::update_committee_t>) {
+                return _prev_action_as_expected(ga, _enact_state) || has_pending_parent(a.prev_action_id);
+            } else if constexpr (std::is_same_v<T, gov_action_t::new_constitution_t>) {
+                return _prev_action_as_expected(ga, _enact_state) || has_pending_parent(a.prev_action_id);
+            } else {
+                return true;
+            }
+        }, ga.val);
+    }
+
+    bool state::_action_well_formed(const gov_action_t &ga) const
+    {
+        return std::visit<bool>([&](const auto &a) {
+            using T = std::decay_t<decltype(a)>;
+            if constexpr (std::is_same_v<T, gov_action_t::parameter_change_t>) {
+                return _param_update_well_formed(a.update, _params.protocol_ver);
+            } else if constexpr (std::is_same_v<T, gov_action_t::treasury_withdrawals_t>) {
+                bool has_non_zero = false;
+                for (const auto &[reward_id, coin]: a.withdrawals) {
+                    if (reward_id.network_id() != _cfg.shelley_network_id)
+                        return false;
+                    has_non_zero |= coin != 0;
+                }
+                return has_non_zero;
+            } else {
+                return true;
+            }
+        }, ga.val);
+    }
+
+    bool state::_action_valid(const gov_action_t &ga, const uint64_t epoch) const
+    {
+        return std::visit<bool>([&](const auto &a) {
+            using T = std::decay_t<decltype(a)>;
+            if constexpr (std::is_same_v<T, gov_action_t::parameter_change_t>) {
+                return a.policy_id == _enact_state.constitution.policy_id;
+            } else if constexpr (std::is_same_v<T, gov_action_t::treasury_withdrawals_t>) {
+                return a.policy_id == _enact_state.constitution.policy_id;
+            } else if constexpr (std::is_same_v<T, gov_action_t::update_committee_t>) {
+                for (const auto &[cred, expire_epoch]: a.members_to_add) {
+                    if (expire_epoch <= epoch || a.members_to_remove.contains(cred))
+                        return false;
+                }
+                return true;
+            } else {
+                return true;
+            }
+        }, ga.val);
+    }
+
+    bool state::_valid_hf_action(const gov_action_t &ga) const
+    {
+        if (!std::holds_alternative<gov_action_t::hard_fork_init_t>(ga.val))
+            return true;
+        const auto &a = std::get<gov_action_t::hard_fork_init_t>(ga.val);
+        protocol_version base_ver = _enact_state.params.protocol_ver;
+        if (a.prev_action_id
+                && a.prev_action_id != _enact_state.prev_actions.hard_forks
+                && a.protocol_ver.major <= _enact_state.params.protocol_ver.major + 1) {
+            if (const auto prop_it = _proposals.find(*a.prev_action_id); prop_it != _proposals.end()
+                    && std::holds_alternative<gov_action_t::hard_fork_init_t>(prop_it->second.proposal.action.val)) {
+                base_ver = std::get<gov_action_t::hard_fork_init_t>(prop_it->second.proposal.action.val).protocol_ver;
+            }
+        }
+        return _protocol_version_can_follow(base_ver, a.protocol_ver);
+    }
+
+    bool state::_proposal_valid(const proposal_t &p, const cert_loc_t &loc) const
+    {
+        if (_proposals.contains(p.id)) {
+            logger::warn("slot: {} duplicate governance proposal id: {}", slot { loc.slot, _cfg }, p.id);
+            return false;
+        }
+        if (p.procedure.deposit != _params.gov_action_deposit) {
+            logger::warn("slot: {} proposal {} has an invalid deposit: {} expected: {}",
+                slot { loc.slot, _cfg }, p.id, p.procedure.deposit, _params.gov_action_deposit);
+            return false;
+        }
+        if (p.procedure.return_addr_network_id != _cfg.shelley_network_id) {
+            logger::warn("slot: {} proposal {} uses return account network id: {} expected: {}",
+                slot { loc.slot, _cfg }, p.id, p.procedure.return_addr_network_id, _cfg.shelley_network_id);
+            return false;
+        }
+        if (_params.protocol_ver.bootstrap_phase() && !_is_bootstrap_action(p.procedure.action)) {
+            logger::warn("slot: {} proposal {} action is disallowed during bootstrap: {}",
+                slot { loc.slot, _cfg }, p.id, _gov_action_label(p.procedure.action));
+            return false;
+        }
+        if (!_params.protocol_ver.bootstrap_phase()) {
+            const auto acc_it = _accounts.find(p.procedure.return_addr);
+            if (acc_it == _accounts.end() || !acc_it->second.ptr) {
+                logger::warn("slot: {} proposal {} uses an unregistered return account: {}",
+                    slot { loc.slot, _cfg }, p.id, p.procedure.return_addr);
+                return false;
+            }
+        }
+        return _action_well_formed(p.procedure.action)
+            && _action_valid(p.procedure.action, slot { loc.slot, _cfg }.epoch())
+            && _has_parent(p.procedure.action)
+            && _valid_hf_action(p.procedure.action);
+    }
+
+    bool state::_can_vote(const gov_action_t &ga, const voter_t::type_t voter_type) const
+    {
+        const auto is_cc = voter_type == voter_t::type_t::const_comm_key
+            || voter_type == voter_t::type_t::const_comm_script;
+        const auto is_drep = voter_type == voter_t::type_t::drep_key
+            || voter_type == voter_t::type_t::drep_script;
+        const auto is_pool = voter_type == voter_t::type_t::pool_key;
+        const auto allowed = std::visit<bool>([&](const auto &a) {
+            using T = std::decay_t<decltype(a)>;
+            if constexpr (std::is_same_v<T, gov_action_t::no_confidence_t>)
+                return is_drep || is_pool;
+            if constexpr (std::is_same_v<T, gov_action_t::update_committee_t>)
+                return is_drep || is_pool;
+            if constexpr (std::is_same_v<T, gov_action_t::new_constitution_t>)
+                return is_cc || is_drep;
+            if constexpr (std::is_same_v<T, gov_action_t::hard_fork_init_t>)
+                return is_cc || is_drep || is_pool;
+            if constexpr (std::is_same_v<T, gov_action_t::parameter_change_t>)
+                return is_cc || is_drep || (is_pool && a.update.security_group());
+            if constexpr (std::is_same_v<T, gov_action_t::treasury_withdrawals_t>)
+                return is_cc || is_drep;
+            if constexpr (std::is_same_v<T, gov_action_t::info_action_t>)
+                return is_cc || is_drep || is_pool;
+            throw error(fmt::format("unsupported governance action type: {}", typeid(T).name()));
+            return false;
+        }, ga.val);
+        if (!allowed)
+            return false;
+        if (_params.protocol_ver.bootstrap_phase()) {
+            if (is_drep)
+                return std::holds_alternative<gov_action_t::info_action_t>(ga.val);
+            return _is_bootstrap_action(ga);
+        }
+        return true;
     }
 
     void state::process_proposal(const proposal_t &p, const cert_loc_t &loc)
     {
-        logger::debug("slot: {} process_proposal: id: {}", slot { loc.slot, _cfg }, p.id);
-        if (_proposals.empty()) {
-            for (auto &[id, info]: _drep_state) {
-                if (!info.num_updates)
-                    info.expire_epoch = drep_info_t::compute_expire_epoch(_params, _epoch) + 1;
+        const slot loc_slot { loc.slot, _cfg };
+        if (!_proposal_valid(p, loc)) [[unlikely]]
+            throw error(fmt::format("invalid Conway governance proposal: {}", p.id));
+        const auto current_epoch = loc_slot.epoch();
+        if (_num_dormant_epochs) {
+            for (auto &item: _drep_state) {
+                auto &info = item.second;
+                const auto new_expiry = info.expire_epoch + _num_dormant_epochs;
+                if (new_expiry >= current_epoch)
+                    info.expire_epoch = new_expiry;
             }
+            _num_dormant_epochs = 0;
         }
-        _proposals.try_emplace(p.id, p.procedure, _epoch, _epoch + _params_prev.gov_action_lifetime, loc);
+        _proposals.try_emplace(p.id, p.procedure, current_epoch, current_epoch + _params.gov_action_lifetime, loc);
         _deposited += p.procedure.deposit;
     }
 
     void state::process_vote(const vote_info_t &v, const cert_loc_t &loc)
     {
         const slot loc_slot { loc.slot, _cfg };
-        logger::debug("slot: {} process_vote: voter: {} gid: {} vote: {}", loc_slot, v.voter, v.action_id, v.voting_procedure);
-        if (auto gov_it = _proposals.find(v.action_id); gov_it != _proposals.end()) [[unlikely]] {
+        if (auto gov_it = _proposals.find(v.action_id); gov_it != _proposals.end()) [[likely]] {
+            if (loc_slot.epoch() > gov_it->second.expires_after) [[unlikely]]
+                throw error(fmt::format("a vote for an expired governance action: {} at {}", v.action_id, loc_slot));
+            if (!_can_vote(gov_it->second.proposal.action, v.voter.type)) [[unlikely]]
+                throw error(fmt::format("a voter of type {} is not allowed to vote on governance action {} at {}", v.voter.type, v.action_id, loc_slot));
             switch (v.voter.type) {
                 case voter_t::type_t::const_comm_key:
                 case voter_t::type_t::const_comm_script: {
                     if (_enact_state.committee) {
                         const credential_t hot_id { v.voter.hash, v.voter.type == voter_t::type_t::const_comm_script };
                         const auto it = std::find_if(_committee_hot_keys.begin(), _committee_hot_keys.end(), [&](const auto &item) {
-                            return std::holds_alternative<credential_t>(item.second.val) && std::get<credential_t>(item.second.val) == hot_id &&_enact_state.committee->members.contains(item.first);
+                            const auto member_it = _enact_state.committee->members.find(item.first);
+                            return member_it != _enact_state.committee->members.end()
+                                && _committee_member_active(_committee_hot_keys, member_it->first, member_it->second)
+                                && std::holds_alternative<credential_t>(item.second.val)
+                                && std::get<credential_t>(item.second.val) == hot_id;
                         });
                         if (it == _committee_hot_keys.end()) [[unlikely]]
                             throw error(fmt::format("a vote from an unknown committee member with a hot_id: {} at {}", hot_id, loc_slot));
                         gov_it->second.committee_votes[hot_id] = v.voting_procedure;
                     } else {
-                        logger::warn("an attempted committee vote with no active committee: {} at {}", v, loc_slot);
+                        throw error(fmt::format("an attempted committee vote with no active committee: {} at {}", v, loc_slot));
                     }
                     break;
                 }
@@ -653,7 +1019,7 @@ namespace turbo::cardano::ledger::conway {
                     auto it = _drep_state.find(drep_id);
                     if (it == _drep_state.end()) [[unlikely]]
                         throw error(fmt::format("a vote from an unknown drep: {} at {}", drep_id, loc_slot));
-                    it->second.expire_epoch = drep_info_t::compute_expire_epoch(_params, _epoch);
+                    it->second.expire_epoch = drep_info_t::compute_expire_epoch(_params, loc_slot.epoch(), _num_dormant_epochs);
                     gov_it->second.drep_votes[drep_id] = v.voting_procedure;
                     break;
                 }
@@ -666,7 +1032,7 @@ namespace turbo::cardano::ledger::conway {
                 default: throw error(fmt::format("an unsupported voter type: {} at {}", v.voter.type, loc_slot));
             }
         } else {
-            logger::warn("a vote for an unknown gov_action_id: {} at {}", v.action_id, loc_slot);
+            throw error(fmt::format("a vote for an unknown gov_action_id: {} at {}", v.action_id, loc_slot));
         }
     }
 
@@ -677,7 +1043,7 @@ namespace turbo::cardano::ledger::conway {
         babbage::state::_process_block_updates(std::move(block_updates));
     }
 
-    void state::_process_timed_update(tx_out_ref_list &collected_collateral, timed_update_t &&upd)
+    void state::_process_timed_update(tx_out_ref_list &collected_collateral, uint64_t &collateral_refund, timed_update_t &&upd)
     {
         std::visit([&](const auto &u) {
             using T = std::decay_t<decltype(u)>;
@@ -698,8 +1064,10 @@ namespace turbo::cardano::ledger::conway {
                 process_proposal(u, upd.loc);
             } else if constexpr (std::is_same_v<T, vote_info_t>) {
                 process_vote(u, upd.loc);
+            } else if constexpr (std::is_same_v<T, index::timed_update::stake_withdraw>) {
+                withdraw_reward(u.stake_id, u.amount);
             } else {
-                babbage::state::_process_timed_update(collected_collateral, std::move(upd));
+                babbage::state::_process_timed_update(collected_collateral, collateral_refund, std::move(upd));
             }
         }, upd.update);
     }
@@ -770,11 +1138,11 @@ namespace turbo::cardano::ledger::conway {
         babbage::state::from_zpp(dec);
     }
 
-    state::voting_threshold_t state::_committee_voting_threshold(const enact_state_t &st, const gov_action_t &ga) const
+    state::voting_threshold_t state::_committee_voting_threshold(const committee_t::member_key_map &hot_keys, const enact_state_t &st, const gov_action_t &ga) const
     {
         voting_threshold_t threshold { voting_threshold_t::no_voting_threshold_t {} };
         if (st.committee) {
-            if (st.params.protocol_ver.bootstrap_phase() || st.committee->active_size(_committee_hot_keys) >= st.params.committee_min_size)
+            if (st.params.protocol_ver.bootstrap_phase() || st.committee->active_size(hot_keys, _epoch) >= st.params.committee_min_size)
                 threshold.val = st.committee->threshold;
             return std::visit<voting_threshold_t>([&](const auto &av) {
                 using T = std::decay_t<decltype(av)>;
@@ -783,7 +1151,7 @@ namespace turbo::cardano::ledger::conway {
                 if constexpr (std::is_same_v<T, gov_action_t::update_committee_t>)
                     return voting_threshold_t { voting_threshold_t::no_voting_allowed_t {} };
                 if constexpr (std::is_same_v<T, gov_action_t::new_constitution_t>)
-                    return voting_threshold_t { voting_threshold_t::no_voting_allowed_t {} };
+                    return threshold;
                 if constexpr (std::is_same_v<T, gov_action_t::hard_fork_init_t>)
                     return threshold;
                 if constexpr (std::is_same_v<T, gov_action_t::parameter_change_t>)
@@ -799,17 +1167,31 @@ namespace turbo::cardano::ledger::conway {
         return threshold;
     }
 
+    bool state::_committee_member_active(const committee_t::member_key_map &hot_keys, const credential_t &cold_id, const uint64_t expire_epoch) const
+    {
+        return _epoch <= expire_epoch
+            && hot_keys.contains(cold_id)
+            && std::holds_alternative<credential_t>(hot_keys.at(cold_id).val);
+    }
+
     bool state::committee_accepted(const gov_action_state_t &ga) const
     {
+        return _committee_accepted(nullptr, ga);
+    }
+
+    bool state::_committee_accepted(const gov_action_id_t *, const gov_action_state_t &ga) const
+    {
         const auto &st = _ratify_state.new_state;
+        const auto &hot_keys = _pulsing_data.committee_hot_keys;
         size_t yes = 0;
         size_t total = 0;
         if (st.committee) {
             // starting with the list of committee key allows to discard votes
             // of those members who first votes but then resigned
             for (const auto &[cold_id, expire_epoch]: st.committee->members) {
-                const auto hot_id_it = _committee_hot_keys.find(cold_id);
-                if (hot_id_it != _committee_hot_keys.end() && std::holds_alternative<credential_t>(hot_id_it->second.val)) {
+                const auto hot_id_it = hot_keys.find(cold_id);
+                const auto active = _committee_member_active(hot_keys, cold_id, expire_epoch);
+                if (active) {
                     const auto &hot_id = std::get<credential_t>(hot_id_it->second.val);
                     const auto v_it = ga.committee_votes.find(hot_id);
                     if (v_it != ga.committee_votes.end()) {
@@ -826,14 +1208,20 @@ namespace turbo::cardano::ledger::conway {
             }
         }
         const rational_u64 r { yes, std::max(total, size_t { 1 }) };
-        return _check_threshold(_committee_voting_threshold(_ratify_state.new_state, ga.proposal.action), r);
+        const auto threshold = _committee_voting_threshold(hot_keys, _ratify_state.new_state, ga.proposal.action);
+        return _check_threshold(threshold, r);
     }
 
     state::default_vote_t state::_pool_default_vote(const pool_hash &id) const
     {
         // default votes are prepared using the pulsing snapshot at the start of the next epoch.
         // therefore, the correct pool_params are in mark set now
-        const auto &params = map_nice_at(_mark.pool_params, id);
+        const auto params_it = _mark.pool_params.find(id);
+        if (params_it == _mark.pool_params.end()) [[unlikely]] {
+            logger::debug("default vote requested for an unregistered stake pool: {}", id);
+            return default_vote_t::no;
+        }
+        const auto &params = params_it->second;
         const auto acc_it = _accounts.find(params.params.reward_id);
         if (acc_it != _accounts.end() && acc_it->second.vote_deleg) {
             if (std::holds_alternative<drep_t::abstain_t>(acc_it->second.vote_deleg->val))
@@ -884,7 +1272,7 @@ namespace turbo::cardano::ledger::conway {
                 return r >= tv;
             if constexpr (std::is_same_v<T, voting_threshold_t::no_voting_threshold_t>)
                 return false;
-            // means that the vote should not count!!!
+            // Haskell maps NoVotingAllowed to a zero threshold: this voter group is irrelevant.
             if constexpr (std::is_same_v<T, voting_threshold_t::no_voting_allowed_t>)
                 return true;
             throw error(fmt::format("unsupported voting_threshold type: {}", typeid(T).name()));
@@ -989,8 +1377,8 @@ namespace turbo::cardano::ledger::conway {
                     if (std::holds_alternative<gov_action_t::no_confidence_t>(ga.proposal.action.val))
                         yes += stake;
                 } else if constexpr (std::is_same_v<T, credential_t>) {
-                    const auto d_it = _drep_state.find(cred);
-                    if (d_it != _drep_state.end() && _epoch <= d_it->second.expire_epoch) {
+                    const auto d_it = _pulsing_data.drep_state.find(cred);
+                    if (d_it != _pulsing_data.drep_state.end() && _epoch <= d_it->second.expire_epoch) {
                         const auto v_it = ga.drep_votes.find(cred);
                         if (v_it != ga.drep_votes.end()) {
                             switch (v_it->second.vote) {
@@ -1016,18 +1404,16 @@ namespace turbo::cardano::ledger::conway {
             }, drep.val);
         }
         const rational_u64 r { yes, std::max(total_wo_abstain, uint64_t { 1 }) };
-        return _check_threshold(_drep_voting_threshold(_ratify_state.new_state, ga.proposal.action), r);
+        const auto threshold = _drep_voting_threshold(_ratify_state.new_state, ga.proposal.action);
+        return _check_threshold(threshold, r);
     }
 
-    bool state::accepted_by_everyone(const gov_action_id_t &gid, const gov_action_state_t &gas) const
+    bool state::accepted_by_everyone(const gov_action_id_t &, const gov_action_state_t &gas) const
     {
-        const auto committee_ok = committee_accepted(gas);
+        const auto committee_ok = _committee_accepted(nullptr, gas);
         const auto pools_ok = pools_accepted(gas);
         const auto dreps_ok = dreps_accepted(gas);;
-        const auto res = committee_ok & pools_ok & dreps_ok;
-        logger::debug("epoch: {} voting on {} committee: {} pools: {} dreps: {} => res: {}",
-            _epoch, gid, committee_ok, pools_ok, dreps_ok, res);
-        return res;
+        return committee_ok & pools_ok & dreps_ok;
     }
 
     // Why it's checked here not at the time of proposal parsing?
@@ -1045,14 +1431,14 @@ namespace turbo::cardano::ledger::conway {
         return true;
     }
 
-    static bool _withdrawals_can_withdraw(const gov_action_t &ga, const uint64_t treasury)
+    static bool _withdrawals_can_withdraw(const gov_action_t &ga, const enact_state_t &st)
     {
         if (std::holds_alternative<gov_action_t::treasury_withdrawals_t>(ga.val)) {
-            uint64_t withdrawals = 0;
+            uint64_t next = 0;
             const auto &w = std::get<gov_action_t::treasury_withdrawals_t>(ga.val);
-            for (const auto &[cred, coin]: w.withdrawals)
-                withdrawals += coin;
-            return withdrawals <= treasury;
+            for (const auto &withdrawal: w.withdrawals)
+                next += withdrawal.second;
+            return next <= st.treasury;
         }
         return true;
     }
@@ -1062,13 +1448,15 @@ namespace turbo::cardano::ledger::conway {
         return std::visit<bool>([&](const auto &a) {
             using T = std::decay_t<decltype(a)>;
             if constexpr (std::is_same_v<T, gov_action_t::parameter_change_t>)
-                return !a.prev_action_id || (!st.prev_actions.param_updates.empty() && *a.prev_action_id == st.prev_actions.param_updates.back());
+                return a.prev_action_id == st.prev_actions.param_updates;
             if constexpr (std::is_same_v<T, gov_action_t::hard_fork_init_t>)
-                return !a.prev_action_id || (!st.prev_actions.hard_forks.empty() && *a.prev_action_id == st.prev_actions.hard_forks.back());
+                return a.prev_action_id == st.prev_actions.hard_forks;
+            if constexpr (std::is_same_v<T, gov_action_t::no_confidence_t>)
+                return a.prev_action_id == st.prev_actions.committee_updates;
             if constexpr (std::is_same_v<T, gov_action_t::update_committee_t>)
-                return !a.prev_action_id || (!st.prev_actions.committee_updates.empty() && *a.prev_action_id == st.prev_actions.committee_updates.back());
+                return a.prev_action_id == st.prev_actions.committee_updates;
             if constexpr (std::is_same_v<T, gov_action_t::new_constitution_t>)
-                return !a.prev_action_id || (!st.prev_actions.constitution_updates.empty() && *a.prev_action_id == st.prev_actions.constitution_updates.back());
+                return a.prev_action_id == st.prev_actions.constitution_updates;
             return true;
         }, ga.val);
     }
@@ -1080,19 +1468,24 @@ namespace turbo::cardano::ledger::conway {
             if constexpr (std::is_same_v<T, gov_action_t::parameter_change_t>) {
                 logger::info("enacting new protocol parameters: {}", a.update);
                 st.params.apply(a.update);
-                st.prev_actions.param_updates.emplace_back(gid);
+                st.prev_actions.param_updates = gid;
             } else if constexpr (std::is_same_v<T, gov_action_t::hard_fork_init_t>) {
                 logger::info("enacting new protocol version: {}", a.protocol_ver);
                 st.params.protocol_ver = a.protocol_ver;
-                st.prev_actions.hard_forks.emplace_back(gid);
+                st.prev_actions.hard_forks = gid;
             } else if constexpr (std::is_same_v<T, gov_action_t::treasury_withdrawals_t>) {
+                uint64_t total = 0;
+                for (const auto &[reward_id, coin]: a.withdrawals)
+                    total += coin;
+                if (total > st.treasury) [[unlikely]]
+                    throw error(fmt::format("treasury withdrawal {} exceeds remaining treasury {}", total, st.treasury));
                 for (const auto &[reward_id, coin]: a.withdrawals) {
                     st.withdrawals[address { reward_id }.stake_id()] += coin;
-                    st.treasury += coin;
                 }
+                st.treasury -= total;
             } else if constexpr (std::is_same_v<T, gov_action_t::no_confidence_t>) {
                 st.committee.reset();
-                st.prev_actions.committee_updates.emplace_back(gid);
+                st.prev_actions.committee_updates = gid;
             } else if constexpr (std::is_same_v<T, gov_action_t::update_committee_t>) {
                 if (!st.committee)
                     st.committee.emplace();
@@ -1101,10 +1494,10 @@ namespace turbo::cardano::ledger::conway {
                 for (const auto &[cred, expire_epoch]: a.members_to_add)
                     st.committee->members[cred] = expire_epoch;
                 st.committee->threshold = a.new_threshold;
-                st.prev_actions.committee_updates.emplace_back(gid);
+                st.prev_actions.committee_updates = gid;
             } else if constexpr (std::is_same_v<T, gov_action_t::new_constitution_t>) {
                 st.constitution = a.new_constitution;
-                st.prev_actions.constitution_updates.emplace_back(gid);
+                st.prev_actions.constitution_updates = gid;
             } else if constexpr (std::is_same_v<T, gov_action_t::info_action_t>) {
                 // do nothing
             } else {
@@ -1117,12 +1510,11 @@ namespace turbo::cardano::ledger::conway {
     {
         for (const auto &[stake_id, reward]: rewards) {
             if (auto acc_it = _accounts.find(stake_id); acc_it != _accounts.end() && acc_it->second.ptr) {
+                auto &acc = acc_it->second;
                 _treasury -= reward;
-                acc_it->second.reward += reward;
-                if (acc_it->second.deleg)
-                    _active_pool_dist.add(*acc_it->second.deleg, reward);
-            } else {
-                logger::warn("treasury withdrawal ignored - no such reward account: {}", stake_id);
+                acc.reward += reward;
+                if (acc.deleg)
+                    _active_pool_dist.add(*acc.deleg, reward);
             }
         }
     }
@@ -1130,26 +1522,32 @@ namespace turbo::cardano::ledger::conway {
     drep_distr_t state::_compute_drep_voting_power() const
     {
         drep_distr_t power {};
-        if (!_drep_state.empty()) {
-            static const std::string task_id { "drep-voting-power" };
-            mutex::unique_lock::mutex_type drep_mutex alignas(mutex::alignment) {};
-            _sched.wait_all(task_id, [&](const auto &todo, const auto &submit_f) {
-                for (size_t part_no = 0; part_no < _accounts.num_parts; ++part_no) {
-                    submit_f({ 1000, task_id, [&, part_no, todo] {
-                        drep_distr_t part_stake {};
-                        const auto &acc_part = _accounts.partition(part_no);
-                        for (const auto &[stake_id, info]: acc_part) {
-                            if (info.vote_deleg && (!std::holds_alternative<credential_t>(info.vote_deleg->val) || _drep_state.contains(std::get<credential_t>(info.vote_deleg->val)))) {
-                                part_stake[*info.vote_deleg] += info.mark_stake;
-                            }
+        static const std::string task_id { "drep-voting-power" };
+        mutex::unique_lock::mutex_type drep_mutex alignas(mutex::alignment) {};
+        _sched.wait_all(task_id, [&](const auto &todo, const auto &submit_f) {
+            for (size_t part_no = 0; part_no < _accounts.num_parts; ++part_no) {
+                submit_f({ 1000, task_id, [&, part_no, todo] {
+                    drep_distr_t part_stake {};
+                    const auto &acc_part = _accounts.partition(part_no);
+                    for (const auto &[stake_id, info]: acc_part) {
+                        if (info.vote_deleg && (!std::holds_alternative<credential_t>(info.vote_deleg->val) || _drep_state.contains(std::get<credential_t>(info.vote_deleg->val)))) {
+                            part_stake[*info.vote_deleg] += info.stake + info.reward;
                         }
-                        mutex::scoped_lock lk { drep_mutex };
-                        for (const auto &[drep, stake]: part_stake) {
-                            power[drep] += stake;
-                        }
-                    }});
-                }
-            });
+                    }
+                    mutex::scoped_lock lk { drep_mutex };
+                    for (const auto &[drep, stake]: part_stake) {
+                        power[drep] += stake;
+                    }
+                }});
+            }
+        });
+        for (const auto &[gid, ga]: _proposals) {
+            const auto acc_it = _accounts.find(ga.proposal.return_addr);
+            if (acc_it != _accounts.end() && acc_it->second.vote_deleg) {
+                const auto &drep = *acc_it->second.vote_deleg;
+                if (!std::holds_alternative<credential_t>(drep.val) || _drep_state.contains(std::get<credential_t>(drep.val)))
+                    power[drep] += ga.proposal.deposit;
+            }
         }
         return power;
     }
@@ -1158,15 +1556,18 @@ namespace turbo::cardano::ledger::conway {
     {
         pool_stake_distribution power {};
         for (const auto &[pool_id, stake]: _mark.pool_dist) {
-            if (const auto num_delegs = map_nice_at(_mark.inv_delegs, pool_id).size(); num_delegs) {
+            const auto delegs_it = _mark.inv_delegs.find(pool_id);
+            if (_mark.pool_params.contains(pool_id) && delegs_it != _mark.inv_delegs.end() && !delegs_it->second.empty()) {
                 power.create(pool_id);
                 power.add(pool_id, stake);
             }
         }
         for (const auto &[gid, ga]: _proposals) {
             const auto acc_it = _accounts.find(ga.proposal.return_addr);
-            if (acc_it != _accounts.end() && acc_it->second.deleg)
+            if (acc_it != _accounts.end() && acc_it->second.deleg && _mark.pool_params.contains(*acc_it->second.deleg)) {
+                power.create(*acc_it->second.deleg);
                 power.add(*acc_it->second.deleg, ga.proposal.deposit);
+            }
         }
         return power;
     }
@@ -1179,37 +1580,79 @@ namespace turbo::cardano::ledger::conway {
     void state::_gov_remove_proposal(const gov_action_id_t &gid) {
         const auto &gas = map_nice_at(_proposals, gid);
         if (auto acc_it = _accounts.find(gas.proposal.return_addr); acc_it != _accounts.end() && acc_it->second.ptr) {
-            logger::debug("epoch: {} returning proposal {} deposit to {} registered: {}",
-                _epoch, gid, gas.proposal.return_addr, acc_it->second.ptr);
             acc_it->second.reward += gas.proposal.deposit;
             if (acc_it->second.deleg)
                 _active_pool_dist.add(*acc_it->second.deleg, gas.proposal.deposit);
         } else {
-            logger::debug("epoch: {} proposal {} cannot return the deposit to an unregistered stake_id: {}",
-                _epoch, gid, gas.proposal.return_addr);
             _treasury += gas.proposal.deposit;
         }
         _deposited -= gas.proposal.deposit;
         _proposals.erase(gid);
     }
 
+    void state::_gov_remove_with_descendants(const gov_action_id_t &gid)
+    {
+        if (!_proposals.contains(gid))
+            return;
+        set_t<gov_action_id_t> to_remove { gid };
+        bool changed = true;
+        while (changed) {
+            changed = false;
+            for (const auto &[child_gid, child_gas]: _proposals) {
+                if (to_remove.contains(child_gid))
+                    continue;
+                const auto parent = _gov_action_parent(child_gas.proposal.action);
+                const auto parent_it = parent ? _proposals.find(*parent) : _proposals.end();
+                if (parent_it != _proposals.end()
+                        && to_remove.contains(*parent)
+                        && _same_parent_group(child_gas.proposal.action, parent_it->second.proposal.action)) {
+                    to_remove.emplace(child_gid);
+                    changed = true;
+                }
+            }
+        }
+        for (const auto &remove_gid: to_remove)
+            _gov_remove_proposal(remove_gid);
+    }
+
     void state::_gov_enact()
     {
         for (const auto &gid: _ratify_state.expired)
-            _gov_remove_proposal(gid);
-        for (const auto &[gid, gas]: _ratify_state.enacted)
-            _gov_remove_proposal(gid);
+            _gov_remove_with_descendants(gid);
+        for (const auto &[gid, gas]: _ratify_state.enacted) {
+            if (!_proposals.contains(gid))
+                continue;
+            if (_gov_action_has_parent(gas.proposal.action)) {
+                const auto parent = _gov_action_parent(gas.proposal.action);
+                set_t<gov_action_id_t> siblings {};
+                for (const auto &[other_gid, other_gas]: _proposals) {
+                    if (other_gid == gid)
+                        continue;
+                    if (!_same_parent_group(gas.proposal.action, other_gas.proposal.action))
+                        continue;
+                    if (_gov_action_parent(other_gas.proposal.action) == parent)
+                        siblings.emplace(other_gid);
+                }
+                for (const auto &sibling: siblings)
+                    _gov_remove_with_descendants(sibling);
+                _gov_remove_proposal(gid);
+            } else {
+                _gov_remove_proposal(gid);
+            }
+        }
 
         // copy the ratified state and prepare the ratification state for the next round
         _params_prev = _params;
         _enact_state = _ratify_state.new_state;
         _params = _enact_state.params;
         _transfer_treasury_withdrawals(_enact_state.withdrawals);
+        _enact_state.withdrawals.clear();
         _ratify_state.enacted.clear();
         _ratify_state.expired.clear();
         _ratify_state.delayed = false;
         _ratify_state.new_state.prev_params = _params_prev;
         _ratify_state.new_state.withdrawals.clear();
+        _ratify_state.new_state.treasury = 0;
 
         _treasury += _donations;
         _donations = 0;
@@ -1217,21 +1660,30 @@ namespace turbo::cardano::ledger::conway {
 
     void state::_gov_finalize()
     {
-        std::vector<gov_action_id_t> retired_actions {};
+        _ratify_state.new_state.treasury = _treasury;
         for (const auto &[gid, gas]: _pulsing_data.proposals) {
-            if (!std::holds_alternative<gov_action_t::info_action_t>(gas.proposal.action.val)
-                    && _prev_action_as_expected(gas.proposal.action, _ratify_state.new_state)
-                    && _valid_committee_term(gas.proposal.action, _ratify_state.new_state.params, _epoch)
-                    && !_ratify_state.delayed
-                    && _withdrawals_can_withdraw(gas.proposal.action, _treasury)
-                    && accepted_by_everyone(gid, gas)) {
+            if (_epoch <= gas.proposed_in)
+                continue;
+            const auto non_info = !std::holds_alternative<gov_action_t::info_action_t>(gas.proposal.action.val);
+            const auto prev_action_ok = _prev_action_as_expected(gas.proposal.action, _ratify_state.new_state);
+            const auto committee_term_ok = _valid_committee_term(gas.proposal.action, _ratify_state.new_state.params, _epoch);
+            const auto not_delayed = !_ratify_state.delayed;
+            const auto treasury_ok = _withdrawals_can_withdraw(gas.proposal.action, _ratify_state.new_state);
+            const auto ratifiable = non_info && prev_action_ok && committee_term_ok && not_delayed && treasury_ok;
+            const auto committee_ok = _committee_accepted(&gid, gas);
+            const auto pools_ok = pools_accepted(gas);
+            const auto dreps_ok = dreps_accepted(gas);
+            const auto accepted = ratifiable && committee_ok && pools_ok && dreps_ok;
+            const auto expired = _epoch > gas.expires_after;
+            if (accepted) {
                 _enact_proposal(_ratify_state.new_state, gid, gas.proposal.action);
                 _ratify_state.enacted.emplace_back(gid, gas);
                 _ratify_state.delayed = gas.proposal.action.delaying();
-            } else if (_epoch > gas.expires_after) {
+            } else if (expired) {
                 _ratify_state.expired.emplace(gid);
             }
         }
+        _ratify_state.new_state.treasury = 0;
         _ratify_ready = true;
     }
 
@@ -1239,6 +1691,7 @@ namespace turbo::cardano::ledger::conway {
     {
         _pulsing_data.drep_state_updated = false;
         _pulsing_data.drep_state = _drep_state;
+        _pulsing_data.committee_hot_keys = _committee_hot_keys;
         {
             _pulsing_data.proposals.clear();
             _pulsing_data.proposals.reserve(_proposals.size());
@@ -1258,11 +1711,26 @@ namespace turbo::cardano::ledger::conway {
         _pulsing_data.drep_voting_power = _compute_drep_voting_power();
     }
 
+    void state::_prune_committee_hot_keys()
+    {
+        if (!_enact_state.committee) {
+            _committee_hot_keys.clear();
+            return;
+        }
+        for (auto it = _committee_hot_keys.begin(); it != _committee_hot_keys.end(); ) {
+            if (!_enact_state.committee->members.contains(it->first))
+                it = _committee_hot_keys.erase(it);
+            else
+                ++it;
+        }
+    }
+
     // Called for every Conway epoch but the first one!
     void state::start_epoch(const std::optional<uint64_t> new_epoch)
     {
         babbage::state::start_epoch(new_epoch);
         _gov_enact();
+        _prune_committee_hot_keys();
 
         if (!_conway_start_epoch)
             _conway_start_epoch.emplace(_epoch);
@@ -1273,23 +1741,24 @@ namespace turbo::cardano::ledger::conway {
             // Recreate drep delegation state as Cardano Ledger PV 9 had a bug
             for (auto &[drep, state]: _drep_state)
                 state.delegs.clear();
-            for (const auto &[id, info]: _accounts) {
+            for (auto &[id, info]: _accounts) {
                 if (info.vote_deleg && std::holds_alternative<credential_t>(info.vote_deleg->val)) {
                     // Not all dreps may be still present! That's the consequence of the bug!
                     const auto &drep_id = std::get<credential_t>(info.vote_deleg->val);
                     if (const auto it = _drep_state.find(drep_id); it != _drep_state.end()) {
                         it->second.delegs.emplace(id);
+                    } else {
+                        info.vote_deleg.reset();
                     }
                 }
             }
         }
 
-        if (_proposals.empty()) {
+        const auto has_active_proposals = std::any_of(_proposals.begin(), _proposals.end(), [this](const auto &item) {
+            return _epoch <= item.second.expires_after;
+        });
+        if (!has_active_proposals) {
             ++_num_dormant_epochs;
-        } else if (_num_dormant_epochs) {
-            for (auto &[id, state]: _drep_state)
-                state.expire_epoch += _num_dormant_epochs;
-            _num_dormant_epochs = 0;
         }
 
         _gov_make_pulsing_snapshot();

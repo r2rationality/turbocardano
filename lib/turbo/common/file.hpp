@@ -117,8 +117,11 @@ namespace turbo::file {
             _f = std::fopen(_path.c_str(), "rb");
             if (_f == NULL) [[unlikely]]
                 throw error_sys(fmt::format("failed to open a file for reading {}", _path));
-            if (std::setvbuf(_f, reinterpret_cast<char *>(_buf.data()), _buf.empty() ? _IONBF : _IOFBF, _buf.size()) != 0) [[unlikely]]
+            if (std::setvbuf(_f, reinterpret_cast<char *>(_buf.data()), _buf.empty() ? _IONBF : _IOFBF, _buf.size()) != 0) [[unlikely]] {
+                std::fclose(_f);
+                _f = NULL;
                 throw error_sys(fmt::format("failed to disable read buffering for {}", _path));
+            }
             _report_open_file();
         }
 
@@ -129,10 +132,7 @@ namespace turbo::file {
 
         read_stream(const read_stream &) =delete;
 
-        ~read_stream()
-        {
-            close();
-        }
+        ~read_stream();
 
         bool eof() const
         {
@@ -180,8 +180,11 @@ namespace turbo::file {
             _f = std::fopen(_path.c_str(), "wb");
             if (_f == NULL)
                 throw error_sys(fmt::format("failed to open a file for writing {}", _path));
-            if (std::setvbuf(_f, reinterpret_cast<char *>(_buf.data()), _buf.empty() ? _IONBF : _IOFBF, _buf.size()) != 0)
+            if (std::setvbuf(_f, reinterpret_cast<char *>(_buf.data()), _buf.empty() ? _IONBF : _IOFBF, _buf.size()) != 0) {
+                std::fclose(_f);
+                _f = NULL;
                 throw error_sys(fmt::format("failed to disable write buffering for {}", _path));
+            }
             _report_open_file();
         }
 
@@ -191,17 +194,17 @@ namespace turbo::file {
             ws._f = NULL;
         }
 
-        ~write_stream()
-        {
-            close();
-        }
+        ~write_stream();
 
         write_stream &operator=(write_stream &&ws)
         {
-            _f = ws._f;
-            _path = std::move(ws._path);
-            _buf = std::move(ws._buf);
-            ws._f = NULL;
+            if (this != &ws) [[likely]] {
+                close();
+                _f = ws._f;
+                _path = std::move(ws._path);
+                _buf = std::move(ws._buf);
+                ws._f = NULL;
+            }
             return *this;
         }
 
@@ -319,7 +322,10 @@ namespace turbo::file {
         for (const auto &entry : std::filesystem::recursive_directory_iterator(path)) {
             if (ext && entry.path().extension() != *ext)
                 continue;
-            total_size += entry.file_size();
+            std::error_code ec {};
+            auto e_sz = entry.file_size(ec);
+            if (!ec)
+                total_size += e_sz;
         }
         return total_size;
     }
@@ -330,7 +336,10 @@ namespace turbo::file {
         for (const auto &entry : std::filesystem::directory_iterator(path)) {
             if (ext && entry.path().extension() != *ext)
                 continue;
-            total_size += entry.file_size();
+            std::error_code ec {};
+            auto e_sz = entry.file_size(ec);
+            if (!ec)
+                total_size += e_sz;
         }
         return total_size;
     }

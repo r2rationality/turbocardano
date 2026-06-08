@@ -7,8 +7,11 @@
 #include <turbo/cardano/common/cert.hpp>
 #include <turbo/cardano/common/common.hpp>
 #include <turbo/cardano/common/native-script.hpp>
+#include <turbo/cardano/babbage/block.hpp>
 #include <turbo/cardano/ledger/state.hpp>
 #include <turbo/cbor/zero2.hpp>
+#include <turbo/index/block-fees.hpp>
+#include <turbo/index/timed-update.hpp>
 #include <turbo/parallel/ordered-consumer.hpp>
 #include <turbo/parallel/ordered-queue.hpp>
 #include <turbo/plutus/context.hpp>
@@ -310,17 +313,6 @@ namespace turbo::txwit {
             return _cfg.intersection;
         }
     private:
-        struct param_update {
-            uint64_t slot = 0;
-            std::variant<param_update_proposal, param_update_vote> update {};
-
-            bool operator<(const param_update &o) const
-            {
-                return slot < o.slot;
-            }
-        };
-        using param_update_list = std::vector<param_update>;
-
         // Examples of typical protocol-parameter-based checks
         struct max_stats_t {
             std::optional<uint32_t> max_block_body_size {};
@@ -349,15 +341,19 @@ namespace turbo::txwit {
             }
         };
 
-        struct cert_info_t {
-            // default values are needed only for zpp serialization to work
-            cert_t cert { stake_dereg_cert { stake_ident {} } };
-            cert_loc_t loc {};
+        struct timed_update_info_t {
+            index::timed_update::item update {};
             tx_loc_t tx_loc {};
+            bool has_tx_loc = false;
 
             static constexpr auto serialize(auto &archive, auto &self)
             {
-                return archive(self.cert, self.loc, self.tx_loc);
+                return archive(self.update, self.tx_loc, self.has_tx_loc);
+            }
+
+            bool operator<(const timed_update_info_t &o) const
+            {
+                return update < o.update;
             }
         };
 
@@ -368,6 +364,7 @@ namespace turbo::txwit {
             uint64_t fee = 0;
             uint32_t slot = 0;
             uint8_t era = 0;
+            protocol_version protocol_ver {};
             bool reqires_genesis_delegs_quorum = false;
             balances_t balances {};
             stored_txo_list inputs {};
@@ -381,7 +378,7 @@ namespace turbo::txwit {
 
             static constexpr auto serialize(auto &archive, auto &self)
             {
-                return archive(self.tx_id, self.tx_loc, self.tx_size, self.fee, self.slot, self.era, self.reqires_genesis_delegs_quorum,
+                return archive(self.tx_id, self.tx_loc, self.tx_size, self.fee, self.slot, self.era, self.protocol_ver, self.reqires_genesis_delegs_quorum,
                     self.balances, self.inputs, self.ref_inputs,
                     self.signers, self.required_signers,
                     self.native_scripts, self.byron_signers, self.plutus_ctx);
@@ -395,7 +392,8 @@ namespace turbo::txwit {
                     .tx_size=numeric_cast<uint32_t>(tx.size()),
                     .fee=tx.block().era() > 1 ? tx.fee() : 0,
                     .slot=numeric_cast<uint32_t>(tx.block().slot()),
-                    .era=numeric_cast<uint8_t>(tx.block().era())
+                    .era=numeric_cast<uint8_t>(tx.block().era()),
+                    .protocol_ver=tx.block().protocol_ver()
                 };
             }
         };
@@ -410,11 +408,12 @@ namespace turbo::txwit {
 
             size_t part_id = 0;
             size_t epoch = 0;
+            bool finalize_after_batch = false;
             batch_stats_t stats {};
             // data to update the ledger state
+            std::vector<index::block_fees::item> block_updates {};
+            std::vector<timed_update_info_t> timed_updates {};
             txo_map utxos {};
-            param_update_list updates {};
-            std::vector<cert_info_t> certs {};
             // pre-aggregated data for processing
             max_stats_t max_stats {};
             // fields are not serialized as is:
@@ -425,7 +424,8 @@ namespace turbo::txwit {
 
             static constexpr auto serialize(auto &archive, auto &self)
             {
-                return archive(self.part_id, self.epoch, self.stats, self.utxos, self.updates, self.certs, self.max_stats);
+                return archive(self.part_id, self.epoch, self.finalize_after_batch, self.stats,
+                    self.block_updates, self.timed_updates, self.utxos, self.max_stats);
             }
         };
 
@@ -435,21 +435,35 @@ namespace turbo::txwit {
             const witness_type typ;
             const error_handler_func error_handler;
 
-            // protocol parameter updates, UTXO data and certificates must be always processed
+            template<typename T>
+            static timed_update_info_t make_timed_update(const cert_loc_t &loc, T &&update,
+                const tx_loc_t tx_loc={}, const bool has_tx_loc=false)
+            {
+                timed_update_info_t info {};
+                info.update.loc = loc;
+                info.update.update = std::forward<T>(update);
+                info.tx_loc = tx_loc;
+                info.has_tx_loc = has_tx_loc;
+                return info;
+            }
+
+            // Ledger updates must be always processed so witness checks see the correct state.
             // transaction data may be skipped
             void pre_aggregate_data(batch_info &part, const block_container &blk) const
             {
                 auto &stats = part.stats;
                 auto &max = part.max_stats;
+                uint64_t fees = 0;
+                uint64_t donations = 0;
                 if (!max.max_block_body_size || *max.max_block_body_size < blk->body_size())
                     max.max_block_body_size = numeric_cast<uint32_t>(blk->body_size());
                 if (!max.max_block_header_size || *max.max_block_header_size < blk->header().size())
                     max.max_block_header_size = numeric_cast<uint16_t>(blk->header().size());
                 blk->foreach_update_proposal([&](const auto &prop) {
-                    part.updates.emplace_back(blk->slot(), prop);
+                    part.timed_updates.emplace_back(make_timed_update(cert_loc_t { blk->slot(), 0, 0 }, prop));
                 });
                 blk->foreach_update_vote([&](const auto &vote) {
-                    part.updates.emplace_back(blk->slot(), vote);
+                    part.timed_updates.emplace_back(make_timed_update(cert_loc_t { blk->slot(), 0, 0 }, vote));
                 });
                 const auto block_info = storage::block_info::from_block(blk);
                 blk->foreach_tx([&](const tx_base &tx) {
@@ -457,8 +471,10 @@ namespace turbo::txwit {
                     const size_t tx_idx = part.txs[tx_part_idx].size();
                     tx_loc_t tx_loc { tx_part_idx, tx_idx };
                     auto tx_checks = tx_context_t::from_tx(tx_loc, tx);
-                    if (tx.block().era() > 1)
+                    if (tx.block().era() > 1) {
+                        fees += tx.fee();
                         tx_checks.balances.out_coin += tx.fee();
+                    }
                     if (!max.max_tx_size || *max.max_tx_size < tx.raw().size())
                         max.max_tx_size = numeric_cast<uint32_t>(tx.raw().size());
                     size_t num_redeemers = 0;
@@ -499,7 +515,9 @@ namespace turbo::txwit {
                         if (std::holds_alternative<instant_reward_cert>(cert.val))
                             tx_checks.reqires_genesis_delegs_quorum = true;
                         const cert_loc_t loc { blk->slot(), tx.index(), cert_idx++ };
-                        part.certs.emplace_back(cert, loc, tx_loc);
+                        std::visit([&](const auto &c) {
+                            part.timed_updates.emplace_back(make_timed_update(loc, c, tx_loc, true));
+                        }, cert.val);
                         if (const auto r_cred = cert.signing_cred(); r_cred)
                             tx_checks.required_signers.emplace(*r_cred);
                     });
@@ -509,9 +527,13 @@ namespace turbo::txwit {
                     });
                     // The available reward balance is checked by the consensus verification. No need to recheck it here.
                     tx.foreach_withdrawal([&](const tx_withdrawal &withdr) {
+                        const auto stake_id = withdr.address.stake_id();
+                        part.timed_updates.emplace_back(make_timed_update(
+                            cert_loc_t { blk->slot(), tx.index(), 0 },
+                            index::timed_update::stake_withdraw { stake_id, withdr.amount }
+                        ));
                         if (withdr.amount) {
                             tx_checks.balances.in_coin += withdr.amount;
-                            const auto stake_id = withdr.address.stake_id();
                             if (stake_id.script)
                                 tx_checks.required_signers.emplace(script_signer_t { stake_id.hash, redeemer_tag::reward });
                             else
@@ -547,10 +569,23 @@ namespace turbo::txwit {
                     });
                     if (!num_inputs) [[unlikely]]
                         throw error(fmt::format("tx {} does not have any inputs!", tx.hash()));
-                    tx_checks.balances.out_coin += tx.donation();
+                    const auto donation = tx.donation();
+                    donations += donation;
+                    tx_checks.balances.out_coin += donation;
                     if (const auto *c_tx = dynamic_cast<const cardano::conway::tx *>(&tx); c_tx) {
-                        for (const auto &p: c_tx->proposals())
+                        size_t prop_idx = 0;
+                        for (const auto &p: c_tx->proposals()) {
+                            part.timed_updates.emplace_back(make_timed_update(
+                                cert_loc_t { blk->slot(), tx.index(), prop_idx++ }, p
+                            ));
                             tx_checks.balances.out_coin += p.procedure.deposit;
+                        }
+                        size_t vote_idx = 0;
+                        for (const auto &v: c_tx->votes()) {
+                            part.timed_updates.emplace_back(make_timed_update(
+                                cert_loc_t { blk->slot(), tx.index(), vote_idx++ }, v
+                            ));
+                        }
                     }
                     tx.foreach_witness_byron_vkey([&](const auto &w) {
                         tx_checks.byron_signers.emplace_back(w);
@@ -585,13 +620,23 @@ namespace turbo::txwit {
                 blk->foreach_invalid_tx([&](const auto &tx) {
                     ++stats.num_invalid_txs;
                     tx.foreach_collateral([&](const auto &txi) {
-                        _del_utxo(part, txi);
+                        part.timed_updates.emplace_back(make_timed_update(
+                            cert_loc_t { blk->slot(), tx.index(), 0 },
+                            index::timed_update::collected_collateral_input { txi.hash, txi.idx }
+                        ));
                     });
-                    if (const auto *babbage_tx = dynamic_cast<const cardano::babbage::tx *>(&tx); babbage_tx) {
-                        if (const auto c_ret = babbage_tx->collateral_return(); c_ret)
-                            _add_utxo(part.utxos, tx, *c_ret, babbage_tx->outputs().size());
+                    if (const auto *babbage_tx = dynamic_cast<const cardano::babbage::tx_base *>(&tx); babbage_tx) {
+                        if (const auto c_ret = babbage_tx->collateral_return(); c_ret) {
+                            part.timed_updates.emplace_back(make_timed_update(
+                                cert_loc_t { blk->slot(), tx.index(), 0 },
+                                index::timed_update::collected_collateral_refund { c_ret->coin }
+                            ));
+                            _add_utxo(part.utxos, tx, *c_ret, tx.outputs().size());
+                        }
                     }
                 });
+                part.block_updates.emplace_back(blk->slot(), blk->issuer_hash(), fees, donations,
+                    blk.end_offset(), numeric_cast<uint8_t>(blk->era()));
             }
 
             wit_cnt witnesses_ok_stage1(const block_container &blk, const tx_base &tx) const
@@ -638,25 +683,9 @@ namespace turbo::txwit {
                                 break;
                         }
                     } catch (const std::exception &ex) {
-                        // There are 2 known cases out 40 million mainnet Plutus evaluations
-                        // when the C++ Plutus machine fails to evaluate a Plutus script.
-                        // That happens when a bls12_381_g1_compress builtin gets passed a bytestring argument.
-                        // According to the Plutus spec that builtin is not supposed to accept a bytestring only a bls12_381_g1_element.
-                        // A Rust Plutus machine from Aiken fails exactly the same. Further investigations are non-ongoing.
-                        //
-                        // Since the primary focus of the current release is the proof of performance and 2 witnesses out 40 million
-                        // do not impact it in any measurable way, hardcoding the list of transactions here as a temporary measure.
-                        static std::set<tx_hash> known_cases {
-                            tx_hash::from_hex("71579B77AB7D974EB31EF1B50D58F14F2CEAC2BCF540AAC50F777F56A8F24BFF"),
-                            tx_hash::from_hex("E998E761F2F7F35DA12799E1F41914686FC2FE8010BAC1BE57FFCBA8F820E752")
-                        };
                         const auto msg = fmt::format("txwit slot: {} tx: {} error: {}", blk.slot(), tx.hash(), ex.what());
-                        if (known_cases.find(tx.hash()) == known_cases.end()) {
-                            logger::error("{}", msg);
-                            error_handler(msg);
-                        } else {
-                            logger::warn("a known incompatibility under investigation: {}", msg);
-                        }
+                        logger::error("{}", msg);
+                        error_handler(msg);
                     }
                 }
                 return cnts;
@@ -683,9 +712,9 @@ namespace turbo::txwit {
             void apply_batch(batch_info &&part)
             {
                 _apply_epoch_update(part);
-                _process_certs_and_param_updates(part);
+                auto update_effects = _apply_ledger_updates_before_witnesses(part);
                 _cnts += _validate_witnesses_and_invariants(part);
-                _apply_utxos(part);
+                _apply_ledger_updates_after_witnesses(part, std::move(update_effects));
             }
 
             const wit_cnt &counts() const
@@ -755,78 +784,61 @@ namespace turbo::txwit {
                 }
             }
 
-            void _process_certs_and_param_updates(batch_info &part)
+            void _observe_deposit_effects(batch_info &part, const timed_update_info_t &upd) const
             {
-                timer t { fmt::format("txwit batch: {} epoch: {} seq process_certs_and_param_updates", part.part_id, part.epoch), logger::level::debug };
-                for (const auto &cert: part.certs) {
-                    std::visit([&](const auto &c) {
-                        using T = std::decay_t<decltype(c)>;
-                        if constexpr (std::is_same_v<T, stake_reg_cert>) {
-                            if (!_st.has_stake(c.stake_id))
-                                part.tx_deposits[cert.tx_loc].out_coin += _st.params().key_deposit;
-                        } else if constexpr (std::is_same_v<T, reg_cert>
-                                || std::is_same_v<T, stake_reg_deleg_cert>
-                                || std::is_same_v<T, vote_reg_deleg_cert>
-                                || std::is_same_v<T, stake_vote_reg_deleg_cert>) {
-                            if (!_st.has_stake(c.stake_id))
-                                part.tx_deposits[cert.tx_loc].out_coin += c.deposit;
-                        } else if constexpr (std::is_same_v<T, stake_dereg_cert>) {
-                            part.tx_deposits[cert.tx_loc].in_coin += _st.params().key_deposit;
-                        } else if constexpr (std::is_same_v<T, unreg_cert>) {
-                            part.tx_deposits[cert.tx_loc].in_coin += c.deposit;
-                        } else if constexpr (std::is_same_v<T, pool_reg_cert>) {
-                            if (!_st.has_pool(c.pool_id))
-                                part.tx_deposits[cert.tx_loc].out_coin += _st.params().pool_deposit;
-                        } else if constexpr (std::is_same_v<T, reg_drep_cert>) {
-                            if (!_st.has_drep(c.drep_id))
-                                part.tx_deposits[cert.tx_loc].out_coin += c.deposit;
-                        } else if constexpr (std::is_same_v<T, unreg_drep_cert>) {
-                            part.tx_deposits[cert.tx_loc].in_coin += c.deposit;
-                        }
-                    }, cert.cert.val);
-                    _st.process_cert(cert.cert, cert.loc);
-                }
-                for (const auto &pu: part.updates) {
-                    std::visit([&](const auto &u) {
-                        using T = std::decay_t<decltype(u)>;
-                        if constexpr (std::is_same_v<T, param_update_proposal>) {
-                            _st.propose_update(pu.slot, u);
-                            //std::cout << fmt::format("update proposal slot: {} data: {}\n", e.slot, std::get<cardano::param_update_proposal>(e.update));
-                        } else if constexpr (std::is_same_v<T, param_update_vote>) {
-                            //std::cout << fmt::format("update vote slot: {} data: {}\n", e.slot, std::get<cardano::param_update_vote>(e.update));
-                            _st.proposal_vote(pu.slot, u);
-                        } else {
-                            throw error(fmt::format("unsupported parameter update type: {}", typeid(T).name()));
-                        }
-                    }, pu.update);
-                }
+                if (!upd.has_tx_loc)
+                    return;
+                std::visit([&](const auto &c) {
+                    using T = std::decay_t<decltype(c)>;
+                    if constexpr (std::is_same_v<T, stake_reg_cert>) {
+                        if (!_st.has_stake(c.stake_id))
+                            part.tx_deposits[upd.tx_loc].out_coin += _st.params().key_deposit;
+                    } else if constexpr (std::is_same_v<T, reg_cert>
+                            || std::is_same_v<T, stake_reg_deleg_cert>
+                            || std::is_same_v<T, vote_reg_deleg_cert>
+                            || std::is_same_v<T, stake_vote_reg_deleg_cert>) {
+                        if (!_st.has_stake(c.stake_id))
+                            part.tx_deposits[upd.tx_loc].out_coin += c.deposit;
+                    } else if constexpr (std::is_same_v<T, stake_dereg_cert>) {
+                        part.tx_deposits[upd.tx_loc].in_coin += _st.params().key_deposit;
+                    } else if constexpr (std::is_same_v<T, unreg_cert>) {
+                        part.tx_deposits[upd.tx_loc].in_coin += c.deposit;
+                    } else if constexpr (std::is_same_v<T, pool_reg_cert>) {
+                        if (!_st.has_pool(c.pool_id))
+                            part.tx_deposits[upd.tx_loc].out_coin += _st.params().pool_deposit;
+                    } else if constexpr (std::is_same_v<T, reg_drep_cert>) {
+                        if (!_st.has_drep(c.drep_id))
+                            part.tx_deposits[upd.tx_loc].out_coin += c.deposit;
+                    } else if constexpr (std::is_same_v<T, unreg_drep_cert>) {
+                        part.tx_deposits[upd.tx_loc].in_coin += c.deposit;
+                    }
+                }, upd.update.update);
             }
 
-            void _apply_utxos(batch_info &part)
+            update_effects_t _apply_ledger_updates_before_witnesses(batch_info &part)
             {
-                timer t { fmt::format("txwit batch: {} epoch: {} par apply_utxos", part.part_id, part.epoch), logger::level::debug };
-                static const std::string task_id { "resolve-apply-utxos" };
-                auto &sched = _cr.sched();
-                sched.wait_all(task_id, [&](const auto &, const auto &submit_f) {
-                    for (size_t pi = 0; pi < part.utxos.num_parts; ++pi) {
-                        submit_f({ 2000, task_id, [&, pi] {
-                            auto &utxo_part =  const_cast<txo_map &>(_st.utxos()).partition(pi);
-                            auto &ue_part = part.utxos.partition(pi);
-                            for (auto &&[txo_id, txo_data]: ue_part) {
-                                if (txo_data) {
-                                    if (auto [it, created] = utxo_part.try_emplace(txo_id, std::move(txo_data)); !created) [[unlikely]]
-                                        logger::warn("txwit: epoch: {} a non-unique TXO {}!", part.epoch, it->first);
-                                } else {
-                                    if (auto it = utxo_part.find(txo_id); it != utxo_part.end()) [[likely]] {
-                                        utxo_part.erase(it);
-                                    } else {
-                                        throw error(fmt::format("epoch: {} request to remove an unknown TXO {}!", part.epoch, txo_id));
-                                    }
-                                }
-                            }
-                        }});
-                    }
-                });
+                timer t { fmt::format("txwit batch: {} epoch: {} seq apply ledger updates before witnesses", part.part_id, part.epoch), logger::level::debug };
+                block_update_list block_updates {};
+                block_updates.reserve(part.block_updates.size());
+                for (auto &&upd: part.block_updates)
+                    block_updates.emplace_back(std::move(upd));
+                _st.process_block_updates(std::move(block_updates));
+
+                update_effects_t effects {};
+                for (auto &upd: part.timed_updates) {
+                    _observe_deposit_effects(part, upd);
+                    _st.process_timed_update(effects, std::move(upd.update));
+                }
+                return effects;
+            }
+
+            void _apply_ledger_updates_after_witnesses(batch_info &part, update_effects_t &&effects)
+            {
+                timer t { fmt::format("txwit batch: {} epoch: {} par apply ledger updates after witnesses", part.part_id, part.epoch), logger::level::debug };
+                utxo_update_list utxo_updates {};
+                utxo_updates.emplace_back(std::move(part.utxos));
+                _st.process_utxo_updates(std::move(utxo_updates));
+                _st.finish_update_processing(std::move(effects), part.finalize_after_batch);
             }
 
             std::unique_ptr<context> _prep_plutus_ctx(tx_context_t &tx) const
@@ -869,6 +881,7 @@ namespace turbo::txwit {
                         std::move(tx.plutus_ctx->body), std::move(tx.plutus_ctx->wits),
                         tx.plutus_ctx->block, _cr.config()
                     );
+                    p_ctx->protocol_ver(tx.protocol_ver);
                     tx.plutus_ctx.reset();
                     p_ctx->set_inputs(std::move(tx.inputs), std::move(tx.ref_inputs));
                     return p_ctx;
@@ -1031,11 +1044,13 @@ namespace turbo::txwit {
         const chunk_registry &_cr;
         const validation_config_t _cfg;
 
-        static batch_stats_t _process_batch_stage1(const chunk_registry &cr, const size_t batch_no, const storage::chunk_cptr_list &batch, const validation_config_t &cfg)
+        static batch_stats_t _process_batch_stage1(const chunk_registry &cr, const size_t batch_no,
+            const storage::chunk_cptr_list &batch, const validation_config_t &cfg, const bool finalize_after_batch)
         {
             if (batch.empty()) [[unlikely]]
                 throw error(fmt::format("batch {} is empty!", batch_no));
             batch_info part { batch_no, cr.make_slot(batch.front()->first_slot).epoch() };
+            part.finalize_after_batch = finalize_after_batch;
             for (const auto *chunk_ptr: batch) {
                 const auto &chunk = *chunk_ptr;
                 const auto first_epoch = cr.make_slot(chunk.first_slot).epoch();
@@ -1059,6 +1074,8 @@ namespace turbo::txwit {
                     }
                 }
             }
+            std::sort(part.block_updates.begin(), part.block_updates.end());
+            std::sort(part.timed_updates.begin(), part.timed_updates.end());
             for (size_t pi = 0; pi < batch_info::num_parts; ++pi) {
                 const auto part_path = _batch_path(cr, part.part_id, fmt::format("txs-{:02X}", pi));
                 zpp::save_zstd(part_path, part.txs[pi]);
@@ -1115,7 +1132,9 @@ namespace turbo::txwit {
                         try {
                             if (!part_c.cancel()) {
                                 {
-                                    auto stats = _process_batch_stage1(_cr, bi, batches[bi], _cfg);
+                                    const auto finalize_after_batch = bi + 1 == batches.size()
+                                        || _cr.make_slot(batches[bi + 1].front()->first_slot).epoch() != _cr.make_slot(batches[bi].front()->first_slot).epoch();
+                                    auto stats = _process_batch_stage1(_cr, bi, batches[bi], _cfg, finalize_after_batch);
                                     mutex::scoped_lock lk { all_mutex };
                                     all += stats;
                                 }

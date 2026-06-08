@@ -386,12 +386,13 @@ namespace turbo::cardano {
     struct proposal_procedure_t {
         uint64_t deposit = 0;
         stake_ident return_addr {};
+        uint8_t return_addr_network_id = 1;
         gov_action_t action {};
         anchor_t anchor {};
 
         static constexpr auto serialize(auto &archive, auto &self)
         {
-            return archive(self.deposit, self.return_addr, self.action, self.anchor);
+            return archive(self.deposit, self.return_addr, self.return_addr_network_id, self.action, self.anchor);
         }
 
         static proposal_procedure_t from_cbor(cbor::zero2::value &v);

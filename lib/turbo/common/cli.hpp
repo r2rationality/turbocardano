@@ -39,11 +39,15 @@ namespace turbo::cli {
             size_t req = 0;
             size_t opt = 0;
             for (const auto &a: args) {
+                if (a.empty()) [[unlikely]]
+                    continue;
                 if (a.at(0) == '[') {
-                    if (a.ends_with("...]"))
-                        opt = std::numeric_limits<size_t>::max();
-                    if (opt < std::numeric_limits<size_t>::max())
-                        ++opt;
+                    if (opt < std::numeric_limits<size_t>::max()) {
+                        if (a.ends_with("...]"))
+                            opt = std::numeric_limits<size_t>::max();
+                        else
+                            ++opt;
+                    }
                 } else {
                     ++req;
                 }
@@ -148,7 +152,7 @@ namespace turbo::cli {
                 // creates an empty value if not initialized
                 if (const auto &val_it = pr.opts.find(name); cfg.validator && val_it != pr.opts.end()) {
                     if (const auto val_err = (*cfg.validator)(val_it->second); val_err)
-                        throw error(fmt::format("value {} is invalid for '--{}': {}", val_it->second, name, *val_err));
+                        throw error(fmt::format("value {} is invalid for '--{}': {}", val_it->second.value_or("<empty>"), name, *val_err));
                 }
             }
             if (cfg.args.min && pr.args.size() < *cfg.args.min)
@@ -210,7 +214,7 @@ namespace turbo::cli {
     {
         char *end;
         errno = 0;
-        const long val = strtoll(str, &end, 10);
+        const auto val = strtoll(str, &end, 10);
         if (errno || end == str || *end != '\0') [[unlikely]]
             throw error_sys(fmt::format("failed to parse {} from '{}'", typeid(T).name(), str));
         return numeric_cast<T>(val);

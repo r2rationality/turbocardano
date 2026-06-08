@@ -24,6 +24,7 @@ suite plutus_costs_suite = [] {
                 const auto &div = v3.builtin_fun.at(builtin_tag::divide_integer);
                 value_list empty { alloc };
                 expect_equal(131930, div.cpu->cost(arg_sizes { 1, 1 }, empty));
+                expect_equal(85848, div.cpu->cost(arg_sizes { 100, 100 }, empty));
                 expect_equal(1, div.mem->cost(arg_sizes { 1, 1 }, empty));
             }
             const auto &v2 = defaults().v2.value();

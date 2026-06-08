@@ -17,7 +17,7 @@ namespace turbo::plutus {
     struct context::data_encoder {
         using data = plutus::data;
 
-        data_encoder(allocator &alloc, script_type typ): _alloc { alloc }, _typ { typ }
+        data_encoder(allocator &alloc, script_type typ, protocol_version pv): _alloc { alloc }, _typ { typ }, _pv { pv }
         {
         }
 
@@ -35,6 +35,71 @@ namespace turbo::plutus {
         data boolean(bool v)
         {
             return constr(v ? 1 : 0, {});
+        }
+
+        data unsupported_conway_v1_v2_cert(const char *typ)
+        {
+            throw error(fmt::format("{} is not supported in a {} script context", typ, _typ));
+            // A noop, to make Visual C++ happy
+            return data::bint(_alloc, 0);
+        }
+
+        data conway_deposit(const uint64_t coin)
+        {
+            // Node compatibility: the Plutus API/spec can carry Conway deposits,
+            // but cardano-ledger omitted them in protocol version 9 and keeps
+            // that mainnet behavior forever for Conway-era contexts.
+            if (_pv.bootstrap_phase())
+                return constr(1, {});
+            return constr(0, { data::bint(_alloc, coin) });
+        }
+
+        void guard_conway_features_for_v1_v2(const tx_base &tx)
+        {
+            if ((_typ == script_type::plutus_v1 || _typ == script_type::plutus_v2) && tx.block().era() >= 7) {
+                const auto &ctx = dynamic_cast<const conway::tx_base &>(tx);
+                if (!ctx.votes().empty())
+                    throw error(fmt::format("voting procedures are not supported in a {} script context", _typ));
+                if (!ctx.proposals().empty())
+                    throw error(fmt::format("proposal procedures are not supported in a {} script context", _typ));
+                if (ctx.current_treasury())
+                    throw error(fmt::format("current treasury is not supported in a {} script context", _typ));
+                if (ctx.donation() != 0)
+                    throw error(fmt::format("treasury donation is not supported in a {} script context", _typ));
+            }
+        }
+
+        void guard_reference_inputs_v1(const context &ctx)
+        {
+            if (_typ != script_type::plutus_v1)
+                return;
+            if (ctx.tx().block().era() < 7) {
+                if (!ctx.ref_inputs().empty())
+                    throw error("reference inputs are not supported in a plutus_v1 script context");
+                return;
+            }
+            // Conway Haskell no longer exposes reference inputs to Plutus V1,
+            // but still translates them to reject V1-incompatible outputs such
+            // as Byron addresses and inline datums.
+            for (const auto &in: ctx.ref_inputs())
+                static_cast<void>(txo(in.data));
+        }
+
+        void guard_reference_inputs_not_spent(const context &ctx)
+        {
+            if (_typ != script_type::plutus_v3 || _pv.major < 11)
+                return;
+            // The formal Conway UTXO spec requires tx inputs and reference
+            // inputs to be disjoint unconditionally. Haskell performs the
+            // script-context check only from protocol version 11, so mirror the
+            // node gate here.
+            std::set<tx_out_ref> inputs {};
+            for (const auto &in: ctx.inputs())
+                inputs.emplace(in.id);
+            for (const auto &in: ctx.ref_inputs()) {
+                if (inputs.contains(in.id))
+                    throw error(fmt::format("reference input is also spent: {}", in.id));
+            }
         }
 
         data encode(const cpp_int &v)
@@ -220,6 +285,29 @@ namespace turbo::plutus {
             return constr(1, {});
         }
 
+        template<typename T>
+        data encode(const nil_optional_t<T> &o)
+        {
+            if (o)
+                return constr(0, { encode(*o) });
+            return constr(1, {});
+        }
+
+        data encode(const protocol_version &pv)
+        {
+            return constr(0, { encode(pv.major), encode(pv.minor) });
+        }
+
+        data encode(const rational_u64 &r)
+        {
+            return constr(0, { encode(r.numerator), encode(r.denominator) });
+        }
+
+        data encode(const constitution_t &c)
+        {
+            return encode(c.policy_id);
+        }
+
         data encode(const stake_reg_cert &c)
         {
             switch (_typ) {
@@ -245,8 +333,15 @@ namespace turbo::plutus {
 
         data encode(const reg_cert &c)
         {
-            //return constr(0, { stake_cred(c.stake_id), data::bint(_alloc, c.deposit) });
-            return constr(0, { stake_cred(c.stake_id), constr(1, {}) });
+            switch (_typ) {
+                case script_type::plutus_v1:
+                case script_type::plutus_v2:
+                    return constr(0, { stake_cred(c.stake_id) });
+                case script_type::plutus_v3:
+                    return constr(0, { stake_cred(c.stake_id), conway_deposit(c.deposit) });
+                default:
+                    throw error(fmt::format("unsupported script type: {}", _typ));
+            }
         }
 
         data encode(const stake_dereg_cert &c)
@@ -269,8 +364,7 @@ namespace turbo::plutus {
                 case script_type::plutus_v2:
                     return constr(1, { stake_cred(c.stake_id) });
                 case script_type::plutus_v3:
-                    //return constr(1, { stake_cred(c.stake_id), data::bint(_alloc, c.deposit) });
-                    return constr(1, { stake_cred(c.stake_id), constr(1, {}) });
+                    return constr(1, { stake_cred(c.stake_id), conway_deposit(c.deposit) });
                 default:
                     throw error(fmt::format("unsupported script type: {}", _typ));
             }
@@ -290,62 +384,158 @@ namespace turbo::plutus {
 
         data encode(const vote_deleg_cert &c)
         {
-            return constr(2, { encode(c.stake_id), constr(1, { encode(c.drep) }) });
+            switch (_typ) {
+                case script_type::plutus_v1:
+                case script_type::plutus_v2:
+                    return unsupported_conway_v1_v2_cert("vote_deleg_cert");
+                case script_type::plutus_v3:
+                    return constr(2, { encode(c.stake_id), constr(1, { encode(c.drep) }) });
+                default:
+                    throw error(fmt::format("unsupported script type: {}", _typ));
+            }
         }
 
         data encode(const stake_vote_deleg_cert &c)
         {
-            return constr(2, { encode(c.stake_id), constr(2, { encode(c.pool_id), encode(c.drep) }) });
+            switch (_typ) {
+                case script_type::plutus_v1:
+                case script_type::plutus_v2:
+                    return unsupported_conway_v1_v2_cert("stake_vote_deleg_cert");
+                case script_type::plutus_v3:
+                    return constr(2, { encode(c.stake_id), constr(2, { encode(c.pool_id), encode(c.drep) }) });
+                default:
+                    throw error(fmt::format("unsupported script type: {}", _typ));
+            }
         }
 
         data encode(const stake_reg_deleg_cert &c)
         {
-            return constr(3, { encode(c.stake_id), constr(0, { encode(c.pool_id) }), data::bint(_alloc, c.deposit) });
+            switch (_typ) {
+                case script_type::plutus_v1:
+                case script_type::plutus_v2:
+                    return unsupported_conway_v1_v2_cert("stake_reg_deleg_cert");
+                case script_type::plutus_v3:
+                    return constr(3, { encode(c.stake_id), constr(0, { encode(c.pool_id) }), data::bint(_alloc, c.deposit) });
+                default:
+                    throw error(fmt::format("unsupported script type: {}", _typ));
+            }
         }
 
         data encode(const vote_reg_deleg_cert &c)
         {
-            return constr(3, { encode(c.stake_id), constr(1, { encode(c.drep) }), data::bint(_alloc, c.deposit) });
+            switch (_typ) {
+                case script_type::plutus_v1:
+                case script_type::plutus_v2:
+                    return unsupported_conway_v1_v2_cert("vote_reg_deleg_cert");
+                case script_type::plutus_v3:
+                    return constr(3, { encode(c.stake_id), constr(1, { encode(c.drep) }), data::bint(_alloc, c.deposit) });
+                default:
+                    throw error(fmt::format("unsupported script type: {}", _typ));
+            }
         }
 
         data encode(const stake_vote_reg_deleg_cert &c)
         {
-            return constr(3, { encode(c.stake_id), constr(2, { encode(c.pool_id), encode(c.drep) }), data::bint(_alloc, c.deposit) });
+            switch (_typ) {
+                case script_type::plutus_v1:
+                case script_type::plutus_v2:
+                    return unsupported_conway_v1_v2_cert("stake_vote_reg_deleg_cert");
+                case script_type::plutus_v3:
+                    return constr(3, { encode(c.stake_id), constr(2, { encode(c.pool_id), encode(c.drep) }), data::bint(_alloc, c.deposit) });
+                default:
+                    throw error(fmt::format("unsupported script type: {}", _typ));
+            }
         }
 
         data encode(const reg_drep_cert &c)
         {
-            return constr(4, { encode(c.drep_id), data::bint(_alloc, c.deposit) });
+            switch (_typ) {
+                case script_type::plutus_v1:
+                case script_type::plutus_v2:
+                    return unsupported_conway_v1_v2_cert("reg_drep_cert");
+                case script_type::plutus_v3:
+                    return constr(4, { encode(c.drep_id), data::bint(_alloc, c.deposit) });
+                default:
+                    throw error(fmt::format("unsupported script type: {}", _typ));
+            }
         }
 
         data encode(const update_drep_cert &c)
         {
-            return constr(5, { encode(c.drep_id) });
+            switch (_typ) {
+                case script_type::plutus_v1:
+                case script_type::plutus_v2:
+                    return unsupported_conway_v1_v2_cert("update_drep_cert");
+                case script_type::plutus_v3:
+                    return constr(5, { encode(c.drep_id) });
+                default:
+                    throw error(fmt::format("unsupported script type: {}", _typ));
+            }
         }
 
         data encode(const unreg_drep_cert &c)
         {
-            return constr(6, { encode(c.drep_id), data::bint(_alloc, c.deposit) });
+            switch (_typ) {
+                case script_type::plutus_v1:
+                case script_type::plutus_v2:
+                    return unsupported_conway_v1_v2_cert("unreg_drep_cert");
+                case script_type::plutus_v3:
+                    return constr(6, { encode(c.drep_id), data::bint(_alloc, c.deposit) });
+                default:
+                    throw error(fmt::format("unsupported script type: {}", _typ));
+            }
         }
 
-        data encode(const pool_reg_cert &)
+        data encode(const pool_reg_cert &c)
         {
-            throw error("pool_reg_cert script witnesses not supported!");
+            switch (_typ) {
+                case script_type::plutus_v1:
+                case script_type::plutus_v2:
+                    return constr(3, { encode(c.pool_id), encode(c.params.vrf_vkey) });
+                case script_type::plutus_v3:
+                    return constr(7, { encode(c.pool_id), encode(c.params.vrf_vkey) });
+                default:
+                    throw error(fmt::format("unsupported script type: {}", _typ));
+            }
         }
 
-        data encode(const pool_retire_cert &)
+        data encode(const pool_retire_cert &c)
         {
-            throw error("pool_retire_cert script witnesses not supported!");
+            switch (_typ) {
+                case script_type::plutus_v1:
+                case script_type::plutus_v2:
+                    return constr(4, { encode(c.pool_id), encode(static_cast<uint64_t>(c.epoch)) });
+                case script_type::plutus_v3:
+                    return constr(8, { encode(c.pool_id), encode(static_cast<uint64_t>(c.epoch)) });
+                default:
+                    throw error(fmt::format("unsupported script type: {}", _typ));
+            }
         }
 
         data encode(const auth_committee_hot_cert &c)
         {
-            return constr(9, { encode(c.cold_id), encode(c.hot_id) });
+            switch (_typ) {
+                case script_type::plutus_v1:
+                case script_type::plutus_v2:
+                    return unsupported_conway_v1_v2_cert("auth_committee_hot_cert");
+                case script_type::plutus_v3:
+                    return constr(9, { encode(c.cold_id), encode(c.hot_id) });
+                default:
+                    throw error(fmt::format("unsupported script type: {}", _typ));
+            }
         }
 
         data encode(const resign_committee_cold_cert &c)
         {
-            return constr(10, { encode(c.cold_id) });
+            switch (_typ) {
+                case script_type::plutus_v1:
+                case script_type::plutus_v2:
+                    return unsupported_conway_v1_v2_cert("resign_committee_cold_cert");
+                case script_type::plutus_v3:
+                    return constr(10, { encode(c.cold_id) });
+                default:
+                    throw error(fmt::format("unsupported script type: {}", _typ));
+            }
         }
 
         data encode(const cert_t &cert)
@@ -358,26 +548,24 @@ namespace turbo::plutus {
         data encode(const plutus_cost_model &m)
         {
             data::list_type l { _alloc };
-            for (const auto &[name, value] : m) {
+            for (const auto value: m.raw_values())
                 l.emplace_back(data::bint(_alloc, cpp_int { value }));
-            }
             return data::list(_alloc, std::move(l));
         }
 
         data encode(const plutus_cost_models &mdls)
         {
             data::map_type m { _alloc };
-            if (mdls.v1)
-                m.emplace_back(_alloc, data::bint(_alloc, 0), encode(*mdls.v1));
-            if (mdls.v2)
-                m.emplace_back(_alloc, data::bint(_alloc, 1), encode(*mdls.v2));
-            if (mdls.v3)
-                m.emplace_back(_alloc, data::bint(_alloc, 2), encode(*mdls.v3));
+            for (const auto &[id, model]: mdls.items)
+                m.emplace_back(_alloc, data::bint(_alloc, id), encode(model));
             return data::map(_alloc, std::move(m));
         }
 
         data encode(const param_update_t &u)
         {
+            // Haskell encodes ChangedParameters with ToPlutusData for the full
+            // PParamsUpdate. Keep this local subset explicit until the whole
+            // PParamsUpdate PlutusData encoding is mirrored here.
             data::map_type m { _alloc };
             if (u.plutus_cost_models)
                 m.emplace_back(_alloc, data::bint(_alloc, 18), encode(*u.plutus_cost_models));
@@ -393,29 +581,43 @@ namespace turbo::plutus {
             });
         }
 
-        data encode(const gov_action_t::hard_fork_init_t &)
+        data encode(const gov_action_t::hard_fork_init_t &h)
         {
-            return constr(1, {});
+            return constr(1, { encode(h.prev_action_id), encode(h.protocol_ver) });
         }
 
-        data encode(const gov_action_t::treasury_withdrawals_t &)
+        data encode(const gov_action_t::treasury_withdrawals_t &t)
         {
-            return constr(2, {});
+            data::map_type m { _alloc };
+            for (const auto &[reward_id, coin]: t.withdrawals)
+                m.emplace_back(_alloc, encode(static_cast<stake_ident>(reward_id)), encode(coin));
+            return constr(2, { data::map(_alloc, std::move(m)), encode(t.policy_id) });
         }
 
-        data encode(const gov_action_t::no_confidence_t &)
+        data encode(const gov_action_t::no_confidence_t &n)
         {
-            return constr(3, {});
+            return constr(3, { encode(n.prev_action_id) });
         }
 
-        data encode(const gov_action_t::update_committee_t &)
+        data encode(const gov_action_t::update_committee_t &u)
         {
-            return constr(4, {});
+            data::list_type removed { _alloc };
+            for (const auto &cred: u.members_to_remove)
+                removed.emplace_back(encode(cred));
+            data::map_type added { _alloc };
+            for (const auto &[cred, epoch]: u.members_to_add)
+                added.emplace_back(_alloc, encode(cred), encode(epoch));
+            return constr(4, {
+                encode(u.prev_action_id),
+                data::list(_alloc, std::move(removed)),
+                data::map(_alloc, std::move(added)),
+                encode(u.new_threshold)
+            });
         }
 
-        data encode(const gov_action_t::new_constitution_t &)
+        data encode(const gov_action_t::new_constitution_t &n)
         {
-            return constr(5, {});
+            return constr(5, { encode(n.prev_action_id), encode(n.new_constitution) });
         }
 
         data encode(const gov_action_t::info_action_t &)
@@ -434,7 +636,7 @@ namespace turbo::plutus {
         {
             return constr(0, {
                 data::bint(_alloc, p.procedure.deposit),
-                constr(0, { encode(p.procedure.return_addr.hash) }),
+                encode(p.procedure.return_addr),
                 encode(p.procedure.action)
             });
         }
@@ -500,7 +702,9 @@ namespace turbo::plutus {
                 return std::visit([&](const auto &d) {
                     using T = std::decay_t<decltype(d)>;
                     if constexpr (std::is_same_v<T, datum_hash>) {
-                        return constr(0, { ctx.datums().at(d) });
+                        if (const auto it = ctx.datums().find(d); it != ctx.datums().end())
+                            return constr(0, { it->second });
+                        return constr(1, {});
                     } else if constexpr (std::is_same_v<T, uint8_vector>) {
                         return constr(0, { data::from_cbor(_alloc, d) });
                     } else {
@@ -657,8 +861,8 @@ namespace turbo::plutus {
                 case script_type::plutus_v1: {
                     data::list_type l { _alloc };
                     tx.foreach_withdrawal([&](const tx_withdrawal &w) {
-                        l.emplace_back(data::list(_alloc, {
-                            encode(w.address.stake_id().hash),
+                        l.emplace_back(constr(0, {
+                            stake_cred(w.address.stake_id()),
                             encode(static_cast<uint64_t>(w.amount))
                         }));
                     });
@@ -702,8 +906,13 @@ namespace turbo::plutus {
 
         data validity_end(const context &ctx, const std::optional<uint64_t> end, const std::optional<uint64_t> start)
         {
-            if (end)
-                return constr(0, { constr(1, { slot(ctx, *end) }), constr(start ? 0 : 1, {}) });
+            if (end) {
+                // Conway Haskell uses strictUpperBound even without a lower
+                // bound. Older node translations used PV1.to in that case, so
+                // preserve the historical inclusive bound before Conway.
+                const auto strict_upper = start || ctx.tx().block().era() >= 7;
+                return constr(0, { constr(1, { slot(ctx, *end) }), constr(strict_upper ? 0 : 1, {}) });
+            }
             return constr(0, { constr(2, {}), constr(1, {}) });
         }
 
@@ -772,21 +981,36 @@ namespace turbo::plutus {
         data votes(const context &ctx)
         {
             data::map_type m { _alloc };
+            const voter_t *prev_voter = nullptr;
+            data::map_type votes_by_action { _alloc };
+            const auto flush_voter = [&] {
+                if (prev_voter)
+                    m.emplace_back(_alloc, encode(*prev_voter), data::map(_alloc, std::move(votes_by_action)));
+                votes_by_action = data::map_type { _alloc };
+            };
             for (const auto &v: ctx.votes()) {
-                data::map_type vm { _alloc };
-                vm.emplace_back(_alloc, encode(v.action_id), encode(v.voting_procedure));
-                m.emplace_back(_alloc, encode(v.voter), data::map(_alloc, std::move(vm)));
+                if (!prev_voter || (v.voter <=> *prev_voter) != std::strong_ordering::equal) {
+                    flush_voter();
+                    prev_voter = &v.voter;
+                }
+                votes_by_action.emplace_back(_alloc, encode(v.action_id), encode(v.voting_procedure));
             }
+            flush_voter();
             return data::map(_alloc, std::move(m));
         }
 
-        data current_treasury(const tx_base &)
+        data current_treasury(const tx_base &tx)
         {
+            const auto &ctx = dynamic_cast<const conway::tx_base &>(tx);
+            if (const auto treasury = ctx.current_treasury())
+                return constr(0, { encode(*treasury) });
             return constr(1, {});
         }
 
-        data donation(const tx_base &)
+        data donation(const tx_base &tx)
         {
+            if (const auto coin = tx.donation(); coin != 0)
+                return constr(0, { encode(coin) });
             return constr(1, {});
         }
 
@@ -797,6 +1021,8 @@ namespace turbo::plutus {
 
         data context_shared_v1(const context &ctx)
         {
+            guard_conway_features_for_v1_v2(ctx.tx());
+            guard_reference_inputs_v1(ctx);
             return constr(0, {
                 inputs(ctx.inputs()),
                 outputs(ctx.tx()),
@@ -813,6 +1039,7 @@ namespace turbo::plutus {
 
         data context_shared_v2(const context &ctx)
         {
+            guard_conway_features_for_v1_v2(ctx.tx());
             return constr(0, {
                 inputs(ctx.inputs()),
                 inputs(ctx.ref_inputs()),
@@ -831,6 +1058,7 @@ namespace turbo::plutus {
 
         data context_shared_v3(const context &ctx)
         {
+            guard_reference_inputs_not_spent(ctx);
             return constr(0, {
                 inputs(ctx.inputs()),
                 inputs(ctx.ref_inputs()),
@@ -888,13 +1116,38 @@ namespace turbo::plutus {
     private:
         allocator &_alloc;
         script_type _typ;
+        protocol_version _pv;
     };
+
+    static protocol_version protocol_ver_for_era(const uint64_t era)
+    {
+        switch (era) {
+            case 0:
+            case 1:
+                return { 1, 0 };
+            case 2:
+                return { 2, 0 };
+            case 3:
+                return { 3, 0 };
+            case 4:
+                return { 4, 0 };
+            case 5:
+                return { 6, 0 };
+            case 6:
+                return { 8, 0 };
+            case 7:
+                return { 9, 0 };
+            default:
+                throw error(fmt::format("unsupported era for Plutus context protocol version fallback: {}", era));
+        }
+    }
 
     context::context(uint8_vector &&tx_body_data, uint8_vector &&tx_wits_data, const storage::block_info &block, const cardano::config &cfg):
         _cfg { cfg },
         _tx_body_bytes { std::move(tx_body_data) },
         _tx_wits_bytes { std::move(tx_wits_data) },
         _block_info { block },
+        _protocol_ver { protocol_ver_for_era(block.era) },
         _tx { block, block.offset + block.header_offset, cbor::zero2::parse(_tx_body_bytes).get(), cbor::zero2::parse(_tx_wits_bytes).get(), 0, _cfg }
     {
         _tx->foreach_redeemer([&](const auto &r) {
@@ -976,6 +1229,22 @@ namespace turbo::plutus {
         return { alc, constant { alc, data::from_cbor(alc, datum) } };
     }
 
+    static script_hash proposal_script_hash(const gov_action_t &ga)
+    {
+        return std::visit<script_hash>([](const auto &a) {
+            using T = std::decay_t<decltype(a)>;
+            if constexpr (std::is_same_v<T, gov_action_t::parameter_change_t>
+                    || std::is_same_v<T, gov_action_t::treasury_withdrawals_t>) {
+                if (!a.policy_id)
+                    throw error(fmt::format("gov_action type {} has no policy script", typeid(T).name()));
+                return *a.policy_id;
+            }
+            throw error(fmt::format("unsupported gov_action type: {}", typeid(T).name()));
+            // Unreachable and needed only to Make Visual C++ happy
+            return script_hash {};
+        }, ga.val);
+    }
+
     prepared_script context::prepare_script(const tx_redeemer &r) const
     {
         allocator script_alloc {};
@@ -986,14 +1255,30 @@ namespace turbo::plutus {
                 const auto addr = in.data.addr();
                 if (const auto pay_id = addr.pay_id(); pay_id.type == pay_ident::ident_type::SHELLEY_SCRIPT) [[likely]] {
                     const auto &script = _scripts.at(pay_id.hash);
+                    // The formal Conway spec keeps Plutus context construction
+                    // abstract. Haskell implements CIP-0069 by giving V3 scripts
+                    // only ScriptContext; the spending datum is represented as
+                    // Maybe Datum inside ScriptInfo rather than as a separate
+                    // argument.
+                    if (script.type() == script_type::plutus_v3)
+                        return apply_script(std::move(script_alloc), script, { t_redeemer, data(script_alloc, script.type(), r) }, r.budget);
                     std::optional<term> t_datum {};
-                    if (in.data.datum)
-                        t_datum = std::visit([&](const auto &v) { return term_from_datum(script_alloc, v); }, in.data.datum->val);
-                    if (!t_datum && !r.data.empty())
-                        t_datum.emplace(script_alloc, constant { script_alloc, data::from_cbor(script_alloc, r.data) });
-                    if (!t_datum)
-                        throw error(fmt::format("couldn't find datum for tx {} redeemer {}", _tx->hash(), r.ref_idx));
-                    return apply_script(std::move(script_alloc), script, { *t_datum, t_redeemer, data(script_alloc, script.type(), r) }, r.budget);
+                    if (in.data.datum) {
+                        std::visit([&](const auto &v) {
+                            using T = std::decay_t<decltype(v)>;
+                            if constexpr (std::is_same_v<T, datum_hash>) {
+                                if (datums().contains(v))
+                                    t_datum = term_from_datum(script_alloc, v);
+                            } else if constexpr (std::is_same_v<T, uint8_vector>) {
+                                t_datum = term_from_datum(script_alloc, v);
+                            } else {
+                                throw error(fmt::format("unsupported datum type: {}", typeid(T).name()));
+                            }
+                        }, in.data.datum->val);
+                    }
+                    if (t_datum)
+                        return apply_script(std::move(script_alloc), script, { *t_datum, t_redeemer, data(script_alloc, script.type(), r) }, r.budget);
+                    return apply_script(std::move(script_alloc), script, { t_redeemer, data(script_alloc, script.type(), r) }, r.budget);
                 }
                 throw error(fmt::format("tx {} (spend) input #{}: the output address is not a payment script: {}!", _tx->hash(), r.ref_idx, in));
                 break;
@@ -1017,21 +1302,8 @@ namespace turbo::plutus {
             }
             case redeemer_tag::propose: {
                 const auto &p = proposal_at(r.ref_idx);
-                return std::visit<prepared_script>([&](const auto &a) {
-                    using T = std::decay_t<decltype(a)>;
-                    if constexpr (std::is_same_v<T, gov_action_t::parameter_change_t>) {
-                        const auto &script = scripts().at(a.policy_id.value());
-                        return apply_script(std::move(script_alloc), script, { t_redeemer, data(script_alloc, script.type(), r) }, r.budget);
-                    }
-                    throw error(fmt::format("unsupported gov_action type: {}", typeid(T).name()));
-                    // Unreachable and needed only to Make Visual C++ happy
-                    return prepared_script {
-                        allocator {},
-                        script_hash {},
-                        script_type::plutus_v1,
-                        term { alloc(), failure {} }
-                    };
-                }, p.procedure.action.val);
+                const auto &script = scripts().at(proposal_script_hash(p.procedure.action));
+                return apply_script(std::move(script_alloc), script, { t_redeemer, data(script_alloc, script.type(), r) }, r.budget);
             }
             default:
                 throw error(fmt::format("tx: {} unsupported redeemer_tag: {}", _tx->hash(), static_cast<int>(r.tag)));
@@ -1065,14 +1337,7 @@ namespace turbo::plutus {
             case redeemer_tag::vote: return voter_at(r.ref_idx).hash;
             case redeemer_tag::propose: {
                 const auto &p = proposal_at(r.ref_idx);
-                return std::visit<script_hash>([&](const auto &a) {
-                    using T = std::decay_t<decltype(a)>;
-                    if constexpr (std::is_same_v<T, gov_action_t::parameter_change_t>)
-                        return a.policy_id.value();
-                    throw error(fmt::format("unsupported gov_action type: {}", typeid(T).name()));
-                    // Unreachable and needed only to Make Visual C++ happy
-                    return script_hash {};
-                }, p.procedure.action.val);
+                return proposal_script_hash(p.procedure.action);
             }
             default:
                 throw error(fmt::format("tx: {} unsupported redeemer_tag: {}", _tx->hash(), static_cast<int>(r.tag)));
@@ -1137,10 +1402,10 @@ namespace turbo::plutus {
     {
         // allocate the per-script data with the per-script allocator
         // but allocate the shared date with the per-context allocator
-        data_encoder enc { script_alloc, typ };
+        data_encoder enc { script_alloc, typ, _protocol_ver };
         auto shared_it = _shared.find(typ);
         if (shared_it == _shared.end()) {
-            data_encoder enc_shared { alloc(), typ };
+            data_encoder enc_shared { alloc(), typ, _protocol_ver };
             auto [new_it, created] = _shared.try_emplace(typ, enc_shared.context_shared(*this));
             shared_it = new_it;
         }

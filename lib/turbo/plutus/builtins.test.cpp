@@ -562,10 +562,32 @@ suite plutus_builtins_suite = [] {
                     const auto exp = bstr_type::from_hex(alloc, "80");
                     expect_equal(exp, act);
                 }
+                {
+                    cpp_int big { 1 };
+                    big <<= 512;
+                    const auto act = serialize_data(alloc, i_data(alloc, { alloc, big })).as_bstr();
+                    bstr_type::value_type exp { alloc };
+                    exp << uint8_vector::from_hex("C25F5840") << uint8_t { 1 };
+                    for (size_t i = 0; i < 63; ++i)
+                        exp << uint8_t { 0 };
+                    exp << uint8_vector::from_hex("4100FF");
+                    expect_equal(bstr_type { alloc, std::move(exp) }, act);
+                }
             };
         };
         "v3"_test = [] {
-            // v3 builtins are tested using the official conformance tests in plutus::machine unit test
+            allocator alloc {};
+            "bls12_381_g1_compress_types"_test = [&] {
+                const auto compressed_zero = bstr_type::from_hex(alloc, "C00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000");
+                const auto compressed_zero_short = bstr_type::from_hex(alloc, "C000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000");
+                const value compressed { alloc, compressed_zero };
+                const value compressed_short { alloc, compressed_zero_short };
+                expect(throws([&] { bls12_381_g1_compress(alloc, compressed); }));
+                expect(throws([&] { bls12_381_g1_uncompress(alloc, compressed_short); }));
+
+                const auto g1 = bls12_381_g1_uncompress(alloc, compressed);
+                expect_equal(compressed_zero, bls12_381_g1_compress(alloc, g1).as_bstr());
+            };
         };
     };
 };

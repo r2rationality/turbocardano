@@ -62,7 +62,7 @@ namespace turbo::cardano::ledger::alonzo {
         p.max_value_size = json::value_to<uint64_t>(al_cfg.at("maxValueSize"));
         p.max_collateral_pct = json::value_to<uint64_t>(al_cfg.at("collateralPercentage"));
         p.max_collateral_inputs = json::value_to<uint64_t>(al_cfg.at("maxCollateralInputs"));
-        p.plutus_cost_models.v1.emplace(plutus_cost_model::from_json(_cfg.plutus_all_cost_models.v1.value(), al_cfg.at("costModels").at("PlutusV1")));
+        p.plutus_cost_models.items.emplace(0, plutus_cost_model::from_json(_cfg.plutus_all_cost_models.at(0), al_cfg.at("costModels").at("PlutusV1")));
     }
 
     void state::_apply_param_update(const param_update &update)

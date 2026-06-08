@@ -26,6 +26,11 @@ namespace turbo::cardano::ledger {
         using vector::vector;
     };
 
+    struct update_effects_t {
+        tx_out_ref_list collected_collateral {};
+        uint64_t collateral_refund = 0;
+    };
+
     struct updates_t {
         block_update_list blocks {};
         utxo_update_list utxos {};

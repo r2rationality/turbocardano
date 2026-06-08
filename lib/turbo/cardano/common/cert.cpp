@@ -393,9 +393,12 @@ namespace turbo::cardano {
     proposal_procedure_t proposal_procedure_t::from_cbor(cbor::zero2::value &v)
     {
         auto &it = v.array();
+        const auto deposit = it.read().uint();
+        const reward_id_t return_addr { it.read().bytes() };
         return {
-            it.read().uint(),
-            address { it.read().bytes() }.stake_id(),
+            deposit,
+            static_cast<stake_ident>(return_addr),
+            return_addr.network_id(),
             gov_action_t::from_cbor(it.read()),
             anchor_t::from_cbor(it.read())
         };
@@ -406,7 +409,7 @@ namespace turbo::cardano {
         enc.array(4);
         enc.uint(deposit);
         byte_array<sizeof(return_addr.hash) + 1> stake_addr;
-        stake_addr[0] = return_addr.script ? 0xF1 : 0xE1;
+        stake_addr[0] = (return_addr.script ? 0xF0 : 0xE0) | (return_addr_network_id & 0xF);
         memcpy(stake_addr.data() + 1, return_addr.hash.data(), return_addr.hash.size());
         enc.bytes(stake_addr);
         action.to_cbor(enc);
@@ -558,12 +561,28 @@ namespace turbo::cardano {
         enc.array(5);
         enc.uint(4);
         prev_action_id.to_cbor(enc);
-        members_to_remove.to_cbor(enc);
+        enc.tag(258);
+        enc.array_compact(members_to_remove.size(), [&] {
+            const auto encode_removals = [&](const bool script) {
+                for (const auto &id: members_to_remove) {
+                    if (id.script == script)
+                        id.to_cbor(enc);
+                }
+            };
+            encode_removals(true);
+            encode_removals(false);
+        });
         enc.map_compact(members_to_add.size(), [&] {
-            for (const auto &[id, epoch]: members_to_add) {
-                id.to_cbor(enc);
-                enc.uint(epoch);
-            }
+            const auto encode_additions = [&](const bool script) {
+                for (const auto &[id, epoch]: members_to_add) {
+                    if (id.script == script) {
+                        id.to_cbor(enc);
+                        enc.uint(epoch);
+                    }
+                }
+            };
+            encode_additions(true);
+            encode_additions(false);
         });
         new_threshold.to_cbor(enc);
     }

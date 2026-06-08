@@ -7,6 +7,7 @@
 #include <turbo/cardano/ledger/types.hpp>
 #include <turbo/common/progress.hpp>
 #include <turbo/common/scheduler.hpp>
+#include <turbo/math/big-int.hpp>
 
 namespace turbo::cardano::ledger {
     parallel_decoder::parallel_decoder(const std::string &path): _data { file::read(path) }
@@ -78,8 +79,39 @@ namespace turbo::cardano::ledger {
     }
 
     pool_info::pool_info(pool_params &&p):
-    params { std::move(p) }
+        params { std::move(p) }
     {
+        new (&rational_from_storage(reward_base)) cpp_rational {};
+    }
+
+    pool_info::pool_info(const pool_info &o):
+        params { o.params }
+    {
+        new (&rational_from_storage(reward_base)) cpp_rational { rational_from_storage(o.reward_base) };
+    }
+
+    pool_info::pool_info(pool_info &&o):
+        params { std::move(o.params) }
+    {
+        new (&rational_from_storage(reward_base)) cpp_rational { std::move(rational_from_storage(o.reward_base)) };
+    }
+
+    pool_info &pool_info::operator=(const pool_info &o)
+    {
+        if (this != &o) {
+            params = o.params;
+            rational_from_storage(reward_base) = rational_from_storage(o.reward_base);
+        }
+        return *this;
+    }
+
+    pool_info &pool_info::operator=(pool_info &&o)
+    {
+        if (this != &o) {
+            params = std::move(o.params);
+            rational_from_storage(reward_base) = std::move(rational_from_storage(o.reward_base));
+        }
+        return *this;
     }
 
     pool_info::~pool_info()

@@ -55,12 +55,17 @@ namespace turbo::sync {
                         });
                         _parent.sync_attempt(peer, max_slot);
                     });
-                    if (!ex_ptr) {
+                    const auto end_tip = _cr.tip();
+                    const auto made_progress = end_tip && peer.intersection() < end_tip;
+                    // Recoverable action errors can still commit progress. Rolled-back attempts may leave
+                    // restore-needed files marked until a later successful transaction unmarks them.
+                    if (!ex_ptr || made_progress)
                         _cr.remover().remove();
+                    if (!ex_ptr) {
                         break;
                     }
                     // reset the retry count if made progress
-                    if (const auto end_tip = _cr.tip(); end_tip && peer.intersection() < end_tip) {
+                    if (made_progress) {
                         num_retries = max_retries + 1; // +1 to adjust for the post-cycle-body decrement
                         peer.intersection(end_tip);
                     }

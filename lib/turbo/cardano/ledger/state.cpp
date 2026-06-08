@@ -333,6 +333,43 @@ namespace turbo::cardano::ledger {
         _state->process_cert(cert, loc);
     }
 
+    void state::process_block_updates(block_update_list &&updates)
+    {
+        for (const auto &u: updates)
+            track_era(u.era, u.slot);
+        _state->_process_block_updates(std::move(updates));
+    }
+
+    void state::process_timed_update(update_effects_t &effects, index::timed_update::item &&upd)
+    {
+        timed_update_t ledger_update {};
+        ledger_update.loc = upd.loc;
+        ledger_update.update = std::move(upd.update);
+        _state->_process_timed_update(effects.collected_collateral, effects.collateral_refund, std::move(ledger_update));
+    }
+
+    update_effects_t state::process_timed_updates(timed_update_list &&updates)
+    {
+        update_effects_t effects {};
+        for (auto &&upd: updates)
+            _state->_process_timed_update(effects.collected_collateral, effects.collateral_refund, std::move(upd));
+        return effects;
+    }
+
+    void state::process_utxo_updates(utxo_update_list &&updates)
+    {
+        _state->_process_utxo_updates(std::move(updates));
+    }
+
+    void state::finish_update_processing(update_effects_t &&effects, const bool run_pulser)
+    {
+        _state->_process_collateral_use(std::move(effects.collected_collateral));
+        if (effects.collateral_refund)
+            _state->sub_fees(effects.collateral_refund);
+        if (run_pulser)
+            _state->run_pulser_if_ready();
+    }
+
     void state::process_updates(updates_t &&updates)
     {
         for (const auto &u: updates.blocks)

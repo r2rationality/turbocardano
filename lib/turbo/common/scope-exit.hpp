@@ -4,6 +4,7 @@
 
 #include <utility>
 #include <exception>
+#include "logger.hpp"
 
 namespace turbo {
     template<typename F>
@@ -19,15 +20,23 @@ namespace turbo {
 
         scope_exit(scope_exit &&o) noexcept(std::is_nothrow_move_constructible_v<F>):
             _func{std::move(o._func)},
-            _active{o._active}
+            _active{std::exchange(o._active, false)}
         {
-            o.release();
         }
 
         ~scope_exit() noexcept
         {
-            if (_active)
-                _func();
+            if (_active) {
+                try {
+                    _func();
+                } catch (const std::exception &ex) {
+                    logger::error("scope_exit: callback threw: {}", ex.what());
+                    std::terminate();
+                } catch (...) {
+                    logger::error("scope_exit: callback threw an unknown exception");
+                    std::terminate();
+                }
+            }
         }
 
         void release() noexcept
@@ -42,6 +51,6 @@ namespace turbo {
     template<typename F>
     scope_exit<F> make_scope_exit(F f)
     {
-        return scope_exit<F>(std::move<F>(f));
+        return scope_exit<F>(std::move(f));
     }
 }

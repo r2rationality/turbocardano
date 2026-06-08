@@ -83,17 +83,9 @@ namespace turbo {
             if (_transaction->target->end_offset) {
                 rel_pos = tip.end_offset;
                 rel_target = _transaction->target->end_offset;
-                if (_transaction->start) {
-                    rel_pos -= _transaction->start->end_offset;
-                    rel_target -= _transaction->start->end_offset;
-                }
             } else {
                 rel_pos = tip.slot;
                 rel_target = _transaction->target->slot;
-                if (_transaction->start) {
-                    rel_pos -= _transaction->start->slot;
-                    rel_target -= _transaction->start->slot;
-                }
             }
             uint64_t prev_pos = 0;
                 {
@@ -500,7 +492,7 @@ namespace turbo {
         _commit_tx();
     }
 
-    void chunk_registry::add_buffer(const uint64_t offset, uint8_vector uncompressed, std::optional<uint8_vector> compressed)
+    progress_point chunk_registry::add_buffer(const uint64_t offset, uint8_vector uncompressed, std::optional<uint8_vector> compressed)
     {
         const auto data_hash = crypto::blake2b::digest(uncompressed);
         const auto rel_path = fmt::format("chunk/{}.zstd.tmp", data_hash);
@@ -508,7 +500,7 @@ namespace turbo {
         if (!compressed)
             compressed.emplace(zstd::compress(uncompressed, 9));
         file::write(local_path, *compressed);
-        _add(offset, local_path, std::move(uncompressed), compressed->size());
+        return _add(offset, local_path, std::move(uncompressed), compressed->size());
     }
 
     void chunk_registry::add_file(const uint64_t offset, const std::string &local_path)
@@ -518,13 +510,14 @@ namespace turbo {
         _add(offset, local_path, uncompressed, compressed.size());
     }
 
-    std::string chunk_registry::_add(const uint64_t offset, const std::string &local_path,
+    progress_point chunk_registry::_add(const uint64_t offset, const std::string &local_path,
         const buffer uncompressed, const uint64_t compressed_size)
     {
         // TODO: add a fast path for data beyond earliest known invalid offset
         if (!_transaction) [[unlikely]]
             throw error("add can be executed only inside of a transaction!");
         auto [parsed_chunk, ex_ptr] = _parse(offset, uncompressed, compressed_size);
+        const progress_point parsed_progress { parsed_chunk.last_slot, parsed_chunk.end_offset() };
         const auto final_path = full_path(parsed_chunk.rel_path());
         if (!parsed_chunk.blocks.empty()) {
             if (!ex_ptr) {
@@ -537,7 +530,7 @@ namespace turbo {
         }
         if (ex_ptr)
             std::rethrow_exception(ex_ptr);
-        return final_path;
+        return parsed_progress;
     }
 
     [[nodiscard]] std::exception_ptr chunk_registry::accept_progress(const cardano::optional_point &start, const std::optional<progress_point> &target, const std::function<void()> &action)
@@ -1049,7 +1042,7 @@ namespace turbo {
         }
     }
 
-    // does not report an error if some progress is made
+    // can commit progress while still returning the error that stopped the attempt
     [[nodiscard]] std::exception_ptr chunk_registry::_accept_progress(const cardano::optional_point &start, const std::optional<progress_point> &target,
             const bool aim_progress, const std::function<void()> &action) {
         _start_tx(start, target);

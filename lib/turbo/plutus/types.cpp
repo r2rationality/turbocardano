@@ -389,21 +389,49 @@ namespace turbo::plutus {
 
     static void _to_cbor(cbor::encoder &enc, const data &c, size_t level=0);
 
+    static void _bytes_to_cbor(cbor::encoder &enc, const buffer b)
+    {
+        if (b.size() <= 64) {
+            enc.bytes(b);
+        } else {
+            enc.bytes();
+            for (size_t i = 0; i < b.size(); i += 64)
+                enc.bytes(buffer { b.data() + i, std::min(size_t { 64 }, b.size() - i) });
+            enc.s_break();
+        }
+    }
+
+    static void _big_uint_to_cbor(cbor::encoder &enc, const bint_type::value_type &val)
+    {
+        uint8_vector bytes {};
+        boost::multiprecision::export_bits(val, std::back_inserter(bytes), 8, true);
+        _bytes_to_cbor(enc, bytes);
+    }
+
     static void _to_cbor(cbor::encoder &enc, const bint_type &i, const size_t)
     {
-        big_int_to_cbor(enc, *i);
+        const auto &val = *i;
+        if (val >= 0) [[likely]] {
+            if (val <= std::numeric_limits<uint64_t>::max()) {
+                enc.uint(static_cast<uint64_t>(val));
+                return;
+            }
+            enc.tag(2);
+            _big_uint_to_cbor(enc, val);
+        } else {
+            bint_type::value_type val_uint { -(val + 1) };
+            if (val_uint <= std::numeric_limits<uint64_t>::max()) {
+                enc.nint(static_cast<uint64_t>(val_uint));
+                return;
+            }
+            enc.tag(3);
+            _big_uint_to_cbor(enc, val_uint);
+        }
     }
 
     static void _to_cbor(cbor::encoder &enc, const bstr_type &b, const size_t)
     {
-        if (b->size() <= 64) {
-            enc.bytes(*b);
-        } else {
-            enc.bytes();
-            for (size_t i = 0; i < b->size(); i += 64)
-                enc.bytes(buffer { b->data() + i, std::min(size_t { 64 }, b->size() - i) });
-            enc.s_break();
-        }
+        _bytes_to_cbor(enc, *b);
     }
 
     static void _to_cbor(cbor::encoder &enc, const data::list_type &l, const size_t level)
@@ -852,7 +880,7 @@ namespace turbo::plutus {
     bls12_381_g2_element bls_g2_decompress(const buffer bytes)
     {
         if (bytes.size() != 96) [[unlikely]]
-            throw error(fmt::format("bls12_381_g2 elements must provide 86 bytes but got: {}", bytes.size()));
+            throw error(fmt::format("bls12_381_g2 elements must provide 96 bytes but got: {}", bytes.size()));
         blst_p2_affine out_a;
         if (const auto err = blst_p2_uncompress(&out_a, reinterpret_cast<const ::byte *>(bytes.data())); err != BLST_SUCCESS) [[unlikely]]
             throw error(fmt::format("blst12_381_g2 element decoding failed at for 0x{}", bytes));

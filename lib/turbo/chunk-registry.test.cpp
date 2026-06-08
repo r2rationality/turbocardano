@@ -52,8 +52,21 @@ suite chunk_registry_suite = [] {
         };
 
         "strict creation"_test = [&] {
-            expect(throws([&] { chunk_registry cr { data_dir, chunk_registry::mode::validate }; }));
-            expect(nothrow([&] { chunk_registry cr { data_dir, chunk_registry::mode::store }; }));
+            recreate_tmp_data_dir();
+            file_remover fr {};
+            expect(nothrow([&] {
+                chunk_registry cr {
+                    tmp_data_dir,
+                    chunk_registry::mode::validate,
+                    cardano::config::get(),
+                    scheduler::get(),
+                    fr
+                };
+                expect(cr.empty());
+                expect_equal(0, cr.num_bytes());
+            }));
+            recreate_tmp_data_dir();
+            expect(nothrow([&] { chunk_registry cr { tmp_data_dir, chunk_registry::mode::store }; }));
         };
 
         "empty"_test = [&] {

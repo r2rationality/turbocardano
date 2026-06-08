@@ -309,7 +309,7 @@ namespace turbo {
 
         void maintenance();
         void import(const chunk_registry &src_cr);
-        void add_buffer(uint64_t offset, uint8_vector uncompressed, std::optional<uint8_vector> compressed={});
+        progress_point add_buffer(uint64_t offset, uint8_vector uncompressed, std::optional<uint8_vector> compressed={});
         void add_file(uint64_t offset, const std::string &local_path);
         [[nodiscard]] std::exception_ptr accept_progress(const cardano::optional_point &start, const std::optional<progress_point> &target, const std::function<void()> &action);
         void accept_anything_or_throw(const cardano::optional_point &start, const std::optional<progress_point> &target, const std::function<void()> &action);
@@ -358,7 +358,7 @@ namespace turbo {
         void _my_rollback_tx();
         void _my_commit_tx();
         void _require_better_candidate_chain();
-        // does not report an error if some progress is made
+        // can commit progress while still returning the error that stopped the attempt
         [[nodiscard]] std::exception_ptr _accept_progress(const cardano::optional_point &start, const std::optional<progress_point> &target,
                 const bool aim_progress, const std::function<void()> &action);
         void _start_tx(cardano::optional_point start, const std::optional<progress_point> &target);
@@ -367,7 +367,7 @@ namespace turbo {
         void _commit_tx();
         void _save_state(const std::string &path);
         void _do_truncate(const cardano::optional_point &new_tip, const bool track_changes);
-        std::string _add(const uint64_t offset, const std::string &local_path, buffer uncompressed, uint64_t compressed_size);
+        progress_point _add(const uint64_t offset, const std::string &local_path, buffer uncompressed, uint64_t compressed_size);
         void _add(chunk_info &&chunk, const bool normal=true);
         void _notify_of_updates(mutex::unique_lock &update_lk, bool force=false);
 

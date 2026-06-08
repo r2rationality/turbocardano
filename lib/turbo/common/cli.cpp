@@ -18,7 +18,7 @@ namespace turbo::cli {
         std::ios_base::sync_with_stdio(false);
 #ifndef _WIN32
         {
-            static constexpr size_t stack_size = 32 << 20;
+            static constexpr size_t stack_size = size_t{32} << 20U;
             struct rlimit rl;
             if (getrlimit(RLIMIT_STACK, &rl) != 0) [[unlikely]]
                 throw error_sys("getrlimit RLIMIT_STACK failed!");

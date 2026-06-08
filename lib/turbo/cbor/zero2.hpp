@@ -974,7 +974,7 @@ namespace turbo::cbor::zero2 {
 
     inline float float32_reader::read()
     {
-        return _parent(this).data_raw_ext().subbuf(1, 4).to_host<float>();
+        return std::bit_cast<float>(_parent(this).data_raw_ext().subbuf(1, 4).to_host<uint32_t>());
     }
 
     inline uint64_t nint_reader::read_raw()

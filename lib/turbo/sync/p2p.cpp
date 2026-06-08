@@ -24,7 +24,7 @@ namespace turbo::sync::p2p {
         // Finds a peer and the best intersection point
         [[nodiscard]] std::shared_ptr<sync::peer_info> find_peer(std::optional<network::address> addr, const version_config_t &versions) const
         {
-            logger::info("connection to peer {} requesting versions [{};{}]", addr, versions.min, versions.max);
+            logger::info("connecting to peer {} requesting versions [{};{}]", addr, versions.min, versions.max);
             if (!addr)
                 addr = _parent.peer_list().next_cardano();
             auto client = _client_manager.connect(*addr, versions);
@@ -68,7 +68,7 @@ namespace turbo::sync::p2p {
             _invalid_first_offset.store(std::optional<uint64_t>{}, std::memory_order_relaxed);
             _next_chunk_offset = 0;
             _last_chunk.clear();
-            _last_block_slot.reset();
+            _last_block_slot.store(std::optional<uint64_t> {}, std::memory_order_relaxed);
 
             if (peer.intersection())
                 _next_chunk_offset = _parent.local_chain().get_block_info(*peer.intersection()).end_offset();
@@ -105,15 +105,50 @@ namespace turbo::sync::p2p {
         std::filesystem::path _raw_dir;
 
         uint8_vector _last_chunk{};
-        std::optional<cardano::slot> _last_block_slot{};
+        std::atomic<std::optional<uint64_t>> _last_block_slot{};
         uint64_t _next_chunk_offset = 0;
 
         alignas(mutex::alignment) mutex::unique_lock::mutex_type _invalid_mutex{};
         std::atomic<std::optional<uint64_t>> _invalid_first_offset{};
 
+        static void _record_optional_monotonic(std::atomic<std::optional<uint64_t>> &target, const uint64_t value, auto should_replace)
+        {
+            const std::optional<uint64_t> next { value };
+            for (;;) {
+                auto current = target.load(std::memory_order_relaxed);
+                if (current && !should_replace(value, *current))
+                    break;
+                if (target.compare_exchange_weak(current, next, std::memory_order_relaxed, std::memory_order_relaxed))
+                    break;
+            }
+        }
+
+        void _record_invalid_offset(const uint64_t chunk_offset)
+        {
+            _record_optional_monotonic(_invalid_first_offset, chunk_offset, [](const auto candidate, const auto current) {
+                return candidate < current;
+            });
+        }
+
+        void _record_last_block_slot(const uint64_t slot)
+        {
+            _record_optional_monotonic(_last_block_slot, slot, [](const auto candidate, const auto current) {
+                return candidate > current;
+            });
+        }
+
+        void _report_chunk_download_progress(const progress_point &progress)
+        {
+            _record_last_block_slot(progress.slot);
+            _parent.local_chain().report_progress("download", progress);
+        }
+
         void _sync(peer_info &peer, const std::optional<point> &local_tip, const std::optional<uint64_t> &max_slot)
         {
             std::optional<point> continue_from = local_tip;
+            const std::optional<uint64_t> target_chunk_id = max_slot.transform([&](const auto slot) {
+                return cardano::slot{slot, _parent.local_chain().config()}.chunk_id();
+            });
             const auto [headers, tip] = peer.client().fetch_headers_sync(continue_from, 1, true);
             if (!headers.empty() && (!max_slot || headers.front().slot <= *max_slot)) {
                 // current implementation of fetch_blocks does not leave its connection in a working state
@@ -141,6 +176,11 @@ namespace turbo::sync::p2p {
                                 // the comma operator has no ordering guarantees so must decompress before the data is moved
                                 auto uncompressed = rv.bytes();
                                 _add_chunk(std::move(uncompressed), std::move(rv.payload));
+                                if (target_chunk_id) {
+                                    const auto last_slot = _last_block_slot.load(std::memory_order_relaxed);
+                                    if (last_slot && cardano::slot { *last_slot, _parent.local_chain().config() }.chunk_id() >= *target_chunk_id)
+                                        return false;
+                                }
                                 return true;
                             } else {
                                 logger::error("unsupported message: {}", typeid(T).name());
@@ -168,17 +208,11 @@ namespace turbo::sync::p2p {
                 const auto ex_ptr = logger::run_log_errors([&] {
                     if (!compressed)
                         compressed.emplace(zstd::compress(uncompressed, 21));
-                    _parent.local_chain().add_buffer(chunk_offset,std::move(uncompressed), std::move(*compressed));
+                    auto progress = _parent.local_chain().add_buffer(chunk_offset, std::move(uncompressed), std::move(*compressed));
+                    _report_chunk_download_progress(progress);
                 });
                 if (ex_ptr) [[unlikely]] {
-                    const optional_slot effective_offset{chunk_offset};
-                    for (;;) {
-                        auto invalid_offset = _invalid_first_offset.load(std::memory_order_relaxed);
-                        if (invalid_offset && effective_offset >= *invalid_offset)
-                            break;
-                        if (_invalid_first_offset.compare_exchange_weak(invalid_offset, effective_offset, std::memory_order_relaxed, std::memory_order_relaxed))
-                            break;
-                    }
+                    _record_invalid_offset(chunk_offset);
                 }
             });
         }
@@ -194,14 +228,15 @@ namespace turbo::sync::p2p {
         void _add_block(const block_container &blk)
         {
             const auto blk_slot = _parent.local_chain().make_slot(blk->slot());
-            if (_last_block_slot && *_last_block_slot > blk_slot) [[unlikely]]
-                throw error(fmt::format("unexpected block order: block with slot {} comes after slot {}", blk_slot, *_last_block_slot));
+            const auto last_block_slot = _last_block_slot.load(std::memory_order_relaxed);
+            if (last_block_slot && *last_block_slot > blk_slot) [[unlikely]]
+                throw error(fmt::format("unexpected block order: block with slot {} comes after slot {}", blk_slot, cardano::slot { *last_block_slot, _parent.local_chain().config() }));
             _parent.local_chain().report_progress("download", { blk_slot, blk.end_offset() });
-            if (!_last_block_slot || _last_block_slot->chunk_id() != blk_slot.chunk_id()) {
+            if (!last_block_slot || cardano::slot { *last_block_slot, _parent.local_chain().config() }.chunk_id() != blk_slot.chunk_id()) {
                 logger::info("block from a new chunk: slot: {} hash: {} height: {}", blk_slot, blk->hash(), blk->height());
                 _add_last_chunk_if_not_empty();
             }
-            _last_block_slot = blk_slot;
+            _record_last_block_slot(blk_slot);
             _last_chunk << blk.raw();
         }
     };

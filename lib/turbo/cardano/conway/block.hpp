@@ -39,7 +39,7 @@ namespace turbo::cardano::conway {
     };
 
     using vote_set = set_t<vote_info_t>;
-    using proposal_procedure_set = set_t<proposal_procedure_t>;
+    using proposal_procedure_list = vector_t<proposal_procedure_t>;
     using proposal_set = set_t<proposal_t>;
 
     typedef std::function<void(vote_info_t &&)> vote_observer_t;
@@ -54,7 +54,7 @@ namespace turbo::cardano::conway {
         void parse_witnesses(cbor::zero2::value &) override;
     protected:
         static vote_set parse_votes(cbor::zero2::value &);
-        static proposal_procedure_set parse_proposals(cbor::zero2::value &);
+        static proposal_procedure_list parse_proposals(cbor::zero2::value &);
         void parse_redeemers(cbor::zero2::value &v) override;
     };
 

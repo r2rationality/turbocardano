@@ -7,6 +7,7 @@
 
 #include <turbo/common/mutex.hpp>
 #include <turbo/cardano/common/common.hpp>
+#include <turbo/container/flat_set.hpp>
 #include <turbo/index/io.hpp>
 #include <turbo/index/merge.hpp>
 #include <turbo/parallel/algorithm.hpp>
@@ -137,7 +138,7 @@ namespace turbo::index {
         }
     };
 
-    using chunk_id_list = std::set<uint64_t>;
+    using chunk_id_list = flat_set<uint64_t>;
 
     struct indexer_base {
         static std::string chunk_dir(const std::string &idx_dir, const std::string &idx_name)
@@ -288,7 +289,7 @@ namespace turbo::index {
     };
 
     using chunk_list = std::vector<uint64_t>;
-    using epoch_chunks = std::map<cardano::slot_range, chunk_list>;
+    using epoch_chunks = std::map<cardano::slot_range, chunk_id_list>;
 
     template<typename ChunkIndexer>
     struct indexer_one_epoch: indexer_chunked<ChunkIndexer>, epoch_observer {
@@ -303,7 +304,7 @@ namespace turbo::index {
         {
             mutex::scoped_lock lk { _updated_epochs_mutex };
             auto [it, created] = _updated_epochs.try_emplace(slots);
-            it->second.emplace_back(chunk_id);
+            it->second.emplace(chunk_id);
         }
 
         void finalize(const std::string &/*slice_id*/, const chunk_id_list &/*chunk_ids*/) override

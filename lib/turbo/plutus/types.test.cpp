@@ -40,5 +40,13 @@ suite plutus_types_suite = [] {
                 expect_equal(false, version { "1.2.3" } >= "2.0.7");
             }
         };
+        "builtin_tags"_test = [] {
+            expect_equal(58, static_cast<int>(builtin_tag::bls12_381_g1_compress));
+            expect_equal(59, static_cast<int>(builtin_tag::bls12_381_g1_uncompress));
+            expect_equal(60, static_cast<int>(builtin_tag::bls12_381_g1_hash_to_group));
+            expect_equal(65, static_cast<int>(builtin_tag::bls12_381_g2_compress));
+            expect_equal(66, static_cast<int>(builtin_tag::bls12_381_g2_uncompress));
+            expect_equal(67, static_cast<int>(builtin_tag::bls12_381_g2_hash_to_group));
+        };
     };
 };

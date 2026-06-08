@@ -123,6 +123,16 @@ suite cardano_ledger_subchain_suite = [] {
                 expect(throws([&] { sl.find(999); }));
                 expect(throws([&] { sl.find(1200); }));
             };
+            "truncate removes pending tail"_test = [&] {
+                subchain_list sl {};
+                sl.add(subchain { 0, 200, 2, 2, 0, hash1, 900, hash2 });
+                sl.add(subchain { 200, 200, 2, 0, 1'000, hash3, 1'500, hash4 });
+                expect_equal(2, sl.size());
+                expect(sl.truncate(200));
+                expect_equal(1, sl.size());
+                expect_equal(200, sl.valid_size());
+                expect(throws([&] { sl.find(200); }));
+            };
             "merge_same_epoch"_test = [&] {
                 subchain_list sl {};
                 sl.add(subchain { 200, 200, 2, 2, 21600 * 2, hash1, 21600 * 3 - 1, hash2 });

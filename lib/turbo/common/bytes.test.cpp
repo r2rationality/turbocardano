@@ -1,12 +1,26 @@
 /* Copyright (c) 2022-2023 Alex Sierkov (alex dot sierkov at gmail dot com)
- * Copyright (c) 2024-2025 R2 Rationality OÜ (info at r2rationality dot com) */
+ * Copyright (c) 2024-2026 R2 Rationality OÜ (info at r2rationality dot com) */
 
+#include <algorithm>
 #include <numeric>
 #include "bytes.hpp"
 #include "test.hpp"
 
 namespace {
     using namespace turbo;
+    
+#if defined(__GNUC__)
+    [[gnu::noinline]]
+#endif
+    bool bytes_equal_volatile(const uint8_t *data, const uint8_t *expected, const size_t size)
+    {
+        const volatile uint8_t *volatile_data = data;
+        for (size_t i = 0; i < size; ++i) {
+            if (volatile_data[i] != expected[i])
+                return false;
+        }
+        return true;
+    }
 }
 
 suite turbo_common_bytes_suite = [] {
@@ -145,20 +159,92 @@ suite turbo_common_bytes_suite = [] {
         };
         "string formatting support"_test = [] {
             auto data = byte_array<4>::from_hex("f0e1d2c3");
-            expect(fmt::format("{}", data) == "F0E1D2C3");
+            expect_equal("F0E1D2C3", fmt::format("{}", data)); 
+        };
+        "uninitialized_bytes_t"_test = [] {
+            "empty_construction"_test = [] {
+                const uninitialized_bytes_t a{};
+                expect_equal(0U, a.size());
+                expect(nullptr == a.data());
+                expect_equal(0U, static_cast<buffer>(a).size());
+                const uninitialized_bytes_t b{0};
+                expect_equal(0U, b.size());
+                expect(nullptr == b.data());
+            };
+            "sized_construction"_test = [] {
+                uninitialized_bytes_t b{16};
+                expect_equal(16U, b.size());
+                expect(b.data() != nullptr);
+                std::fill(b.bytes().begin(), b.bytes().end(), 0xAB);
+                expect_equal(0xAB, b.data()[0]);
+                expect_equal(0xAB, b.data()[15]);
+            };
+            "move_construction"_test = [] {
+                uninitialized_bytes_t a{32};
+                const auto *orig_ptr = a.data();
+                uninitialized_bytes_t b{std::move(a)};
+                expect(orig_ptr == b.data());
+                expect_equal(32U, b.size());
+                expect(nullptr == a.data());
+                expect_equal(0U, a.size());
+            };
+            "move_assignment_into_empty_lhs"_test = [] {
+                uninitialized_bytes_t a{64};
+                const auto *orig_ptr = a.data();
+                uninitialized_bytes_t b{};
+                b = std::move(a);
+                expect(orig_ptr == b.data());
+                expect_equal(64U, b.size());
+                expect(nullptr == a.data());
+                expect_equal(0U, a.size());
+            };
+            "move_assignment_frees_existing_allocation"_test = [] {
+                uninitialized_bytes_t a{8};
+                uninitialized_bytes_t b{16};
+                const auto *a_ptr = a.data();
+                b = std::move(a);
+                expect(a_ptr == b.data());
+                expect_equal(8U, b.size());
+                expect(nullptr == a.data());
+                expect_equal(0U, a.size());
+            };
+            "move_assignment_self"_test = [] {
+                uninitialized_bytes_t a{4};
+                const auto *orig_ptr = a.data();
+                auto &self = a;
+                a = std::move(self);
+                expect(orig_ptr == a.data());
+                expect_equal(4U, a.size());
+            };
+            "buffer_conversion"_test = [] {
+                uninitialized_bytes_t a{4};
+                std::fill(a.bytes().begin(), a.bytes().end(), 0xCC);
+                const buffer buf{a};
+                expect_equal(4U, buf.size());
+                expect_equal(0xCC, buf[0]);
+                expect_equal(0xCC, buf[3]);
+            };
+            "destructor_after_move_does_not_crash"_test = [] {
+                // Moved-from objects have _ptr==nullptr; destructor must not deallocate
+                uninitialized_bytes_t a{8};
+                {
+                    uninitialized_bytes_t b{std::move(a)};
+                    // b destructs here, freeing the allocated storage
+                }
+                // a destructs; must not crash
+            };
         };
         "secure_array"_test = [] {
             using my_sec_array_t = secure_byte_array<4>;
-            using my_sec_storage_t = std::aligned_storage<sizeof(my_sec_array_t), alignof(my_sec_array_t)>::type;
             const auto empty = byte_array<4>::from_hex("00000000");
             const auto filled = byte_array<4>::from_hex("DEADBEAF");
-            my_sec_storage_t storage {};
-            my_sec_array_t *sec = new (&storage) my_sec_array_t { filled };
-            const auto *data_ptr = sec->data();
-            expect_equal(true, memcmp(data_ptr, filled.data(), filled.size()) == 0);
+            alignas(my_sec_array_t) uint8_t storage[sizeof(my_sec_array_t)] {};
+            my_sec_array_t *sec = new (storage) my_sec_array_t { filled };
+            const auto storage_bytes = std::span{storage}.first(filled.size());
+            expect_equal(true, bytes_equal_volatile(storage_bytes.data(), filled.data(), filled.size()));
             sec->~secure_byte_array();
-            expect_equal(false, memcmp(data_ptr, filled.data(), filled.size()) == 0);
-            expect_equal(true, memcmp(data_ptr, empty.data(), empty.size()) == 0);
+            expect_equal(false, bytes_equal_volatile(storage_bytes.data(), filled.data(), filled.size()));
+            expect_equal(true, bytes_equal_volatile(storage_bytes.data(), empty.data(), empty.size()));
         };
     };  
 };

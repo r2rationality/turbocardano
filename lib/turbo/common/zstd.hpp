@@ -35,7 +35,7 @@ namespace turbo::zstd {
                 throw error(fmt::format("ZSTD: failed to reset a compression context: {}", ZSTD_getErrorName(res)));
         }
 
-        void set_level(size_t level)
+        void set_level(int level)
         {
             auto res = ZSTD_CCtx_setParameter(_ctx, ZSTD_c_compressionLevel, level);
             if (ZSTD_isError(res))
@@ -102,7 +102,7 @@ namespace turbo::zstd {
     void _check_out_size(T &out, size_t new_size)
     {
         if (sizeof(out[0]) != 1)
-            throw error(fmt::format("target buffer must 1-byte items but has {}-byte!", sizeof(out[0])));
+            throw error(fmt::format("target buffer must have 1-byte items but has {}-byte!", sizeof(out[0])));
         if (out.size() != new_size)
             out.resize(new_size);
     }
@@ -111,7 +111,7 @@ namespace turbo::zstd {
     void _check_out_size(T &out, size_t new_size)
     {
         if (sizeof(out[0]) != 1)
-            throw error(fmt::format("target buffer must 1-byte items but has {}-byte!", sizeof(out[0])));
+            throw error(fmt::format("target buffer must have 1-byte items but has {}-byte!", sizeof(out[0])));
         if (out.size() != new_size)
             throw error(fmt::format("target buffer must have {} bytes but has {}!", new_size, out.size()));
     }
@@ -145,11 +145,11 @@ namespace turbo::zstd {
         _check_out_size(out, orig_data_size);
         thread_local decompress_context ctx {};
         ctx.reset();
-        const size_t decompressed_size = ZSTD_decompressDCtx(ctx.get(), reinterpret_cast<void *>(out.data()), out.size(), compressed.data(), compressed.size());
-        if (ZSTD_isError(decompressed_size)) 
-            throw error(fmt::format("zstd decompression error: {}", ZSTD_getErrorName(decompressed_size)));
-        if ((uint64_t)decompressed_size != out.size())
-            throw error(fmt::format("Internal error: decompressed size {} != expected output size {}!", decompressed_size, out.size()));
+        const size_t actual_size = ZSTD_decompressDCtx(ctx.get(), reinterpret_cast<void *>(out.data()), out.size(), compressed.data(), compressed.size());
+        if (ZSTD_isError(actual_size))
+            throw error(fmt::format("zstd decompression error: {}", ZSTD_getErrorName(actual_size)));
+        if (static_cast<uint64_t>(actual_size) != out.size())
+            throw error(fmt::format("Internal error: decompressed size {} != expected output size {}!", actual_size, out.size()));
     }
 
     inline uint8_vector decompress(const buffer &compressed)

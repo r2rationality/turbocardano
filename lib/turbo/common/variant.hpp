@@ -3,6 +3,7 @@
  * Copyright (c) 2024-2025 R2 Rationality OÜ (info at r2rationality dot com) */
 
 #include <turbo/common/error.hpp>
+#include <turbo/common/format.hpp>
 #include <variant>
 
 namespace turbo::variant {
@@ -14,7 +15,7 @@ namespace turbo::variant {
             if constexpr (std::is_same_v<std::decay_t<T>, std::decay_t<TO>>) {
                 return vo;
             } else {
-                throw error(fmt::format("expected type {} but got {}", typeid(TO).name(), typeid(T).name()));
+                throw error(fmt::format("expected type {} but got {}", typeid(std::decay_t<TO>).name(), typeid(std::decay_t<T>).name()));
             }
         }, v);
     }
@@ -27,7 +28,7 @@ namespace turbo::variant {
             if constexpr (std::is_same_v<std::decay_t<T>, std::decay_t<TO>>) {
                 return vo;
             } else {
-                throw error(fmt::format("expected type {} but got {}", typeid(TO).name(), typeid(T).name()));
+                throw error(fmt::format("expected type {} but got {}", typeid(std::decay_t<TO>).name(), typeid(std::decay_t<T>).name()));
             }
         }, v);
     }

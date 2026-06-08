@@ -13,7 +13,7 @@ namespace turbo {
 
 namespace fmt {
     template<>
-    struct formatter<turbo::progress_state>: formatter<int> {
+    struct formatter<turbo::progress_state>: formatter<std::string_view> {
         template<typename FormatContext>
         auto format(const auto &v, FormatContext &ctx) const -> decltype(ctx.out()) {
             auto out_it = ctx.out();
@@ -28,13 +28,6 @@ namespace fmt {
 
 namespace turbo {
     struct progress {
-        struct info {
-            size_t total = 0;
-            size_t active = 0;
-            size_t completed = 0;
-            size_t failed = 0;
-        };
-
         static progress &get()
         {
             static progress p {}; // C++ standard guarantees a thread-safe initialization on the first call
@@ -78,7 +71,7 @@ namespace turbo {
                 if (now < old_next)
                     break;
                 auto new_next = now + std::chrono::milliseconds(1000);
-                if (_next_inform.compare_exchange_weak(old_next, new_next, std::memory_order_acquire)) {
+                if (_next_inform.compare_exchange_weak(old_next, new_next, std::memory_order_acquire, std::memory_order_relaxed)) {
                     if (const auto state_copy = copy(); !state_copy.empty())
                         logger::info("progress: {}", state_copy);
                     break;
@@ -109,7 +102,7 @@ namespace turbo {
     };
 
     struct progress_guard {
-        progress_guard(const std::initializer_list<std::string> &names): _names { names }, _progress { progress::get() }
+        progress_guard(std::initializer_list<std::string> names): _names { names }, _progress { progress::get() }
         {
             for (const auto &name: _names)
                 _progress.init(name);

@@ -114,13 +114,16 @@ namespace turbo::cardano::ledger {
         void add(distribution<C>::iterator it, typename C::mapped_type stake)
         {
             if (it == distribution<C>::end())
-                throw error(fmt::format("request to increase an unregistered id {} by {}", it->first, stake));
+                throw error(fmt::format("request to increase an unregistered id by {}", stake));
             distribution<C>::add(it, stake);
         }
 
         void add(const typename C::key_type &id, typename C::mapped_type stake)
         {
-            add(distribution<C>::find(id), stake);
+            auto it = distribution<C>::find(id);
+            if (it == distribution<C>::end())
+                throw error(fmt::format("request to increase an unregistered id {} by {}", id, stake));
+            add(it, stake);
         }
 
         void sub(const typename C::key_type &id, typename C::mapped_type stake)
@@ -254,6 +257,10 @@ namespace turbo::cardano::ledger {
         pool_info();
         pool_info(const pool_params &);
         pool_info(pool_params &&);
+        pool_info(const pool_info &);
+        pool_info(pool_info &&);
+        pool_info &operator=(const pool_info &);
+        pool_info &operator=(pool_info &&);
         ~pool_info();
 
         static pool_info from_cbor(cbor::zero2::value &v)

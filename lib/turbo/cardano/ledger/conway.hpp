@@ -27,7 +27,8 @@ namespace turbo::cardano::ledger::conway {
             return archive(self.deposited, self.anchor, self.expire_epoch, self.delegs);
         }
 
-        static uint64_t compute_expire_epoch(const protocol_params &pp, uint64_t current_epoch);
+        static uint64_t compute_expire_epoch(const protocol_params &pp, uint64_t current_epoch, uint64_t dormant_epochs=0);
+        static uint64_t compute_reg_expire_epoch(const protocol_params &pp, uint64_t current_epoch, uint64_t dormant_epochs=0);
         void to_cbor(era_encoder &) const;
     };
 
@@ -51,7 +52,14 @@ namespace turbo::cardano::ledger::conway {
 
     struct committee_t {
         struct new_t {};
-        struct resigned_t {};
+        struct resigned_t {
+            array_optional_t<anchor_t> anchor {};
+
+            static constexpr auto serialize(auto &archive, auto &self)
+            {
+                return archive(self.anchor);
+            }
+        };
         struct hot_key_t {
             using value_type = std::variant<new_t, resigned_t, credential_t>;
             value_type val { new_t {} };
@@ -72,14 +80,16 @@ namespace turbo::cardano::ledger::conway {
 
         static committee_t from_json(const json::value &);
         void to_cbor(era_encoder &) const;
-        size_t active_size(const member_key_map &hot_key) const;
+        size_t active_size(const member_key_map &hot_key, uint64_t current_epoch) const;
     };
 
+    using prev_gov_action_id_t = array_optional_t<gov_action_id_t>;
+
     struct prev_actions_t {
-        gov_action_id_list param_updates {};
-        gov_action_id_list hard_forks {};
-        gov_action_id_list committee_updates {};
-        gov_action_id_list constitution_updates {};
+        prev_gov_action_id_t param_updates {};
+        prev_gov_action_id_t hard_forks {};
+        prev_gov_action_id_t committee_updates {};
+        prev_gov_action_id_t constitution_updates {};
 
         static constexpr auto serialize(auto &archive, auto &self)
         {
@@ -133,6 +143,7 @@ namespace turbo::cardano::ledger::conway {
     struct pulsing_data_t {
         proposal_map_copy proposals {};
         drep_info_map_copy drep_state {};
+        committee_t::member_key_map committee_hot_keys {};
         drep_distr_t drep_voting_power {};
         pool_stake_distribution pool_voting_power {};
         bool drep_state_updated = false;
@@ -231,6 +242,14 @@ namespace turbo::cardano::ledger::conway {
 
         void _add_encode_task(cbor_encoder &, const encode_cbor_func &) const override;
         void _apply_conway_params(protocol_params &p) const;
+        bool _proposal_valid(const proposal_t &, const cert_loc_t &) const;
+        bool _action_valid(const gov_action_t &, uint64_t epoch) const;
+        bool _action_well_formed(const gov_action_t &) const;
+        bool _has_parent(const gov_action_t &) const;
+        bool _valid_hf_action(const gov_action_t &) const;
+        bool _can_vote(const gov_action_t &, voter_t::type_t) const;
+        bool _committee_member_active(const committee_t::member_key_map &, const credential_t &, uint64_t expire_epoch) const;
+        void _prune_committee_hot_keys();
 
         void _account_to_cbor(const account_info &acc, era_encoder &enc) const override;
         void _delegation_gov_to_cbor(era_encoder &enc) const override;
@@ -241,7 +260,7 @@ namespace turbo::cardano::ledger::conway {
         void _stake_pointer_stake_to_cbor(era_encoder &) const override;
 
         void _process_block_updates(block_update_list &&) override;
-        void _process_timed_update(tx_out_ref_list &, timed_update_t &&) override;
+        void _process_timed_update(tx_out_ref_list &, uint64_t &, timed_update_t &&) override;
         void _tick(uint64_t slot) override;
 
         // governance: Ratify related internal methods
@@ -249,8 +268,9 @@ namespace turbo::cardano::ledger::conway {
         // supporting methods
 
         static bool _check_threshold(const voting_threshold_t &t, const rational_u64 &r);
+        bool _committee_accepted(const gov_action_id_t *gid, const gov_action_state_t &ga) const;
         rational_u64 _param_update_threshold(const param_update_t &upd, const drep_voting_thresholds_t &t) const;
-        voting_threshold_t _committee_voting_threshold(const enact_state_t &st, const gov_action_t &ga) const;
+        voting_threshold_t _committee_voting_threshold(const committee_t::member_key_map &, const enact_state_t &st, const gov_action_t &ga) const;
         voting_threshold_t _pool_voting_threshold(const enact_state_t &st, const gov_action_t &ga) const;
         voting_threshold_t _drep_voting_threshold(const enact_state_t &st, const gov_action_t &ga) const;
         default_vote_t _pool_default_vote(const pool_hash &) const;
@@ -263,6 +283,7 @@ namespace turbo::cardano::ledger::conway {
         void _transfer_treasury_withdrawals(const stake_distribution &rewards);
         static void _enact_proposal(enact_state_t &st, const gov_action_id_t &gid, const gov_action_t &ga);
         void _gov_remove_proposal(const gov_action_id_t &gid);
+        void _gov_remove_with_descendants(const gov_action_id_t &gid);
         void _gov_finalize();
         void _gov_enact();
         void _gov_make_pulsing_snapshot();

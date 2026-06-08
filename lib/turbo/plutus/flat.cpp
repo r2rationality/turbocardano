@@ -190,22 +190,12 @@ namespace turbo::plutus::flat {
 
         bls12_381_g1_element _decode_bls_g1()
         {
-            const auto bytes = _decode_bytestring();
-            bls12_381_g1_element g1;
-            if (bytes.size() != sizeof(g1.val)) [[unlikely]]
-                throw error(fmt::format("expected {} bytes for bls12_381_g1_element but got: {}", sizeof(g1.val), bytes.size()));
-            memcpy(&g1.val, bytes.data(), sizeof(g1.val));
-            return g1;
+            return bls_g1_decompress(_decode_bytestring());
         }
 
         bls12_381_g2_element _decode_bls_g2()
         {
-            const auto bytes = _decode_bytestring();
-            bls12_381_g2_element g2;
-            if (bytes.size() != sizeof(g2.val)) [[unlikely]]
-                throw error(fmt::format("expected {} bytes for bls12_381_g1_element but got: {}", sizeof(g2.val), bytes.size()));
-            memcpy(&g2.val, bytes.data(), sizeof(g2.val));
-            return g2;
+            return bls_g2_decompress(_decode_bytestring());
         }
 
         constant_type _decode_type_application(std::vector<type_tag>::iterator &it, const std::vector<type_tag>::iterator &end)

@@ -12,13 +12,11 @@ using namespace turbo::cardano;
 
 suite cardano_conway_suite = [] {
     "cardano::conway"_test = [] {
-        /*"example scripts"_test = [] {
+        "example scripts"_test = [] {
             const configs_dir cfg { configs_dir::default_path() };
             const cardano::config ccfg { cfg };
             ccfg.shelley_start_epoch(208);
             for (const auto &path: file::files_with_ext(install_path("data/conway"), ".zpp")) {
-                if (!path.ends_with("AE3BD84BB0C1F01223B298CAA4140BD8871B9DB2EE100D90F86139BEDF395F6B.zpp"))
-                    continue;
                 const plutus::context ctx { path, ccfg };
                 expect(boost::ut::nothrow([&] {
                     try {
@@ -32,7 +30,7 @@ suite cardano_conway_suite = [] {
                     }
                 })) << path;
             }
-        };*/
+        };
 
         "parse block header"_test = [] {
             const auto data = file::read(install_path("data/conway/block-0.cbor"));
@@ -86,7 +84,7 @@ suite cardano_conway_suite = [] {
                 for (const auto &p: c_tx.proposals()) {
                     if (std::holds_alternative<gov_action_t::parameter_change_t>(p.procedure.action.val)) {
                         const auto &pupd = std::get<gov_action_t::parameter_change_t>(p.procedure.action.val);
-                        if (pupd.update.plutus_cost_models && pupd.update.plutus_cost_models->v3)
+                        if (pupd.update.plutus_cost_models && pupd.update.plutus_cost_models->contains(2))
                             ++new_v3_cost_models;
                     }
                 }

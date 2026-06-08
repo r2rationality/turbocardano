@@ -175,6 +175,8 @@ namespace turbo::plutus {
             const auto num_args = b.b.num_args();
             if (b.args->size() != num_args) [[unlikely]]
                 throw error(fmt::format("can't apply builtin {} to {} arguments: {} arguments are required!", b.b.tag, b.args->size(), num_args));
+            if (b.forces != b.b.polymorphic_args()) [[unlikely]]
+                throw error(fmt::format("can't apply builtin {} with {} forces: {} forces are required!", b.b.tag, b.forces, b.b.polymorphic_args()));
             _spend(b.b.tag, b.args);
             const auto func = _get_builtin_func(b.b.tag);
             switch (num_args) {
@@ -238,14 +240,12 @@ namespace turbo::plutus {
                 if constexpr (std::is_same_v<T, v_delay>)
                     return _compute(v.env, v.expr);
                 if constexpr (std::is_same_v<T, v_builtin>) {
-                    if (v.args->size() == v.b.num_args())
-                        return _apply_builtin(v);
                     if (v.forces < v.b.polymorphic_args()) {
                         auto new_b = v;
                         ++new_b.forces;
                         return value { _alloc, std::move(new_b) };
                     }
-                    throw error(fmt::format("an unexpected force of a builtin: {} polymorhpic_args: {} num_forces: {}", v.b.tag, v.b.polymorphic_args(), v.forces));
+                    throw error(fmt::format("an unexpected force of a builtin: {} polymorphic_args: {} num_forces: {}", v.b.tag, v.b.polymorphic_args(), v.forces));
                 }
                 throw error(fmt::format("unsupported value for force: {}", typeid(T).name()));
                 return value { _alloc, constant { _alloc, std::monostate {} } };

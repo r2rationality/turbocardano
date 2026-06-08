@@ -29,7 +29,7 @@ suite cardano_config_suite = [] {
             expect(utxos.contains(tx_out_ref { tx_hash::from_hex("DCE0CA2A40603CC2395CD7E348FBBF91A9D5A83E54597D1095486A2307B4CAB2"), 0 }));
         };
         "plutus cost models"_test = [&] {
-            expect(cfg.plutus_all_cost_models.v1.value().size() == 166);
+            expect(cfg.plutus_all_cost_models.at(0).size() == 166);
         };
         "byron issuers"_test = [&] {
             static std::set<vkey> orig_issuers {

@@ -77,7 +77,7 @@ namespace turbo::cbor {
         encoder &float32(const float val)
         {
             _encode_item(major_type::simple, static_cast<uint8_t>(special_val::four_bytes));
-            _encode_data(buffer::from<float>(host_to_net(val)));
+            _encode_data(buffer::from(host_to_net(std::bit_cast<uint32_t>(val))));
             return *this;
         }
 

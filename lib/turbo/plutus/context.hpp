@@ -62,6 +62,12 @@ namespace turbo::plutus {
             _cost_models = models;
         }
 
+        void protocol_ver(const protocol_version &pv)
+        {
+            _protocol_ver = pv;
+            _shared.clear();
+        }
+
         const tx_base &tx() const;
         script_hash redeemer_script(const redeemer_id &) const;
 
@@ -106,6 +112,7 @@ namespace turbo::plutus {
         uint8_vector _tx_body_bytes;
         uint8_vector _tx_wits_bytes;
         storage::block_info _block_info;
+        protocol_version _protocol_ver {};
         tx_container _tx;
         stored_txo_list _inputs {};
         stored_txo_list _ref_inputs {};

@@ -5,6 +5,7 @@
 #    include <sys/resource.h>
 #endif
 #include "file.hpp"
+#include "logger.hpp"
 
 namespace turbo::file {
     void set_max_open_files()
@@ -31,6 +32,12 @@ namespace turbo::file {
         }
     }
 
+    read_stream::~read_stream() {
+        logger::run_log_errors([&] {
+            close();
+        });
+    }
+
     void read_stream::seek(std::streampos off)
     {
 #if     _WIN32
@@ -39,6 +46,12 @@ namespace turbo::file {
         if (fseek(_f, off, SEEK_SET) != 0)
 #endif
             throw error_sys(fmt::format("failed to seek in {}", _path));
+    }
+
+    write_stream::~write_stream() {
+        logger::run_log_errors([&] {
+            close();
+        });
     }
 
     void write_stream::seek(std::streampos off)

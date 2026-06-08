@@ -13,8 +13,20 @@
 namespace turbo {
     void rational_u64::normalize()
     {
+        if (denominator == 1)
+            return;
+        if (numerator == 0) {
+            if (denominator != 0)
+                denominator = 1;
+            return;
+        }
+        if (numerator == denominator) {
+            numerator = 1;
+            denominator = 1;
+            return;
+        }
         const auto div = std::gcd(numerator, denominator);
-        if (div != 0) {
+        if (div > 1) {
             numerator /= div;
             denominator /= div;
         }
@@ -30,20 +42,18 @@ namespace turbo {
             num *= 10;
             denominator *= 10;
         }
-        uint64_t numerator = static_cast<uint64_t>(num);
-        const auto div = std::gcd(numerator, denominator);
-        if (div != 0) {
-            numerator /= div;
-            denominator /= div;
-        }
-        return { numerator, denominator };
+        rational_u64 res { static_cast<uint64_t>(num), denominator };
+        res.normalize();
+        return res;
     }
 
     rational_u64 rational_u64::from_cbor(cbor::zero2::array_reader &it)
     {
         const auto num = it.read().uint();
         const auto denom = it.read().uint();
-        return { num, denom };
+        rational_u64 res { num, denom };
+        res.normalize();
+        return res;
     }
 
     rational_u64 rational_u64::from_cbor(cbor::zero2::value &v)

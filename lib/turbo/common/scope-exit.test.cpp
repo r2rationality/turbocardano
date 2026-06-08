@@ -11,29 +11,37 @@ namespace {
 suite turbo_common_scope_exit_suite = [] {
     "turbo::common::scope_exit"_test = [] {
         "normal"_test = [] {
-            size_t val = 1U;
+            size_t val = 0U;
             {
-                scope_exit cleanup{[&]{ --val;}};
-                expect_equal(1U, val);
+                scope_exit cleanup{[&]{ ++val; }};
+                expect_equal(0U, val);
             }
-            expect_equal(0U, val);
+            expect_equal(1U, val);
         };
         "move"_test = [] {
-            size_t val = 1U;
+            size_t val = 0U;
             {
-                scope_exit cleanup1{[&]{ --val;}};
+                scope_exit cleanup1{[&]{ ++val; }};
                 scope_exit cleanup2{std::move(cleanup1)};
-                expect_equal(1U, val);
+                expect_equal(0U, val); // neither has fired yet
             }
-            expect_equal(0U, val);
+            expect_equal(1U, val); // fired exactly once (cleanup2 only)
         };
         "release"_test = [] {
-            size_t val = 1U;
+            size_t val = 0U;
             {
-                scope_exit cleanup{[&]{ --val;}};
-                expect_equal(1U, val);
+                scope_exit cleanup{[&]{ ++val; }};
+                expect_equal(0U, val);
                 cleanup.release();
-                expect_equal(1U, val);
+                expect_equal(0U, val);
+            }
+            expect_equal(0U, val); // callback suppressed
+        };
+        "make_scope_exit"_test = [] {
+            size_t val = 0U;
+            {
+                auto cleanup = make_scope_exit([&]{ ++val; });
+                expect_equal(0U, val);
             }
             expect_equal(1U, val);
         };

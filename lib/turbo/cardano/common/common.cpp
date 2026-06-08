@@ -322,9 +322,13 @@ namespace turbo::cardano {
     {
         wit_cnt cnt {};
         for (const auto &[rid, rinfo]: ctx.redeemers()) {
-            auto ps = ctx.prepare_script(rinfo);
-            ctx.eval_script(ps);
-            cnt += ps.typ;
+            try {
+                auto ps = ctx.prepare_script(rinfo);
+                ctx.eval_script(ps);
+                cnt += ps.typ;
+            } catch (const std::exception &ex) {
+                throw error(fmt::format("redeemer {}#{}: {}", rinfo.tag, rinfo.ref_idx, ex.what()));
+            }
         }
         return cnt;
     }

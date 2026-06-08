@@ -5,6 +5,7 @@
  * This code is distributed under the license specified in:
  * https://github.com/sierkov/daedalus-turbo/blob/main/LICENSE */
 
+#include <turbo/cardano/babbage/block.hpp>
 #include <turbo/index/common.hpp>
 
 namespace turbo::index::timed_update {
@@ -72,9 +73,30 @@ namespace turbo::index::timed_update {
 
         bool operator<(const auto &b) const
         {
-            if (loc == b.loc)
+            if (loc.slot == b.loc.slot && loc.tx_idx == b.loc.tx_idx) {
+                const auto phase = _phase(update);
+                const auto other_phase = _phase(b.update);
+                if (phase != other_phase)
+                    return phase < other_phase;
+                if (loc.cert_idx != b.loc.cert_idx)
+                    return loc.cert_idx < b.loc.cert_idx;
                 return update.index() < b.update.index();
+            }
             return loc < b.loc;
+        }
+
+        static size_t _phase(const variant &v)
+        {
+            return std::visit<size_t>([](const auto &u) {
+                using T = std::decay_t<decltype(u)>;
+                if constexpr (std::is_same_v<T, stake_withdraw>)
+                    return 0;
+                if constexpr (std::is_same_v<T, cardano::proposal_t>)
+                    return 2;
+                if constexpr (std::is_same_v<T, cardano::conway::vote_info_t>)
+                    return 3;
+                return 1;
+            }, v);
         }
     };
 
@@ -117,12 +139,11 @@ namespace turbo::index::timed_update {
         void index_invalid_tx(const cardano::tx_base &tx) override
         {
             const auto slot = tx.block().slot();
-            if (const auto *babbage_tx = dynamic_cast<const cardano::babbage::tx *>(&tx); babbage_tx) {
+            if (const auto *babbage_tx = dynamic_cast<const cardano::babbage::tx_base *>(&tx); babbage_tx) {
                 if (const auto c_ret = babbage_tx->collateral_return(); c_ret)
                     _data.emplace_back(cardano::cert_loc_t { slot, tx.index(), 0 }, collected_collateral_refund { c_ret->coin });
             }
             tx.foreach_collateral([&](const auto &tx_in) {
-                logger::debug("collect collateral {}", tx_in);
                 _data.emplace_back(cardano::cert_loc_t { slot, tx.index(), 0 }, collected_collateral_input { tx_in.hash, tx_in.idx });
             });
         }

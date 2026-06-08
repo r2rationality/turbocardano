@@ -8,7 +8,9 @@
 #include <turbo/common/format.hpp>
 
 namespace turbo {
-    typedef fmt_error scheduler_error;
+    struct scheduler_error: fmt_error {
+        using fmt_error::fmt_error;
+    };
 
     struct scheduled_task {
         int64_t priority;

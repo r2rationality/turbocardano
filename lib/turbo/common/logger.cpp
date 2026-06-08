@@ -24,10 +24,23 @@
 #include "logger.hpp"
 
 namespace turbo::logger {
-    std::string log_path()
+    static std::string _default_log_path() {
+        if (const char *env_log_path = std::getenv("TURBO_LOG_PATH")) {
+            return file::install_path(env_log_path);
+        }
+        return file::install_path("log/turbo.log");
+    }
+
+    static std::string &_log_path_storage() {
+        static std::string log_path = _default_log_path();
+        return log_path;
+    }
+
+    std::string &init_log_path(const std::optional<std::string_view> path)
     {
-        const char *env_log_path = std::getenv("TURBO_LOG_PATH");
-        return file::install_path(env_log_path ? env_log_path : "log/turbo.log");
+        if (path)
+            _log_path_storage() = *path;
+        return _log_path_storage();
     }
 
     static bool console_enabled()
@@ -44,8 +57,11 @@ namespace turbo::logger {
     spdlog::logger create(const std::string &path)
     {
         std::cerr << fmt::format("INIT: log path: {}\n", path);
+        if (std::getenv("TURBO_LOG_CLEAR")) {
+            std::filesystem::remove(path);
+        }
         {
-            std::ofstream os { path, std::ios_base::app };
+            std::ofstream os{path, std::ios_base::app};
             if (!os) {
                 std::cerr << fmt::format("INIT: Unable to write to the log file: {}; terminating.\n", path);
                 std::terminate();

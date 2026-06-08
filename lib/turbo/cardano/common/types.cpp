@@ -4,6 +4,7 @@
  * This code is distributed under the license specified in:
  * https://github.com/sierkov/daedalus-turbo/blob/main/LICENSE */
 
+#include <algorithm>
 #include <boost/container/flat_map.hpp>
 #include <turbo/base64.hpp>
 #include <turbo/cardano/common/config.hpp>
@@ -106,12 +107,8 @@ namespace turbo::cardano {
     void _apply_one_param_update(plutus_cost_models &tgt, std::string &desc, const std::optional<plutus_cost_models> &upd, const std::string_view name)
     {
         if (upd) {
-            if (upd->v1)
-                tgt.v1 = upd->v1;
-            if (upd->v2)
-                tgt.v2 = upd->v2;
-            if (upd->v3)
-                tgt.v3 = upd->v3;
+            for (const auto &[id, model]: upd->items)
+                tgt.items[id] = model;
             desc += fmt::format("{}: {} ", name, tgt);
         }
     }
@@ -396,10 +393,18 @@ namespace turbo::cardano {
         treasury_withdrawal.to_cbor(enc);
     }
 
+    plutus_cost_model::plutus_cost_model(raw_value_type raw_values, const std::vector<std::string> &names):
+        _raw_values { std::move(raw_values) }
+    {
+        _data.reserve(std::min(_raw_values.size(), names.size()));
+        for (size_t i = 0; i < _raw_values.size() && i < names.size(); ++i)
+            _data.emplace_back(names[i], _raw_values[i]);
+    }
+
     void plutus_cost_model::to_cbor(era_encoder &enc) const
     {
-        enc.array_compact(size(), [&] {
-            for (const auto &[name, cost]: *this) {
+        enc.array_compact(raw_values().size(), [&] {
+            for (const auto cost: raw_values()) {
                 if (cost >= 0)
                     enc.uint(cost);
                 else
@@ -411,18 +416,13 @@ namespace turbo::cardano {
     void plutus_cost_models::to_cbor(era_encoder &enc) const
     {
         auto l_enc { enc };
-        size_t cnt = 0;
-        for (auto &[id, m]:
-                std::initializer_list<std::pair<size_t, const std::optional<plutus_cost_model> &>>{{ 0, v1 }, { 1, v2 }, { 2, v3} }) {
-            if (m) {
-                l_enc.uint(id);
-                m->to_cbor(l_enc);
-                ++cnt;
-            }
+        for (const auto &[id, m]: items) {
+            l_enc.uint(id);
+            m.to_cbor(l_enc);
         }
-        if (!cnt) [[unlikely]]
+        if (items.empty()) [[unlikely]]
             throw error("a plutus_cost_model structure must have at least one model defined!");
-        enc.map_compact(cnt, [&] {
+        enc.map_compact(items.size(), [&] {
             enc << l_enc;
         });
     }
@@ -488,64 +488,72 @@ namespace turbo::cardano {
 
     plutus_cost_model plutus_cost_model::from_cbor(const std::vector<std::string> &names, cbor::zero2::value &v)
     {
-        plutus_cost_model res {};
-        res.reserve(names.size());
+        plutus_cost_model::raw_value_type raw_values {};
+        if (!v.indefinite())
+            raw_values.reserve(v.special_uint());
         auto &it = v.array();
-        for (size_t i = 0; !it.done() && i < names.size(); ++i) {
+        while (!it.done()) {
             auto &val = it.read();
             switch (const auto typ = val.type(); typ) {
-                case cbor::major_type::uint: res.emplace_back(names[i], numeric_cast<int64_t>(val.uint())); break;
-                case cbor::major_type::nint: res.emplace_back(names[i], -numeric_cast<int64_t>(val.nint())); break;
+                case cbor::major_type::uint: raw_values.emplace_back(numeric_cast<int64_t>(val.uint())); break;
+                case cbor::major_type::nint: raw_values.emplace_back(-numeric_cast<int64_t>(val.nint())); break;
                 default: throw error(fmt::format("unsupported plutus_cost_model value type: {}", typ));
             }
         }
-        return res;
+        return plutus_cost_model { std::move(raw_values), names };
     }
 
     plutus_cost_model plutus_cost_model::from_json(const plutus_cost_model &orig, const json::value &data)
     {
-        plutus_cost_model res {};
-        res.reserve(orig.size());
+        plutus_cost_model::raw_value_type raw_values {};
+        raw_values.reserve(orig.raw_values().size());
+        std::vector<std::string> names {};
+        names.reserve(orig.size());
         if (data.is_object()) {
             const auto &data_obj = data.as_object();
             if (orig.size() != data_obj.size())
                 throw error(fmt::format("was expecting an array with {} elements but got {}", orig.size(), data_obj.size()));
-            for (size_t i = 0; i < orig.size(); ++i) {
-                const auto &key = orig.storage().at(i).first;
+            for (const auto &item: orig) {
+                const auto &key = item.first;
+                names.emplace_back(key);
                 auto it = data_obj.find(key);
                 if (it == data_obj.end())
                     it = data_obj.find(plutus::costs::v1_arg_name(key));
                 if (it == data_obj.end())
                     throw error(fmt::format("missing required cost model key: {}", key));
-                res.emplace_back(key, json::value_to<int64_t>(it->value()));
+                raw_values.emplace_back(json::value_to<int64_t>(it->value()));
             }
         } else if (data.is_array()) {
             const auto &data_arr = data.as_array();
-            if (orig.size() != data_arr.size())
-                throw error(fmt::format("was expecting an array with {} elements but got {}", orig.size(), data_arr.size()));
-            for (size_t i = 0; i < orig.size(); ++i) {
-                const auto &key = orig.storage().at(i).first;
-                res.emplace_back(key, json::value_to<int64_t>(data_arr[i]));
-            }
+            if (orig.raw_values().size() != data_arr.size())
+                throw error(fmt::format("was expecting an array with {} elements but got {}", orig.raw_values().size(), data_arr.size()));
+            for (const auto &item: orig)
+                names.emplace_back(item.first);
+            for (size_t i = 0; i < orig.raw_values().size(); ++i)
+                raw_values.emplace_back(json::value_to<int64_t>(data_arr[i]));
         } else {
             throw error(fmt::format("an unsupported json value representing a cost model: {}", json::serialize_pretty(data)));
         }
-        return res;
+        return plutus_cost_model { std::move(raw_values), names };
     }
 
-    void plutus_cost_model::update(const plutus_cost_model &src)
+    bool plutus_cost_model::operator==(const plutus_cost_model &o) const noexcept
     {
-        for (auto &item: _data) {
-            if (const auto it = src.find(item.first); it != src.end())
-                item.second = it->second;
-        }
+        return _data == o._data && raw_values() == o.raw_values();
+    }
+
+    static auto plutus_cost_model_find(const plutus_cost_model &m, const std::string &key)
+    {
+        return std::find_if(m.begin(), m.end(), [&](const auto &item) {
+            return item.first == key;
+        });
     }
 
     plutus_cost_model::diff_type plutus_cost_model::diff(const plutus_cost_model &o) const
     {
         diff_type m {};
         for (const auto &[k, v]: *this) {
-            const auto it = o.find(k);
+            const auto it = plutus_cost_model_find(o, k);
             if (it == o.end()) {
                 m.try_emplace(k, v, std::optional<int64_t> {});
             } else if (it->second != v) {
@@ -553,7 +561,7 @@ namespace turbo::cardano {
             }
         }
         for (const auto &[k, v]: o) {
-            const auto it = find(k);
+            const auto it = plutus_cost_model_find(*this, k);
             if (it == end())
                 m.try_emplace(k, std::optional<int64_t> {}, v);
         }
@@ -648,31 +656,27 @@ namespace turbo::cardano {
         crypto::blake2b::digest(hash, zpp::serialize(*this));
     }
 
+    static const std::vector<std::string> &plutus_cost_model_arg_names(const uint64_t id)
+    {
+        static const std::vector<std::string> empty {};
+        switch (id) {
+            case 0: return plutus::costs::cost_arg_names_v1();
+            case 1: return plutus::costs::cost_arg_names_v2();
+            case 2: return plutus::costs::cost_arg_names_v3();
+            default: return empty;
+        }
+    }
+
     plutus_cost_models plutus_cost_models::from_cbor(cbor::zero2::value &v)
     {
         plutus_cost_models res {};
+        if (!v.indefinite())
+            res.items.reserve(v.special_uint());
         for (auto &it = v.map(); !it.done(); ) {
             auto &key_v = it.read_key();
             const auto typ = key_v.uint();
             auto &val_v = it.read_val(std::move(key_v));
-            switch (typ) {
-                case 0:
-                    res.v1.emplace(plutus_cost_model::from_cbor(plutus::costs::cost_arg_names_v1(), val_v));
-                    if (res.v1->size() != plutus::costs::cost_arg_names_v1().size()) [[unlikely]]
-                        throw error(fmt::format("an unexpected number of plutus v1 cost model arguments: {}", res.v1->size()));
-                    break;
-                case 1:
-                    res.v2.emplace(plutus_cost_model::from_cbor(plutus::costs::cost_arg_names_v2(), val_v));
-                    if (res.v2->size() != plutus::costs::cost_arg_names_v2().size()) [[unlikely]]
-                        throw error(fmt::format("an unexpected number of plutus v2 cost model arguments: {}", res.v2->size()));
-                    break;
-                case 2:
-                    res.v3.emplace(plutus_cost_model::from_cbor(plutus::costs::cost_arg_names_v3(), val_v));
-                    if (res.v3->size() != plutus::costs::cost_arg_names_v3().size() && res.v3->size() != 251) [[unlikely]]
-                        throw error(fmt::format("an unexpected number of plutus v3 cost model arguments: {}", res.v3->size()));
-                    break;
-                default: throw error(fmt::format("unsupported cost model id: {}", typ));
-            }
+            res.items.emplace(typ, plutus_cost_model::from_cbor(plutus_cost_model_arg_names(typ), val_v));
         }
         return res;
     }

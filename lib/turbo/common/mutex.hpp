@@ -14,14 +14,15 @@ namespace turbo::mutex {
 #   endif
 #endif
 #   ifdef __cpp_lib_hardware_interference_size
-        static const size_t alignment = std::hardware_destructive_interference_size;
+        inline constexpr size_t alignment = std::hardware_destructive_interference_size;
 #   else
-        static const size_t alignment = 64;
+        inline constexpr size_t alignment = 64;
 #   endif
 #ifndef _MSC_VER
 #   pragma GCC diagnostic pop
 #endif
 
-    using scoped_lock = std::scoped_lock<std::mutex>;
-    using unique_lock = std::unique_lock<std::mutex>;
+    using mutex_type = std::mutex;
+    using scoped_lock = std::scoped_lock<mutex_type>;
+    using unique_lock = std::unique_lock<mutex_type>;
 }

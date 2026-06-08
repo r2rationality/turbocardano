@@ -8,6 +8,7 @@
 #include <turbo/common/mutex.hpp>
 #include <turbo/cardano/ledger/shelley.hpp>
 #include <turbo/cardano/ledger/subchain.hpp>
+#include <turbo/cardano/ledger/updates.hpp>
 #include <turbo/common/format.hpp>
 
 namespace turbo {
@@ -31,6 +32,11 @@ namespace turbo::cardano::ledger {
         void track_era(uint64_t era, uint64_t slot);
         void process_cert(const cert_t &, const cert_loc_t &);
         void process_updates(updates_t &&);
+        void process_block_updates(block_update_list &&);
+        void process_timed_update(update_effects_t &, index::timed_update::item &&);
+        update_effects_t process_timed_updates(timed_update_list &&);
+        void process_utxo_updates(utxo_update_list &&);
+        void finish_update_processing(update_effects_t &&, bool run_pulser=true);
 
         optional_point add_subchain(subchain &&sc)
         {
@@ -56,6 +62,12 @@ namespace turbo::cardano::ledger {
             auto orig_sc = std::move(_subchains);
             _subchains = std::move(new_sc);
             return orig_sc;
+        }
+
+        bool truncate_subchains(const uint64_t max_end_offset)
+        {
+            mutex::scoped_lock sc_lk { _subchains_mutex };
+            return _subchains.truncate(max_end_offset);
         }
 
         void merge_same_epoch_subchains()

@@ -1,16 +1,14 @@
 #pragma once
 /* Copyright (c) 2022-2023 Alex Sierkov (alex dot sierkov at gmail dot com)
- * Copyright (c) 2024-2025 R2 Rationality OÜ (info at r2rationality dot com) */
+ * Copyright (c) 2024-2026 R2 Rationality OÜ (info at r2rationality dot com) */
 
-#include <atomic>
 #include <coroutine>
 #include <exception>
 #include <future>
-#include <mutex>
 #include <optional>
+#include <stop_token>
 #include <utility>
 #include "error.hpp"
-#include "scheduler.hpp"
 
 namespace turbo::coro {
     template<typename T>
@@ -146,13 +144,20 @@ namespace turbo::coro {
                 return  {};
             }
 
-            std::suspend_always final_suspend() noexcept
+            struct final_awaitable_t {
+                bool await_ready() noexcept { return false; }
+                std::coroutine_handle<> await_suspend(handle_type h) noexcept
+                {
+                    auto caller = h.promise()._caller;
+                    if (caller && !caller.done())
+                        return caller;
+                    return std::noop_coroutine();
+                }
+                void await_resume() noexcept {}
+            };
+
+            final_awaitable_t final_suspend() noexcept
             {
-                auto ch = _caller;
-                scheduler::get().submit("final-suspend", 100, [ch] {
-                    if (ch && !ch.done())
-                        ch.resume();
-                });
                 return {};
             }
 
@@ -165,7 +170,18 @@ namespace turbo::coro {
             {
                 _exception = e;
             }
+
+            std::stop_token get_stop_token() const noexcept
+            {
+                return _stop_token;
+            }
+
+            void set_stop_token(std::stop_token tok) noexcept
+            {
+                _stop_token = std::move(tok);
+            }
         private:
+            std::stop_token _stop_token{};
             handle_type _my_handle()
             {
                 return handle_type::from_promise(*this);
@@ -208,9 +224,14 @@ namespace turbo::coro {
             resume();
         }
 
-        T await_resume() noexcept
+        T await_resume()
         {
             return result();
+        }
+
+        void set_stop_token(std::stop_token tok) noexcept
+        {
+            _coro.promise().set_stop_token(std::move(tok));
         }
 
         [[nodiscard]] bool done() const

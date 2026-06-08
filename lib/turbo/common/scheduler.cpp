@@ -396,7 +396,7 @@ namespace turbo {
             }
         }
 
-        void _process_once(const bool report_status, const bool process_tasks=false, const bool process_results=false)
+        void _process_once(const bool report_status, const bool process_tasks=false, const bool /*process_results*/=false)
         {
             // In the single-worker mode, the tasks are executed in the loop
             if (process_tasks) {

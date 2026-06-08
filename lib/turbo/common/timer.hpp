@@ -7,8 +7,10 @@
 
 namespace turbo {
     struct timer {
-        explicit timer(const std::string_view &title, const logger::level lev=logger::level::trace, const bool report_start=false)
-            : _title { title }, _level { lev }, _start_time { std::chrono::system_clock::now() }
+        explicit timer(const std::string_view &title, const logger::level lev=logger::level::trace, const bool report_start=false):
+            _title{title},
+            _level{lev},
+            _start_time{std::chrono::steady_clock::now()}
         {
             if (report_start || logger::tracing_enabled())
                 logger::log(_level, "timer '{}' created", _title);
@@ -41,22 +43,21 @@ namespace turbo {
             return elapsed_seconds.count();
         }
 
-        double stop(bool print_later=true)
+        double stop(bool auto_print=true)
         {
             if (!_stopped) {
                 _stopped = true;
-                _end_time = std::chrono::system_clock::now();
+                _end_time = std::chrono::steady_clock::now();
             }
-            if (!print_later)
+            if (!auto_print)
                 _printed = true;
             return duration();
         }
-
     private:
         const std::string _title;
         const logger::level _level;
-        const std::chrono::time_point<std::chrono::system_clock> _start_time;
-        std::chrono::time_point<std::chrono::system_clock> _end_time {};
+        const std::chrono::time_point<std::chrono::steady_clock> _start_time;
+        std::chrono::time_point<std::chrono::steady_clock> _end_time{_start_time};
         bool _stopped = false;
         bool _printed = false;
     };

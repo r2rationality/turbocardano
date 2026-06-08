@@ -513,8 +513,19 @@ namespace turbo::cardano::ledger::shelley {
         retire_stake(loc.slot, c.stake_id, {});
     }
 
-    void state::process_cert(const stake_deleg_cert &c, const cert_loc_t &)
+    void state::process_cert(const stake_deleg_cert &c, const cert_loc_t &loc)
     {
+        const auto acc_it = _accounts.find(c.stake_id);
+        if (acc_it == _accounts.end() || !acc_it->second.ptr) [[unlikely]] {
+            logger::debug("slot: {} stake_deleg_cert stake_id: {} pool_id: {} account_known: {} registered: {} reward: {} deposit: {} delegated: {} tx_idx: {} cert_idx: {}",
+                cardano::slot { loc.slot, _cfg }, c.stake_id, c.pool_id,
+                acc_it != _accounts.end(),
+                acc_it != _accounts.end() && acc_it->second.ptr.has_value(),
+                cardano::amount { acc_it != _accounts.end() ? acc_it->second.reward : 0 },
+                cardano::amount { acc_it != _accounts.end() ? acc_it->second.deposit : 0 },
+                acc_it != _accounts.end() && acc_it->second.deleg.has_value(),
+                loc.tx_idx, loc.cert_idx);
+        }
         delegate_stake(c.stake_id, c.pool_id);
     }
 
@@ -545,7 +556,7 @@ namespace turbo::cardano::ledger::shelley {
         }
     }
 
-    void state::_process_timed_update(tx_out_ref_list &collected_collateral, timed_update_t &&upd)
+    void state::_process_timed_update(tx_out_ref_list &collected_collateral, uint64_t &collateral_refund, timed_update_t &&upd)
     {
         std::visit([&](const auto &u) {
             using T = std::decay_t<decltype(u)>;
@@ -558,8 +569,7 @@ namespace turbo::cardano::ledger::shelley {
             } else if constexpr (std::is_same_v<T, index::timed_update::collected_collateral_input>) {
                 collected_collateral.emplace_back(u.tx_hash, u.txo_idx);
             } else if constexpr (std::is_same_v<T, index::timed_update::collected_collateral_refund>) {
-                logger::debug("refunded fees from refunded collateral {}", u.refund);
-                sub_fees(u.refund);
+                collateral_refund += u.refund;
             } else if constexpr (std::is_same_v<T, stake_reg_cert>
                 || std::is_same_v<T, stake_dereg_cert>
                 || std::is_same_v<T, stake_deleg_cert>
@@ -574,14 +584,15 @@ namespace turbo::cardano::ledger::shelley {
         }, upd.update);
     }
 
-    tx_out_ref_list state::_process_timed_updates(timed_update_list &&timed_updates)
+    std::pair<tx_out_ref_list, uint64_t> state::_process_timed_updates(timed_update_list &&timed_updates)
     {
         timer tp { fmt::format("validator epoch: {} process {} timed updates", _epoch, timed_updates.size()) };
         std::vector<tx_out_ref> collected_collateral {};
+        uint64_t collateral_refund = 0;
         for (auto &&upd: timed_updates) {
-            _process_timed_update(collected_collateral, std::move(upd));
+            _process_timed_update(collected_collateral, collateral_refund, std::move(upd));
         }
-        return collected_collateral;
+        return { std::move(collected_collateral), collateral_refund };
     }
 
     void state::_process_utxo_updates(utxo_update_list &&utxo_updates)
@@ -590,59 +601,66 @@ namespace turbo::cardano::ledger::shelley {
         mutex::unique_lock::mutex_type all_mutex alignas(mutex::alignment) {};
         stake_update_map all_deltas {};
         pointer_update_map all_pointer_deltas {};
-        _sched.wait_all(task_group,
-            [&](const auto &todo, const auto &submit_f) {
-                for (size_t part_idx = 0; part_idx < txo_map::num_parts; ++part_idx) {
-                    submit_f({ 1000, task_group, [this, part_idx, todo, &utxo_updates, &all_mutex, &all_deltas, &all_pointer_deltas] {
-                        stake_update_map deltas {};
-                        pointer_update_map pointer_deltas {};
-                        for (auto &&update_batch: utxo_updates) {
-                            auto &upd_part = update_batch.partition(part_idx);
-                            auto &utxo_part = _utxo.partition(part_idx);
-                            for (auto &&[txo_id, txo_data]: upd_part) {
-                                if (!txo_data.address_raw.empty()) {
-                                    const auto addr = txo_data.addr();
-                                    if (addr.has_stake_id()) [[likely]]
-                                        _update_stake_delta(deltas, addr.stake_id(), static_cast<int64_t>(txo_data.coin));
-                                    else if (addr.has_pointer()) [[unlikely]]
-                                        pointer_deltas[addr.pointer()] += static_cast<int64_t>(txo_data.coin);
-                                    if (!txo_data.empty()) [[likely]] {
-                                        if (auto [it, created] = utxo_part.try_emplace(txo_id, std::move(txo_data)); !created) [[unlikely]]
-                                            logger::warn("a non-unique TXO {}!", it->first);
-                                    }
-                                } else {
-                                    if (auto it = utxo_part.find(txo_id); it != utxo_part.end()) [[likely]] {
-                                        const auto addr = it->second.addr();
+        {
+            turbo::timer t { fmt::format("validator epoch {} apply utxo partitions batches: {}", _epoch, utxo_updates.size()), logger::level::trace };
+            _sched.wait_all(task_group,
+                [&](const auto &todo, const auto &submit_f) {
+                    for (size_t part_idx = 0; part_idx < txo_map::num_parts; ++part_idx) {
+                        submit_f({ 1000, task_group, [this, part_idx, todo, &utxo_updates, &all_mutex, &all_deltas, &all_pointer_deltas] {
+                            stake_update_map deltas {};
+                            pointer_update_map pointer_deltas {};
+                            for (auto &&update_batch: utxo_updates) {
+                                auto &upd_part = update_batch.partition(part_idx);
+                                auto &utxo_part = _utxo.partition(part_idx);
+                                for (auto &&[txo_id, txo_data]: upd_part) {
+                                    if (!txo_data.address_raw.empty()) {
+                                        const auto addr = txo_data.addr();
                                         if (addr.has_stake_id()) [[likely]]
-                                            _update_stake_delta(deltas, addr.stake_id(), -static_cast<int64_t>(it->second.coin));
+                                            _update_stake_delta(deltas, addr.stake_id(), static_cast<int64_t>(txo_data.coin));
                                         else if (addr.has_pointer()) [[unlikely]]
-                                            pointer_deltas[addr.pointer()] -= static_cast<int64_t>(it->second.coin);
-                                        utxo_part.erase(it);
+                                            pointer_deltas[addr.pointer()] += static_cast<int64_t>(txo_data.coin);
+                                        if (!txo_data.empty()) [[likely]] {
+                                            if (auto [it, created] = utxo_part.try_emplace(txo_id, std::move(txo_data)); !created) [[unlikely]]
+                                                logger::warn("a non-unique TXO {}!", it->first);
+                                        }
                                     } else {
-                                        throw error(fmt::format("request to remove an unknown TXO {}!", txo_id));
+                                        if (auto it = utxo_part.find(txo_id); it != utxo_part.end()) [[likely]] {
+                                            const auto addr = it->second.addr();
+                                            if (addr.has_stake_id()) [[likely]]
+                                                _update_stake_delta(deltas, addr.stake_id(), -static_cast<int64_t>(it->second.coin));
+                                            else if (addr.has_pointer()) [[unlikely]]
+                                                pointer_deltas[addr.pointer()] -= static_cast<int64_t>(it->second.coin);
+                                            utxo_part.erase(it);
+                                        } else {
+                                            throw error(fmt::format("request to remove an unknown TXO {}!", txo_id));
+                                        }
                                     }
                                 }
                             }
-                        }
-                        mutex::scoped_lock lk { all_mutex };
-                        for (const auto &[stake_id, delta]: deltas) {
-                            const auto [it, created] = all_deltas.try_emplace(stake_id, delta);
-                            if (!created) {
-                                it->second += delta;
-                                if (!it->second)
-                                    all_deltas.erase(it);
+                            mutex::scoped_lock lk { all_mutex };
+                            for (const auto &[stake_id, delta]: deltas) {
+                                const auto [it, created] = all_deltas.try_emplace(stake_id, delta);
+                                if (!created) {
+                                    it->second += delta;
+                                    if (!it->second)
+                                        all_deltas.erase(it);
+                                }
                             }
-                        }
-                        for (const auto &[stake_ptr, delta]: pointer_deltas)
-                            all_pointer_deltas[stake_ptr] += delta;
-                    }});
+                            for (const auto &[stake_ptr, delta]: pointer_deltas)
+                                all_pointer_deltas[stake_ptr] += delta;
+                        }});
+                    }
                 }
-            }
-        );
-        for (const auto &[stake_id, delta]: all_deltas)
-            update_stake(stake_id, delta);
-        for (const auto &[stake_ptr, delta]: all_pointer_deltas)
-            update_pointer(stake_ptr, delta);
+            );
+        }
+        {
+            turbo::timer t { fmt::format("validator epoch {} apply stake deltas: {} pointer_deltas: {}",
+                _epoch, all_deltas.size(), all_pointer_deltas.size()), logger::level::trace };
+            for (const auto &[stake_id, delta]: all_deltas)
+                update_stake(stake_id, delta);
+            for (const auto &[stake_ptr, delta]: all_pointer_deltas)
+                update_pointer(stake_ptr, delta);
+        }
     }
 
     void state::_process_collateral_use(tx_out_ref_list &&collected_collateral)
@@ -651,7 +669,6 @@ namespace turbo::cardano::ledger::shelley {
             const auto txo_data = utxo_find(txo_id);
             if (!txo_data) [[unlikely]]
                 throw error(fmt::format("epoch {}: cannot find data about a TXO used as a collateral input: {}", _epoch, txo_id));
-            logger::debug("fees from used collateral {}: {}", txo_id, txo_data->coin);
             add_fees(txo_data->coin);
             if (const auto addr = txo_data->addr(); addr.has_stake_id_hybrid()) [[likely]]
                 update_stake_id_hybrid(addr.stake_id_hybrid(), -static_cast<int64_t>(txo_data->coin));
@@ -661,24 +678,40 @@ namespace turbo::cardano::ledger::shelley {
 
     void state::process_updates(updates_t &&updates)
     {
-        _process_block_updates(std::move(updates.blocks));
-        auto collected_collateral = _process_timed_updates(std::move(updates.timed));
-        _process_utxo_updates(std::move(updates.utxos));
-        _process_collateral_use(std::move(collected_collateral));
-        // temporarily disabling as reapplying partial epoch updates after rewards computation is unstable now
-        // run_pulser_if_ready();
+        {
+            turbo::timer t { fmt::format("validator epoch {} process block updates: {}", _epoch, updates.blocks.size()), logger::level::trace };
+            _process_block_updates(std::move(updates.blocks));
+        }
+        tx_out_ref_list collected_collateral {};
+        uint64_t collateral_refund = 0;
+        {
+            turbo::timer t { fmt::format("validator epoch {} process timed updates: {}", _epoch, updates.timed.size()), logger::level::trace };
+            auto collateral_updates = _process_timed_updates(std::move(updates.timed));
+            collected_collateral = std::move(collateral_updates.first);
+            collateral_refund = collateral_updates.second;
+        }
+        {
+            turbo::timer t { fmt::format("validator epoch {} process utxo updates batches: {}", _epoch, updates.utxos.size()), logger::level::trace };
+            _process_utxo_updates(std::move(updates.utxos));
+        }
+        {
+            turbo::timer t { fmt::format("validator epoch {} process collateral uses: {}", _epoch, collected_collateral.size()), logger::level::trace };
+            _process_collateral_use(std::move(collected_collateral));
+        }
+        if (collateral_refund) {
+            turbo::timer t { fmt::format("validator epoch {} process collateral refund: {}", _epoch, collateral_refund), logger::level::trace };
+            sub_fees(collateral_refund);
+        }
+        run_pulser_if_ready();
     }
 
     void state::run_pulser_if_ready()
     {
+        if (_params.protocol_ver.major >= 2 && !_rewards_ready) {
+            const auto slot = cardano::slot::from_epoch(_epoch, _cfg) + _epoch_slot;
+            _ensure_reward_pulsing_snapshot(slot);
+        }
         const auto run = _params.protocol_ver.major >= 2 && _epoch_slot >= _cfg.shelley_rewards_ready_slot && !_rewards_ready;
-        logger::debug("checking whether rewards pulser shall be run: {}, epoch: {}  epoch_slot: {} protocol_ver: {} rewards_ready: {}",
-            run ? "yes" : "no",
-            _epoch,
-            _epoch_slot,
-            _params.protocol_ver,
-            _rewards_ready
-        );
         if (run)
             _compute_rewards();
     }
@@ -705,8 +738,20 @@ namespace turbo::cardano::ledger::shelley {
     void state::withdraw_reward(const stake_ident &stake_id, const uint64_t amount)
     {
         auto &acc = _accounts.at(stake_id);
-        if (acc.reward < amount)
+        logger::trace("withdraw_reward stake_id: {} amount: {} reward: {} deposit: {} registered: {} delegated: {}",
+            stake_id, cardano::amount { amount }, cardano::amount { acc.reward }, cardano::amount { acc.deposit },
+            acc.ptr.has_value(), acc.deleg.has_value());
+        if (acc.reward < amount) {
+            logger::debug("withdraw_reward shortfall epoch: {} stake_id: {} amount: {} reward: {} missing: {} registered: {} ptr: {} deposit: {} stake: {} mark_stake: {} set_stake: {} go_stake: {} deleg: {} mark_deleg: {} set_deleg: {} go_deleg: {} active_pool_dist: {}",
+                _epoch, stake_id, cardano::amount { amount }, cardano::amount { acc.reward },
+                cardano::amount { amount - acc.reward }, acc.ptr.has_value(), acc.ptr,
+                cardano::amount { acc.deposit }, cardano::amount { acc.stake },
+                cardano::amount { acc.mark_stake }, cardano::amount { acc.set_stake },
+                cardano::amount { acc.go_stake }, acc.deleg, acc.mark_deleg,
+                acc.set_deleg, acc.go_deleg,
+                cardano::amount { acc.deleg ? _active_pool_dist.get(*acc.deleg) : 0 });
             throw error(fmt::format("trying to withdraw from account {} more stake {} than it has: {}", stake_id, amount, acc.reward));
+        }
         acc.reward -= amount;
         if (acc.deleg)
             _active_pool_dist.sub(*acc.deleg, amount);
@@ -731,6 +776,9 @@ namespace turbo::cardano::ledger::shelley {
         //logger::debug("slot: {} shelley::retire_stake id: {} deposit: {}", slot, stake_id, deposit);
         const auto deposit_size = deposit ? *deposit : _params.key_deposit;
         auto &acc = _accounts.at(stake_id);
+        logger::trace("retire_stake stake_id: {} slot: {} cert_deposit: {} account_reward: {} account_deposit: {} registered: {} delegated: {}",
+            stake_id, cardano::slot { slot, _cfg }, cardano::amount { deposit_size }, cardano::amount { acc.reward },
+            cardano::amount { acc.deposit }, acc.ptr.has_value(), acc.deleg.has_value());
         if (acc.ptr) {
             if (acc.deposit >= deposit_size) [[likely]]
                 acc.deposit -= deposit_size;
@@ -758,7 +806,18 @@ namespace turbo::cardano::ledger::shelley {
 
     void state::delegate_stake(const stake_ident &stake_id, const pool_hash &pool_id)
     {
-        if (!_active_pool_params.contains(pool_id))
+        const auto pool_known = _active_pool_params.contains(pool_id);
+        const auto acc_it = _accounts.find(stake_id);
+        if (!pool_known || acc_it == _accounts.end() || !acc_it->second.ptr) [[unlikely]] {
+            logger::debug("delegate_stake stake_id: {} pool_id: {} pool_known: {} account_known: {} registered: {} reward: {} deposit: {} delegated: {}",
+                stake_id, pool_id, pool_known,
+                acc_it != _accounts.end(),
+                acc_it != _accounts.end() && acc_it->second.ptr.has_value(),
+                cardano::amount { acc_it != _accounts.end() ? acc_it->second.reward : 0 },
+                cardano::amount { acc_it != _accounts.end() ? acc_it->second.deposit : 0 },
+                acc_it != _accounts.end() && acc_it->second.deleg.has_value());
+        }
+        if (!pool_known)
             throw error(fmt::format("trying to delegate {} to an unknown pool: {}", stake_id, pool_id));
         auto &acc = _accounts.at(stake_id);
         const auto stake = acc.stake + acc.reward;
@@ -824,22 +883,19 @@ namespace turbo::cardano::ledger::shelley {
         }
     }
 
-    void state::proposal_vote(const uint64_t slot, const cardano::param_update_vote &vote)
+    void state::proposal_vote(const uint64_t, const cardano::param_update_vote &vote)
     {
         // needed only for Byron-era voting, and all updates are in the current epoch
-        logger::debug("slot: {}: proposal_vote: {}", slot, vote);
         for (const auto &[pool_id, prop]: _ppups) {
             if (prop.hash == vote.proposal_id) {
                 _ppups[vote.key_id] = prop;
                 break;
             }
         }
-        logger::debug("ppups: {}", _ppups);
     }
 
     void state::propose_update(const uint64_t slot, const cardano::param_update_proposal &prop)
     {
-        logger::debug("slot: {} proposal: {}", slot, prop);
         if (_params.protocol_ver.major >= 2) {
             if (!_cfg.shelley_delegates.contains(prop.key_id))
                 throw error(fmt::format("protocol update proposal from a key not in the shelley genesis delegate list: {}!", prop.key_id));
@@ -858,7 +914,6 @@ namespace turbo::cardano::ledger::shelley {
         } else {
             _ppups[prop.key_id] = prop.update;
         }
-        logger::debug("ppups: {}", _ppups);
     }
 
     void state::add_pool_blocks(const cardano::pool_hash &pool_id, uint64_t num_blocks)
@@ -939,7 +994,8 @@ namespace turbo::cardano::ledger::shelley {
                     auto &part = _accounts.partition(pi);
                     std::set<stake_ident> retired {};
                     for (auto &[stake_id, acc]: part) {
-                        if (acc.ptr || acc.stake || acc.go_deleg || acc.set_deleg || acc.mark_deleg || acc.deleg) {
+                        if (acc.ptr || acc.stake || acc.reward || acc.deposit || acc.go_deleg
+                                || acc.set_deleg || acc.mark_deleg || acc.deleg || acc.vote_deleg) {
                             acc.go_deleg = acc.set_deleg;
                             acc.go_stake = acc.set_stake;
                             acc.set_deleg = acc.mark_deleg;
@@ -1235,7 +1291,7 @@ namespace turbo::cardano::ledger::shelley {
             cardano::amount { pool_rewards_filtered }, cardano::amount { _delta_fees });
     }
 
-    void state::_rewards_prepare_pool_params(uint64_t &total, uint64_t &filtered, const double z0,
+    void state::_rewards_prepare_pool_params(uint64_t &total, uint64_t &filtered, const rational_u64 &z0,
         const uint64_t staking_reward_pot, const uint64_t total_stake, const pool_hash &pool_id,
         pool_info &info, const uint64_t pool_blocks)
     {
@@ -1249,28 +1305,36 @@ namespace turbo::cardano::ledger::shelley {
                     owner_stake += acc_it->second.go_stake;
             }
             if (owner_stake >= info.params.pledge) {
-                double pool_rel_total_stake = static_cast<double>(pool_stake) / std::max(static_cast<uint64_t>(1), total_stake);
-                double sigma_mark = std::min(pool_rel_total_stake, z0);
-                double pool_rel_active_stake = static_cast<double>(pool_stake) / std::max(static_cast<uint64_t>(1), _go.pool_dist.total_stake());
-                double pledge_rel_total_stake = static_cast<double>(info.params.pledge) / std::max(static_cast<uint64_t>(1), total_stake);
+                const cpp_rational z0_r = rational_from_r64(z0);
+                const cpp_rational pool_rel_total_stake { pool_stake, std::max<uint64_t>(1, total_stake) };
+                const cpp_rational sigma_mark = std::min(pool_rel_total_stake, z0_r);
+                const cpp_rational pool_rel_active_stake { pool_stake, std::max<uint64_t>(1, _go.pool_dist.total_stake()) };
+                const cpp_rational pledge_rel_total_stake { info.params.pledge, std::max<uint64_t>(1, total_stake) };
                 if (pool_rel_total_stake < pledge_rel_total_stake)
                     throw error(fmt::format("internal error: pledged stake: {} of pool {} is larger than the pool's total stake: {}", info.params.pledge, pool_id, pool_stake));
-                double s_mark = std::min(pledge_rel_total_stake, z0);
-                uint64_t optimal_reward = static_cast<uint64_t>(staking_reward_pot / (1 + rational_from_r64(_params_prev.pool_pledge_influence)) *
-                    (sigma_mark + s_mark * rational_from_r64(_params_prev.pool_pledge_influence) * (sigma_mark - s_mark * (z0 - sigma_mark) / (z0)) / z0));
+                const cpp_rational s_mark = std::min(pledge_rel_total_stake, z0_r);
+                const cpp_rational pool_pledge_influence = rational_from_r64(_params_prev.pool_pledge_influence);
+                const cpp_rational factor1 = cpp_rational { staking_reward_pot } / (cpp_rational { 1 } + pool_pledge_influence);
+                const cpp_rational factor4 = (z0_r - sigma_mark) / z0_r;
+                const cpp_rational factor3 = (sigma_mark - s_mark * factor4) / z0_r;
+                const cpp_rational factor2 = sigma_mark + s_mark * pool_pledge_influence * factor3;
+                const uint64_t optimal_reward = static_cast<uint64_t>(factor1 * factor2);
                 pool_reward_pot = optimal_reward;
-                double beta = static_cast<double>(pool_blocks) / std::max(static_cast<uint64_t>(1), _blocks_before.total_stake());
-                double pool_performance = pool_rel_active_stake != 0 ? beta / pool_rel_active_stake : 0;
-                if (rational_from_r64(_params_prev.decentralization) < rational_from_r64(_params_prev.decentralizationThreshold))
-                    pool_reward_pot = optimal_reward * pool_performance;
+                if (rational_from_r64(_params_prev.decentralization) < rational_from_r64(_params_prev.decentralizationThreshold)) {
+                    const cpp_rational beta { pool_blocks, std::max<uint64_t>(1, _blocks_before.total_stake()) };
+                    const cpp_rational pool_performance = pool_rel_active_stake != cpp_rational {} ? beta / pool_rel_active_stake : cpp_rational {};
+                    pool_reward_pot = static_cast<uint64_t>(pool_performance * cpp_rational { optimal_reward });
+                }
                 if (pool_reward_pot > info.params.cost && owner_stake < pool_stake) {
                     cpp_rational &base = rational_from_storage(info.reward_base);
                     base = pool_reward_pot - info.params.cost;
                     base /= pool_stake;
                     base *= info.params.margin.denominator - info.params.margin.numerator;
                     base /= info.params.margin.denominator;
-                    auto pool_margin = rational_from_r64(info.params.margin);
-                    leader_reward = static_cast<uint64_t>(info.params.cost + (pool_reward_pot - info.params.cost) * (pool_margin + (1 - pool_margin) * owner_stake / pool_stake));
+                    const cpp_rational pool_margin = rational_from_r64(info.params.margin);
+                    const cpp_rational leader_reward_ratio = pool_margin
+                        + (cpp_rational { 1 } - pool_margin) * cpp_rational { owner_stake, pool_stake };
+                    leader_reward = info.params.cost + static_cast<uint64_t>(cpp_rational { pool_reward_pot - info.params.cost } * leader_reward_ratio);
                 } else {
                     leader_reward = pool_reward_pot;
                 }
@@ -1295,16 +1359,17 @@ namespace turbo::cardano::ledger::shelley {
     {
         uint64_t total = 0;
         uint64_t filtered = 0;
-        const cpp_rational z0 { 1, _params_prev.n_opt };
-        const auto z0_d = static_cast<double>(z0);
+        const rational_u64 z0 { 1, _params_prev.n_opt };
+        const cpp_rational z0_r = rational_from_r64(z0);
         _nonmyopic_next.clear();
         for (auto &[pool_id, pool_info]: _go.pool_params) {
             if (!_pbft_pools.contains(pool_id)) {
                 const uint64_t pool_blocks = pools_active.get(pool_id);
+                rational_from_storage(pool_info.reward_base) = cpp_rational {};
                 if (pool_blocks > 0)
-                    _rewards_prepare_pool_params(total, filtered, z0_d, staking_reward_pot, total_stake, pool_id, pool_info, pool_blocks);
+                    _rewards_prepare_pool_params(total, filtered, z0, staking_reward_pot, total_stake, pool_id, pool_info, pool_blocks);
                 const cpp_rational rel_stake { _go.pool_dist.get(pool_id), total_stake };
-                const auto rel_stake_bounded = std::min(z0, rel_stake);
+                const auto rel_stake_bounded = std::min(z0_r, rel_stake);
                 //logger::debug("estimating hit-rate likelihood epoch: {} pool: {} blocks: {} d: {} rel_stake: {} rel_stake_bounded: {}", _epoch, pool_id, pool_blocks, _params_prev.decentralization, rel_stake, rel_stake_bounded);
                 pool_rank::likelihood_prior prior {};
                 if (const auto prior_it = _nonmyopic.find(pool_id); prior_it != _nonmyopic.end())
@@ -1376,20 +1441,23 @@ namespace turbo::cardano::ledger::shelley {
 
     void state::_clean_old_epoch_data()
     {
-        timer t { fmt::format("validator::state epoch: {} clean_old_epoch_data", _epoch), logger::level::trace };
+        const auto potential_rewards_size = _potential_rewards.size();
+        timer t { fmt::format("validator::state epoch: {} clean_old_epoch_data potential_rewards: {}", _epoch, potential_rewards_size), logger::level::trace };
         _blocks_before = std::move(_blocks_current);
         _blocks_current.clear();
         _reward_pulsing_snapshot.clear();
-        const std::string task_group = fmt::format("ledger-state:clean-potential-rewards:epoch-{}", _epoch);
-        _sched.wait_all(task_group,
-            [&](const auto &, const auto &submit_f) {
-                for (size_t part_idx = 0; part_idx < _potential_rewards.num_parts; ++part_idx) {
-                    submit_f({1000, task_group, [this, part_idx] {
-                        _potential_rewards.partition(part_idx).clear();
-                    }});
+        if (potential_rewards_size) {
+            const std::string task_group = fmt::format("ledger-state:clean-potential-rewards:epoch-{}", _epoch);
+            _sched.wait_all(task_group,
+                [&](const auto &, const auto &submit_f) {
+                    for (size_t part_idx = 0; part_idx < _potential_rewards.num_parts; ++part_idx) {
+                        submit_f({1000, task_group, [this, part_idx] {
+                            _potential_rewards.partition(part_idx).clear();
+                        }});
+                    }
                 }
-            }
-        );
+            );
+        }
     }
 
     void state::_apply_param_update(const param_update &update)
@@ -1470,16 +1538,19 @@ namespace turbo::cardano::ledger::shelley {
 
     void state::_tick(const uint64_t slot)
     {
-        if (_params.protocol_ver.major >= 2) {
-            if (!_params_prev.protocol_ver.forgo_reward_prefilter() && slot > _pulsing_snapshot_slot) {
-                if (_reward_pulsing_snapshot.empty() && !_accounts.empty()) {
-                    timer t { fmt::format("epoch: {} create a pulsing snapshot of reward accounts", _epoch), logger::level::debug };
-                    _reward_pulsing_snapshot.reserve(_accounts.size());
-                    for (const auto &[stake_id, acc]: _accounts) {
-                        if (acc.ptr)
-                            _reward_pulsing_snapshot.emplace_back(stake_id, acc.reward);
-                    }
-                }
+        if (_params.protocol_ver.major >= 2)
+            _ensure_reward_pulsing_snapshot(slot);
+    }
+
+    void state::_ensure_reward_pulsing_snapshot(const uint64_t slot)
+    {
+        if (!_params_prev.protocol_ver.forgo_reward_prefilter() && slot > _pulsing_snapshot_slot
+                && _reward_pulsing_snapshot.empty() && !_accounts.empty()) {
+            timer t { fmt::format("epoch: {} create a pulsing snapshot of reward accounts", _epoch), logger::level::debug };
+            _reward_pulsing_snapshot.reserve(_accounts.size());
+            for (const auto &[stake_id, acc]: _accounts) {
+                if (acc.ptr)
+                    _reward_pulsing_snapshot.emplace_back(stake_id, acc.reward);
             }
         }
     }
@@ -1489,6 +1560,7 @@ namespace turbo::cardano::ledger::shelley {
         const auto aggregated = params_prev.protocol_ver.aggregated_rewards();
         const auto forgo_prefilter = params_prev.protocol_ver.forgo_reward_prefilter();
         const bool force_active = !aggregated || forgo_prefilter;
+        static constexpr uint64_t diagnostic_reward_threshold = 1'000'000'000'000;
         timer t { fmt::format("validator::state epoch: {} transfer_potential_rewards aggregated forgo_prefilter: {}", _epoch, forgo_prefilter), logger::level::debug };
         using pool_update_map = std::unordered_map<cardano::pool_hash, uint64_t>;
         const std::string task_group = fmt::format("ledger-state:transfer-rewards:epoch-{}", _epoch);
@@ -1499,19 +1571,40 @@ namespace turbo::cardano::ledger::shelley {
             [&](const auto &, const auto &submit_f) {
                 for (size_t part_idx = 0; part_idx < _potential_rewards.num_parts; ++part_idx) {
                     submit_f({ 1000, task_group, [this, &part_updates, &treasury_update, part_idx, aggregated, force_active] {
-                        // relies on _rewards, _potential_rewards, _pulsing_snapshot being ordered containers!
+                        partitioned_reward_update_dist::partition_type reward_part {};
+                        reward_part.swap(_potential_rewards.partition(part_idx));
+                        // relies on reward_part, _accounts, and _pulsing_snapshot being ordered containers!
                         auto acc_it = _accounts.partition(part_idx).begin();
                         const auto acc_end = _accounts.partition(part_idx).end();
                         pool_update_map pool_dist_updates {};
                         pool_dist_updates.reserve(_go.pool_params.size());
                         uint64_t part_treasury_update = 0;
-                        for (const auto &[stake_id, reward_list]: _potential_rewards.partition(part_idx)) {
-                            if (force_active || _reward_pulsing_snapshot.contains(stake_id)) {
+                        for (const auto &[stake_id, reward_list]: reward_part) {
+                            uint64_t total_reward = 0;
+                            for (const auto &ri: reward_list)
+                                total_reward += ri.amount;
+                            const bool eligible = force_active || _reward_pulsing_snapshot.contains(stake_id);
+                            if (eligible) {
                                 while (acc_it != acc_end && acc_it->first < stake_id)
                                     ++acc_it;
+                                if (total_reward >= diagnostic_reward_threshold) {
+                                    logger::debug("epoch: {} potential_rewards stake_id: {} total: {} account_known: {} registered: {} prev_reward: {} delegated: {} items: {}",
+                                        _epoch, stake_id, cardano::amount { total_reward },
+                                        acc_it != acc_end && acc_it->first == stake_id,
+                                        acc_it != acc_end && acc_it->first == stake_id && acc_it->second.ptr.has_value(),
+                                        cardano::amount { acc_it != acc_end && acc_it->first == stake_id ? acc_it->second.reward : 0 },
+                                        acc_it != acc_end && acc_it->first == stake_id && acc_it->second.deleg.has_value(),
+                                        reward_list.size());
+                                }
                                 for (auto &&ri: reward_list) {
                                     if (ri.amount) {
-                                        if (acc_it != acc_end && acc_it->first == stake_id && acc_it->second.ptr) {
+                                        const bool to_reward_account = acc_it != acc_end && acc_it->first == stake_id && acc_it->second.ptr;
+                                        if (total_reward >= diagnostic_reward_threshold || ri.amount >= diagnostic_reward_threshold) {
+                                            logger::debug("epoch: {} potential_reward_transfer stake_id: {} type: {} pool_id: {} amount: {} destination: {} delegated_pool_id: {}",
+                                                _epoch, stake_id, ri.type, ri.pool_id, cardano::amount { ri.amount },
+                                                to_reward_account ? "reward-account" : "treasury", ri.delegated_pool_id);
+                                        }
+                                        if (to_reward_account) {
                                             acc_it->second.reward += ri.amount;
                                             if (ri.delegated_pool_id) {
                                                 pool_dist_updates[*ri.delegated_pool_id] += ri.amount;
@@ -1523,6 +1616,9 @@ namespace turbo::cardano::ledger::shelley {
                                             break;
                                     }
                                 }
+                            } else if (total_reward >= diagnostic_reward_threshold) {
+                                logger::debug("epoch: {} potential_rewards stake_id: {} total: {} skipped inactive account",
+                                    _epoch, stake_id, cardano::amount { total_reward });
                             }
                         }
                         part_updates[part_idx] = std::move(pool_dist_updates);

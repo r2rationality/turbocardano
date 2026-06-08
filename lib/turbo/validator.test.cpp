@@ -58,7 +58,7 @@ suite validator_suite = [] {
                 cr.add_file(0, chunk1_path);
                 throw error("some failure, rollback now");
             });
-            expect(!ex_ptr);
+            expect(static_cast<bool>(ex_ptr));
             expect(cr.valid_end_offset() == chain1.data.size()) << cr.valid_end_offset();
         };
         "failure at block 7"_test = [&] {
@@ -73,7 +73,7 @@ suite validator_suite = [] {
             const auto ex_ptr = cr.accept_progress({}, chain1.tip, [&] {
                 cr.add_file(0, chunk1_path);
             });
-            expect(!ex_ptr);
+            expect(static_cast<bool>(ex_ptr));
             expect(cr.num_blocks() == failure_height) << cr.num_blocks();
             expect(cr.valid_end_offset() < chain1.data.size()) << cr.valid_end_offset();
         };

@@ -11,6 +11,7 @@
 #include <turbo/cardano/shelley/block.hpp>
 #include <turbo/index/vrf.hpp>
 #include <turbo/parallel/encoder.hpp>
+#include <utility>
 
 namespace turbo::cardano::ledger::shelley {
     using namespace cardano::shelley;
@@ -269,12 +270,13 @@ namespace turbo::cardano::ledger::shelley {
         virtual void _stake_pointer_stake_to_cbor(era_encoder &) const;
         virtual void _stake_pointers_to_cbor(era_encoder &) const;
         virtual void _process_block_updates(block_update_list &&);
-        virtual void _process_timed_update(tx_out_ref_list &, timed_update_t &&);
-        virtual tx_out_ref_list _process_timed_updates(timed_update_list &&);
+        virtual void _process_timed_update(tx_out_ref_list &, uint64_t &, timed_update_t &&);
+        virtual std::pair<tx_out_ref_list, uint64_t> _process_timed_updates(timed_update_list &&);
         virtual void _process_utxo_updates(utxo_update_list &&);
         virtual void _process_collateral_use(tx_out_ref_list &&);
         uint64_t _transfer_instant_rewards(stake_distribution &rewards);
         virtual void _tick(uint64_t slot);
+        void _ensure_reward_pulsing_snapshot(uint64_t slot);
 
         virtual void _decode_possible_update(cbor::zero2::value &);
         virtual void _decode_accounts(cbor::zero2::value &);
@@ -313,7 +315,7 @@ namespace turbo::cardano::ledger::shelley {
         void _apply_future_pool_params();
         void _recompute_caches() const;
         uint64_t _total_stake(uint64_t reserves) const;
-        void _rewards_prepare_pool_params(uint64_t &total, uint64_t &filtered, double z0,
+        void _rewards_prepare_pool_params(uint64_t &total, uint64_t &filtered, const rational_u64 &z0,
             uint64_t staking_reward_pot, uint64_t total_stake, const pool_hash &pool_id, pool_info &info, uint64_t pool_blocks);
         std::pair<uint64_t, uint64_t> _rewards_prepare_pools(const pool_block_dist &pools_active, uint64_t staking_reward_pot, uint64_t total_stake);
         std::pair<uint64_t, uint64_t> _rewards_compute_part(size_t part_idx);

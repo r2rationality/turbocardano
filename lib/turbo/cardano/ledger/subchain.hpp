@@ -101,6 +101,21 @@ namespace turbo::cardano::ledger {
             add(subchain { sc });
         }
 
+        bool truncate(const uint64_t max_end_offset)
+        {
+            bool changed = false;
+            for (auto it = begin(); it != end(); ) {
+                const auto sc_end_offset = it->second.end_offset();
+                if (it->second.offset >= max_end_offset || (sc_end_offset > max_end_offset && !it->second)) {
+                    it = erase(it);
+                    changed = true;
+                } else {
+                    ++it;
+                }
+            }
+            return changed;
+        }
+
         iterator find(uint64_t offset)
         {
             auto it = lower_bound(offset);

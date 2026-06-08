@@ -47,9 +47,19 @@ namespace turbo::cardano::conway {
         params.min_fee_ref_script_cost_per_byte.to_cbor(enc);
     }
 
-    proposal_procedure_set tx_base::parse_proposals(cbor::zero2::value &v)
+    proposal_procedure_list tx_base::parse_proposals(cbor::zero2::value &v)
     {
-        return proposal_procedure_set::from_cbor(v);
+        proposal_procedure_list res {};
+        set_t<proposal_procedure_t>::foreach_item(
+            v,
+            [&](auto &item) {
+                res.emplace_back(proposal_procedure_t::from_cbor(item));
+            },
+            [&](const auto sz) {
+                res.reserve(sz);
+            }
+        );
+        return res;
     }
 
     vote_set tx_base::parse_votes(cbor::zero2::value &v)
@@ -128,7 +138,7 @@ namespace turbo::cardano::conway {
     tx::tx(const cardano::block_base &blk, const uint64_t blk_off, cbor::zero2::value &tx_raw, const size_t idx, const bool invalid):
             tx_base { blk, blk_off, idx, invalid }
     {
-        std::optional<proposal_procedure_set> proposals {};
+        std::optional<proposal_procedure_list> proposals {};
         auto &it = tx_raw.map();
         while (!it.done()) {
             auto &mk = it.read_key();

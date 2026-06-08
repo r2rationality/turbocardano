@@ -261,6 +261,7 @@ namespace turbo::plutus::costs {
 
     struct quadratic_in_x_and_y: cost_fun {
         quadratic_in_x_and_y(const arg_map &args):
+            _minimum { std::stoll(args.at("arguments-minimum")) },
             _c00 { std::stoll(args.at("arguments-c00")) },
             _c10 { std::stoll(args.at("arguments-c10")) },
             _c01 { std::stoll(args.at("arguments-c01")) },
@@ -274,20 +275,20 @@ namespace turbo::plutus::costs {
         {
             const int64_t x = sizes.at(0);
             const int64_t y = sizes.at(1);
-            const int64_t res = _c00 + _c10 * x + _c01 * y + _c20 * x * x + _c11 * x * y + _c02 * y * y;
+            const int64_t res = std::max(_minimum, _c00 + _c10 * x + _c01 * y + _c20 * x * x + _c11 * x * y + _c02 * y * y);
             if (res >= 0) [[likely]]
                 return static_cast<uint64_t>(res);
-            throw error("quadratic_in_y_or_linear_in_z results in a negative cost!");
+            throw error("quadratic_in_x_and_y results in a negative cost!");
         }
 
         bool operator==(const cost_fun &o_) const override
         {
             const auto &o = dynamic_cast<decltype(*this) &>(o_);
-            return _c00 == o._c00 && _c10 == o._c10 && _c01 == o._c01
+            return _minimum == o._minimum && _c00 == o._c00 && _c10 == o._c10 && _c01 == o._c01
                 && _c20 == o._c20 && _c11 == o._c11 && _c02 == o._c02;
         }
     protected:
-        const int64_t _c00, _c10, _c01, _c20, _c11, _c02;
+        const int64_t _minimum, _c00, _c10, _c01, _c20, _c11, _c02;
     };
 
     struct added_sizes: linear_in_x {
@@ -1115,9 +1116,12 @@ namespace turbo::plutus::costs {
     parsed_models parse(const cardano::plutus_cost_models &models)
     {
         parsed_models res {};
-        res.v1.emplace(parse(models.v1 ? plutus_costs_to_args(*models.v1, default_cost_args_v1()) : default_cost_args_v1()));
-        res.v2.emplace(parse(models.v2 ? plutus_costs_to_args(*models.v2, default_cost_args_v2()) : default_cost_args_v2()));
-        res.v3.emplace(parse(models.v3 ? plutus_costs_to_args(*models.v3, default_cost_args_v3()) : default_cost_args_v3()));
+        const auto *v1 = models.find(0);
+        const auto *v2 = models.find(1);
+        const auto *v3 = models.find(2);
+        res.v1.emplace(parse(v1 ? plutus_costs_to_args(*v1, default_cost_args_v1()) : default_cost_args_v1()));
+        res.v2.emplace(parse(v2 ? plutus_costs_to_args(*v2, default_cost_args_v2()) : default_cost_args_v2()));
+        res.v3.emplace(parse(v3 ? plutus_costs_to_args(*v3, default_cost_args_v3()) : default_cost_args_v3()));
         return res;
     }
 

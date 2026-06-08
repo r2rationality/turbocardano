@@ -77,45 +77,33 @@ namespace turbo::cardano {
         return act_hash;
     }
 
+    static plutus_cost_model _make_plutus_default_cost_model(const std::vector<std::string> &names, const plutus::costs::arg_map &d_args,
+        const size_t exp_size, const std::string_view version)
+    {
+        plutus_cost_model::raw_value_type costs {};
+        costs.reserve(exp_size);
+        for (size_t i = 0; i < names.size() && i < exp_size; ++i) {
+            const auto &name = names[i];
+            costs.emplace_back(std::stoll(d_args.at(plutus::costs::canonical_arg_name(name))));
+        }
+        if (costs.size() != exp_size) [[unlikely]]
+            throw error(fmt::format("internal error: plutus {} default costs are invalid!", version));
+        return plutus_cost_model { std::move(costs), names };
+    }
+
     static plutus_cost_model _make_plutus_v1_default_cost_model()
     {
-        const auto &names = plutus::costs::cost_arg_names_v1();
-        const auto &d_args = plutus::costs::default_cost_args_v1();
-        plutus_cost_model costs {};
-        for (const auto &name: names)
-            costs.emplace_back(name, std::stoll(d_args.at(plutus::costs::canonical_arg_name(name))));
-        if (costs.size() != 166) [[unlikely]]
-            throw error("internal error: plutus v1 default costs are invalid!");
-        costs.sort();
-        return costs;
+        return _make_plutus_default_cost_model(plutus::costs::cost_arg_names_v1(), plutus::costs::default_cost_args_v1(), 166, "v1");
     }
 
     static plutus_cost_model _make_plutus_v2_default_cost_model()
     {
-        const auto &names = plutus::costs::cost_arg_names_v2();
-        const auto &d_args = plutus::costs::default_cost_args_v2();
-        plutus_cost_model costs {};
-        for (const auto &name: names)
-            costs.emplace_back(name, std::stoll(d_args.at(plutus::costs::canonical_arg_name(name))));
-        if (costs.size() != 175) [[unlikely]]
-            throw error("internal error: plutus v2 default costs are invalid!");
-        costs.sort();
-        return costs;
+        return _make_plutus_default_cost_model(plutus::costs::cost_arg_names_v2(), plutus::costs::default_cost_args_v2(), 175, "v2");
     }
 
     static plutus_cost_model _make_plutus_v3_default_cost_model()
     {
-        const auto &names = plutus::costs::cost_arg_names_v3();
-        const auto &d_args = plutus::costs::default_cost_args_v3();
-        plutus_cost_model costs {};
-        for (size_t i = 0; i < names.size() && i < 251; ++i) {
-            const auto &name = names[i];
-            costs.emplace_back(name, std::stoll(d_args.at(plutus::costs::canonical_arg_name(name))));
-        }
-        if (costs.size() != 251) [[unlikely]]
-            throw error("internal error: plutus v3 default costs are invalid!");
-        costs.sort();
-        return costs;
+        return _make_plutus_default_cost_model(plutus::costs::cost_arg_names_v3(), plutus::costs::default_cost_args_v3(), 251, "v3");
     }
 
     plutus_cost_models config::_prep_plutus_cost_models(const turbo::config &genesis)
@@ -129,9 +117,9 @@ namespace turbo::cardano {
             const auto it = cfg_models.find(param);
             return it != cfg_models.end() ? plutus_cost_model::from_json(defaults, it->value()) : defaults;
         };
-        res.v1.emplace(import("PlutusV1", v1_defaults));
-        res.v2.emplace(import("PlutusV2", v2_defaults));
-        res.v3.emplace(import("PlutusV3", v3_defaults));
+        res.items.emplace(0, import("PlutusV1", v1_defaults));
+        res.items.emplace(1, import("PlutusV2", v2_defaults));
+        res.items.emplace(2, import("PlutusV3", v3_defaults));
         return res;
     }
 

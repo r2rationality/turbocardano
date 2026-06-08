@@ -14,21 +14,25 @@ namespace turbo::cardano::ledger {
 namespace turbo::validator {
     static constexpr std::string_view validate_task{"validate"};
     static constexpr std::string_view validate_leaders_task{"validate-epoch"};
+    static constexpr uint64_t snapshot_format_version = 2;
 
     struct snapshot {
         uint64_t epoch;
         uint64_t end_offset;
         uint64_t last_slot;
         bool exportable;
+        uint64_t format_version = snapshot_format_version;
 
         static snapshot from_json(const json::value &j);
         snapshot(const cardano::ledger::state &st);
-        snapshot(uint64_t epoch_, uint64_t end_offset_, uint64_t last_slot_, bool exportable_);
+        snapshot(uint64_t epoch_, uint64_t end_offset_, uint64_t last_slot_, bool exportable_,
+            uint64_t format_version_=snapshot_format_version);
         json::object to_json() const;
 
         bool operator==(const snapshot &o) const
         {
-            return epoch == o.epoch && end_offset == o.end_offset && last_slot == o.last_slot && exportable == o.exportable;
+            return epoch == o.epoch && end_offset == o.end_offset && last_slot == o.last_slot
+                && exportable == o.exportable && format_version == o.format_version;
         }
 
         bool operator<(const snapshot &b) const
@@ -73,8 +77,8 @@ namespace fmt {
     struct formatter<turbo::validator::snapshot>: formatter<uint64_t> {
         template<typename FormatContext>
         auto format(const turbo::validator::snapshot &v, FormatContext &ctx) const -> decltype(ctx.out()) {
-            return fmt::format_to(ctx.out(), "epoch: {} last_slot: {} end_offset: {} {}",
-                v.epoch, v.last_slot, v.end_offset, v.exportable ? "exportable" : "");
+            return fmt::format_to(ctx.out(), "epoch: {} last_slot: {} end_offset: {} version: {} {}",
+                v.epoch, v.last_slot, v.end_offset, v.format_version, v.exportable ? "exportable" : "");
         }
     };
 }

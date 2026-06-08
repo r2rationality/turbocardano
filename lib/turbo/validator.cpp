@@ -21,11 +21,15 @@ namespace turbo::validator {
 
     snapshot snapshot::from_json(const json::value &j)
     {
+        const auto &obj = j.as_object();
         return snapshot {
-            json::value_to<uint64_t>(j.at("epoch")),
-            json::value_to<uint64_t>(j.at("endOffset")),
-            json::value_to<uint64_t>(j.at("lastSlot")),
-            json::value_to<bool>(j.at("exportable"))
+            json::value_to<uint64_t>(obj.at("epoch")),
+            json::value_to<uint64_t>(obj.at("endOffset")),
+            json::value_to<uint64_t>(obj.at("lastSlot")),
+            json::value_to<bool>(obj.at("exportable")),
+            obj.contains("formatVersion")
+                ? json::value_to<uint64_t>(obj.at("formatVersion"))
+                : uint64_t { 0 }
         };
     }
 
@@ -34,8 +38,10 @@ namespace turbo::validator {
     {
     }
 
-    snapshot::snapshot(const uint64_t epoch_, const uint64_t end_offset_, const uint64_t last_slot_, const bool exportable_)
-        : epoch { epoch_ }, end_offset { end_offset_ }, last_slot { last_slot_ }, exportable { exportable_ }
+    snapshot::snapshot(const uint64_t epoch_, const uint64_t end_offset_, const uint64_t last_slot_,
+            const bool exportable_, const uint64_t format_version_)
+        : epoch { epoch_ }, end_offset { end_offset_ }, last_slot { last_slot_ },
+        exportable { exportable_ }, format_version { format_version_ }
     {
     }
 
@@ -45,7 +51,8 @@ namespace turbo::validator {
             { "epoch", epoch },
             { "endOffset", end_offset },
             { "lastSlot", last_slot },
-            { "exportable", exportable }
+            { "exportable", exportable },
+            { "formatVersion", format_version }
         };
     }
 
@@ -123,7 +130,9 @@ namespace turbo::validator {
         {
             timer t { fmt::format("validator::truncate to {}", new_tip), logger::level::debug };
             const auto max_end_offset = new_tip ? new_tip->end_offset : 0;
-            if (!_snapshots.empty() && _snapshots.rbegin()->end_offset > max_end_offset) {
+            if (_state.truncate_subchains(max_end_offset))
+                logger::debug("validator truncated pending subchains at end_offset {}", max_end_offset);
+            if (_state.end_offset() > max_end_offset || (!_snapshots.empty() && _snapshots.rbegin()->end_offset > max_end_offset)) {
                 for (auto it = _snapshots.begin(); it != _snapshots.end(); ) {
                     if (it->end_offset > max_end_offset) {
                         for (const auto &prefix: { "ledger" })
@@ -415,13 +424,27 @@ namespace turbo::validator {
                 const auto j_snapshots = json::load(_state_path).as_array();
                 for (const auto &j_s: j_snapshots) {
                     const auto snap = snapshot::from_json(j_s.as_object());
+                    if (snap.format_version != snapshot_format_version) {
+                        logger::warn("ignoring validator snapshot {}: format version {} is older than the required format {}",
+                            snap, snap.format_version, snapshot_format_version);
+                        continue;
+                    }
                     if (const auto snap_path = _storage_path("ledger", snap.end_offset); std::filesystem::exists(snap_path)) {
                         _snapshots.emplace(std::move(snap));
                         known_files.insert(snap_path);
                     }
                 }
-                if (!_snapshots.empty())
-                    end_offset = _load_state_snapshot(*_snapshots.rbegin());
+                while (!_snapshots.empty()) {
+                    const auto snap_it = std::prev(_snapshots.end());
+                    try {
+                        end_offset = _load_state_snapshot(*snap_it);
+                        break;
+                    } catch (const std::exception &ex) {
+                        logger::warn("ignoring validator snapshot {}: {}", *snap_it, ex.what());
+                        _snapshots.erase(snap_it);
+                        _state.clear();
+                    }
+                }
             }
             for (auto &e: std::filesystem::directory_iterator(_validate_dir)) {
                 const auto canon_path = std::filesystem::weakly_canonical(e.path()).string();
@@ -450,16 +473,20 @@ namespace turbo::validator {
             return std::filesystem::weakly_canonical(_validate_dir / fmt::format("{}-{:013}.bin", prefix, end_offset)).string();
         }
 
+        subchain_list _snapshot_subchains() const
+        {
+            const auto &first_block = _cr.chunks().begin()->second.blocks.front();
+            const auto &last_block = _cr.find_block_by_offset(_state.end_offset() - 1);
+            subchain_list tmp_sc {};
+            tmp_sc.add(subchain { 0, _state.end_offset(), last_block.height, last_block.height,
+                first_block.slot, first_block.hash, last_block.slot, last_block.hash });
+            return tmp_sc;
+        }
+
         void _save_reserve_snapshot()
         {
             if (_state.end_offset() && !_cr.empty()) {
-                const auto &first_block = _cr.chunks().begin()->second.blocks.front();
-                const auto &last_block = _cr.find_block_by_offset(_state.end_offset() - 1);
-                // the sub-chains will be checked at in prepare_tx
-                // here creating the sub-chains as they must be when the snapshot is valid
-                subchain_list tmp_sc {};
-                tmp_sc.add(subchain { 0, _state.end_offset(), last_block.height, last_block.height,
-                    first_block.slot, first_block.hash, last_block.slot, last_block.hash });
+                auto tmp_sc = _snapshot_subchains();
                 _state.save_zpp(_storage_path("ledger-reserve", _state.end_offset()), std::make_unique<subchain_list>(std::move(tmp_sc)));
                 _reserve_snapshot.emplace(_state);
             }
@@ -473,7 +500,12 @@ namespace turbo::validator {
                     logger::level::info };
             logger::debug("saving VRF state");
             logger::debug("saving the validator state");
-            _state.save_zpp(_storage_path("ledger", _state.end_offset()));
+            if (_state.end_offset() && !_cr.empty()) {
+                auto tmp_sc = _snapshot_subchains();
+                _state.save_zpp(_storage_path("ledger", _state.end_offset()), std::make_unique<subchain_list>(std::move(tmp_sc)));
+            } else {
+                _state.save_zpp(_storage_path("ledger", _state.end_offset()));
+            }
             logger::debug("recording the new snapshot");
             snapshot latest { _state };
             _snapshots.emplace(std::move(latest));
@@ -634,6 +666,7 @@ namespace turbo::validator {
                     relevant_chunks.emplace_back(c_id);
             }
             if (!relevant_chunks.empty()) {
+                turbo::timer t { fmt::format("validator epoch {} load utxo updates chunks: {}", epoch, relevant_chunks.size()), logger::level::trace };
                 const std::string task_group = fmt::format("ledger-state:load-utxo-updates:epoch-{}", epoch);
                 updates.utxos.resize(relevant_chunks.size());
                 _cr.sched().wait_all(task_group, [&](const auto &, const auto &submit_f) {
@@ -654,23 +687,41 @@ namespace turbo::validator {
             try {
                 const auto last_epoch = _state.epoch();
                 const auto last_offset = _state.end_offset();
-                if (!last_offset || last_epoch < e)
+                if (!last_offset || last_epoch < e) {
+                    turbo::timer t { fmt::format("validator epoch {} start_epoch", e), logger::level::trace };
                     _state.start_epoch(e);
+                }
 
                 std::optional<uint64_t> min_epoch_offset;
                 {
                     updates_t updates {};
-                    min_epoch_offset = _gather_updates<index::block_fees::indexer>(updates.blocks, "block-fees", slots, last_offset);
+                    {
+                        turbo::timer t { fmt::format("validator epoch {} gather block-fees updates", e), logger::level::trace };
+                        min_epoch_offset = _gather_updates<index::block_fees::indexer>(updates.blocks, "block-fees", slots, last_offset);
+                    }
                     if (!min_epoch_offset)
                         return;
-                    _gather_updates<index::timed_update::indexer>(updates.timed, "timed-update", slots, last_offset);
-                    _load_utxo_updates(updates, e, last_offset, "utxo", dynamic_cast<index::utxo::indexer &>(*_cr.indexer().indexers().at("utxo")).chunks(slots));
-                    _state.process_updates(std::move(updates));
+                    {
+                        turbo::timer t { fmt::format("validator epoch {} gather timed updates", e), logger::level::trace };
+                        _gather_updates<index::timed_update::indexer>(updates.timed, "timed-update", slots, last_offset);
+                    }
+                    const auto utxo_chunks = dynamic_cast<index::utxo::indexer &>(*_cr.indexer().indexers().at("utxo")).chunks(slots);
+                    {
+                        turbo::timer t { fmt::format("validator epoch {} load utxo updates", e), logger::level::trace };
+                        _load_utxo_updates(updates, e, last_offset, "utxo", utxo_chunks);
+                    }
+                    {
+                        turbo::timer t { fmt::format("validator epoch {} process ledger updates blocks: {} timed: {} utxo_batches: {}",
+                            e, updates.blocks.size(), updates.timed.size(), updates.utxos.size()), logger::level::trace };
+                        _state.process_updates(std::move(updates));
+                    }
                 }
 
                 const auto vrf_chunks = dynamic_cast<index::vrf::indexer &>(*_cr.indexer().indexers().at("vrf")).chunks(slots);
-                if (!vrf_chunks.empty())
+                if (!vrf_chunks.empty()) {
+                    turbo::timer t { fmt::format("validator epoch {} process vrf update chunks: {}", e, vrf_chunks.size()), logger::level::trace };
                     _process_vrf_update_chunks(*min_epoch_offset, vrf_chunks, fast);
+                }
 
                 if (_cr.tx()->target && _state.params().protocol_ver.major >= 3) {
                     if (const auto target_slot = _cr.make_slot(_cr.tx()->target->slot); target_slot.epoch() >= 2) {

@@ -5,6 +5,7 @@
  * https://github.com/sierkov/daedalus-turbo/blob/main/LICENSE */
 
 #include <turbo/cardano/ledger/state.hpp>
+#include <turbo/cardano/babbage/block.hpp>
 #include <turbo/chunk-registry.hpp>
 #include <turbo/index/merge-zpp.hpp>
 #include <turbo/index/utxo.hpp>
@@ -91,10 +92,9 @@ namespace turbo::cli::txwit_prep {
                     });
                     blk->foreach_invalid_tx([&](const auto &tx) {
                         // UTXOs used as collaterals are processed in validator.cpp:_apply_ledger_state_updates_for_epoch
-                        if (const auto *babbage_tx = dynamic_cast<const cardano::babbage::tx *>(&tx); babbage_tx) {
+                        if (const auto *babbage_tx = dynamic_cast<const cardano::babbage::tx_base *>(&tx); babbage_tx) {
                             if (const auto c_ret = babbage_tx->collateral_return(); c_ret) {
-                                const auto txo_idx = babbage_tx->outputs().size();
-                                logger::debug("slot: {} found collateral refund {}#{}: {}", tx.block().slot(), tx.hash(), txo_idx, *c_ret);
+                                const auto txo_idx = tx.outputs().size();
                                 ++part.num_outputs;
                                 _add_utxo(part.utxos, tx, *c_ret, txo_idx);
                             }
@@ -213,9 +213,9 @@ namespace turbo::cli::txwit_prep {
                                 for (auto epoch = start_epoch; epoch < end_epoch; ++epoch) {
                                     _apply_epoch(epoch);
                                 }
-                            }, [&] {
+                            }, logger::optional_action { [&] {
                                 _running.store(false, std::memory_order_release);
-                            });
+                            } });
                         });
                     }
                 }

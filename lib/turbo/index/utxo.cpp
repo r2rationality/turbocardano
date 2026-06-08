@@ -11,11 +11,10 @@ namespace turbo::index::utxo {
     void chunk_indexer::index_invalid_tx(const cardano::tx_base &tx)
     {
         // UTXOs used as collaterals are processed in validator.cpp:_apply_ledger_state_updates_for_epoch
-        if (const auto *babbage_tx = dynamic_cast<const cardano::babbage::tx *>(&tx); babbage_tx) {
+        if (const auto *babbage_tx = dynamic_cast<const cardano::babbage::tx_base *>(&tx); babbage_tx) {
             if (const auto c_ret = babbage_tx->collateral_return(); c_ret) {
                 // Use the virtual 1 past last normal tx output index
                 const auto txo_idx = tx.outputs().size();
-                logger::debug("slot: {} found collateral refund {}#{}: {}", tx.block().slot(), tx.hash(), txo_idx, *c_ret);
                 _add_utxo(_data, tx, *c_ret, txo_idx);
             }
         }

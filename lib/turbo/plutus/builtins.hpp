@@ -59,7 +59,7 @@ namespace turbo::plutus {
         extern value sha2_256(allocator &, const value &s);
         extern value sha3_256(allocator &, const value &s);
         extern value blake2b_256(allocator &, const value &s);
-        extern value verify_ed25519_signature(allocator &, const value &sig, const value &msg, const value &vk);
+        extern value verify_ed25519_signature(allocator &, const value &vk, const value &msg, const value &sig);
         extern value choose_unit(allocator &, const value &u, const value &v);
         extern value fst_pair(allocator &, const value &p);
         extern value snd_pair(allocator &, const value &p);

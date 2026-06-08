@@ -7,6 +7,10 @@
 
 #include <chrono>
 #include <functional>
+#include <map>
+#include <optional>
+#include <utility>
+#include <vector>
 #include <turbo/bech32.hpp>
 #include <turbo/cardano/common/types/base.hpp>
 #include <turbo/cardano/kes.hpp>
@@ -1479,18 +1483,56 @@ namespace turbo::cardano {
 
     using nonce = prefix_optional_t<vrf_nonce>;
 
-    struct plutus_cost_model: static_map<std::string, int64_t> {
-        using static_map::static_map;
-
-        using storage_type = static_map;
+    struct plutus_cost_model {
+        using storage_type = static_map<std::string, int64_t>;
+        using raw_value_type = std::vector<int64_t>;
         using diff_type = std::map<std::string, std::pair<std::optional<int64_t>, std::optional<int64_t>>>;
+
+        plutus_cost_model(): plutus_cost_model(raw_value_type {}) {}
+        explicit plutus_cost_model(raw_value_type raw_values): plutus_cost_model(std::move(raw_values), {}) {}
+        plutus_cost_model(raw_value_type raw_values, const std::vector<std::string> &names);
+
+        static constexpr auto serialize(auto &archive, auto &self)
+        {
+            return archive(self._data, self._raw_values);
+        }
 
         static plutus_cost_model from_cbor(const std::vector<std::string> &names, cbor::zero2::value &data);
         static plutus_cost_model from_json(const plutus_cost_model &orig, const json::value &data);
 
+        bool operator==(const plutus_cost_model &o) const noexcept;
+
+        const raw_value_type &raw_values() const noexcept
+        {
+            return _raw_values;
+        }
+
+        const auto &storage() const noexcept
+        {
+            return _data.storage();
+        }
+
+        auto begin() const
+        {
+            return _data.begin();
+        }
+
+        auto end() const
+        {
+            return _data.end();
+        }
+
+        size_t size() const
+        {
+            return _data.size();
+        }
+
         diff_type diff(const plutus_cost_model &o) const;
         void to_cbor(era_encoder &) const;
-        void update(const plutus_cost_model &src);
+
+    private:
+        storage_type _data {};
+        raw_value_type _raw_values {};
     };
 
     struct ex_units {
@@ -1537,21 +1579,39 @@ namespace turbo::cardano {
     };
 
     struct plutus_cost_models {
-        std::optional<plutus_cost_model> v1 {};
-        std::optional<plutus_cost_model> v2 {};
-        std::optional<plutus_cost_model> v3 {};
+        using map_type = flat_map<uint64_t, plutus_cost_model>;
+
+        map_type items {};
 
         static constexpr auto serialize(auto &archive, auto &self)
         {
-            return archive(self.v1, self.v2, self.v3);
+            return archive(self.items);
         }
 
         static plutus_cost_models from_cbor(cbor::zero2::value &);
         void to_cbor(era_encoder &) const;
 
+        const plutus_cost_model *find(const uint64_t id) const noexcept
+        {
+            auto it = items.find(id);
+            return it != items.end() ? &it->second : nullptr;
+        }
+
+        const plutus_cost_model &at(const uint64_t id) const
+        {
+            if (const auto *model = find(id); model)
+                return *model;
+            throw error(fmt::format("missing plutus cost model for language id: {}", id));
+        }
+
+        bool contains(const uint64_t id) const noexcept
+        {
+            return find(id) != nullptr;
+        }
+
         bool operator==(const plutus_cost_models &o) const noexcept
         {
-            return v1 == o.v1 && v2 == o.v2 && v3 == o.v3;
+            return items == o.items;
         }
     };
 
@@ -2376,7 +2436,7 @@ namespace fmt {
     struct formatter<turbo::cardano::plutus_cost_models>: formatter<uint64_t> {
         template<typename FormatContext>
         auto format(const auto &v, FormatContext &ctx) const -> decltype(ctx.out()) {
-            return fmt::format_to(ctx.out(), "v1: ({}) v2: ({}) v3: ({})", v.v1, v.v2, v.v3);
+            return fmt::format_to(ctx.out(), "{}", v.items);
         }
     };
 

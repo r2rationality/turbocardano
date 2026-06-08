@@ -37,9 +37,9 @@ namespace turbo::parallel {
                                     _consumer(idx);
                                     _next.store(idx + 1, std::memory_order_release);
                                 }
-                            }, [&] {
+                            }, logger::optional_action { [&] {
                                 _running.store(false, std::memory_order_release);
-                            });
+                            } });
                             if (ex_ptr)
                                 _error.store(true, std::memory_order_release);
                         }

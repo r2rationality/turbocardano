@@ -261,14 +261,18 @@ namespace turbo::plutus::flat {
             bytestring(enc.cbor());
         }
 
-        void encode_val(const bls12_381_g1_element &)
+        void encode_val(const bls12_381_g1_element &v)
         {
-            throw error("bls12_381_g1_element should not be serialized!");
+            byte_array<48> comp {};
+            blst_p1_compress(reinterpret_cast<byte *>(comp.data()), &v.val);
+            bytestring(comp);
         }
 
-        void encode_val(const bls12_381_g2_element &)
+        void encode_val(const bls12_381_g2_element &v)
         {
-            throw error("bls12_381_g2_element should not be serialized!");
+            byte_array<96> comp {};
+            blst_p2_compress(reinterpret_cast<byte *>(comp.data()), &v.val);
+            bytestring(comp);
         }
 
         void encode_val(const bls12_381_ml_result &)
