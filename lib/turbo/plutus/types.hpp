@@ -1,9 +1,8 @@
 #pragma once
-/* This file is part of Daedalus Turbo project: https://github.com/sierkov/daedalus-turbo/
+/* This file is part of TurboCardano project: https://github.com/r2rationality/turbocardano
  * Copyright (c) 2022-2023 Alex Sierkov (alex dot sierkov at gmail dot com)
- * Copyright (c) 2024-2025 R2 Rationality OÜ (info at r2rationality dot com)
- * This code is distributed under the license specified in:
- * https://github.com/sierkov/daedalus-turbo/blob/main/LICENSE */
+ * Copyright (c) 2024-2026 R2 Rationality OÜ (info at r2rationality dot com)
+ * License: https://github.com/r2rationality/turbocardano/blob/main/LICENSE */
 
 #include <deque>
 #include <memory_resource>
@@ -733,6 +732,11 @@ namespace turbo::plutus {
             return *_ptr == o;
         }
 
+        bool operator==(const bint_type &o) const
+        {
+            return *_ptr == *o;
+        }
+
         const value_type &operator*() const
         {
             return *_ptr;
@@ -743,20 +747,12 @@ namespace turbo::plutus {
 
     struct data_constr {
         using list_type = list_type<data>;
-        using value_type = std::pair<uint64_t, list_type>;
+        using value_type = std::pair<bint_type, list_type>;
 
         data_constr(allocator &alloc, uint64_t t, std::initializer_list<data> il);
         data_constr(allocator &alloc, uint64_t t, list_type &&l);
-
-        data_constr(allocator &alloc, const bint_type &t, std::initializer_list<data> il):
-            data_constr { alloc, static_cast<uint64_t>(*t), il }
-        {
-        }
-
-        data_constr(allocator &alloc, const bint_type &t, list_type &&l):
-            data_constr { alloc, static_cast<uint64_t>(*t), std::move(l) }
-        {
-        }
+        data_constr(allocator &alloc, const bint_type &t, std::initializer_list<data> il);
+        data_constr(allocator &alloc, const bint_type &t, list_type &&l);
 
         bool operator==(const data_constr &o) const;
         const value_type &operator*() const;

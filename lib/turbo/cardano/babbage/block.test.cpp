@@ -1,8 +1,7 @@
-/* This file is part of Daedalus Turbo project: https://github.com/sierkov/daedalus-turbo/
+/* This file is part of TurboCardano project: https://github.com/r2rationality/turbocardano
  * Copyright (c) 2022-2023 Alex Sierkov (alex dot sierkov at gmail dot com)
- * Copyright (c) 2024-2025 R2 Rationality OÜ (info at r2rationality dot com)
- * This code is distributed under the license specified in:
- * https://github.com/sierkov/daedalus-turbo/blob/main/LICENSE */
+ * Copyright (c) 2024-2026 R2 Rationality OÜ (info at r2rationality dot com)
+ * License: https://github.com/r2rationality/turbocardano/blob/main/LICENSE */
 
 #include <turbo/cardano/babbage/block.hpp>
 #include <turbo/common/test.hpp>
@@ -96,7 +95,8 @@ suite cardano_babbage_suite = [] {
             const cardano::config ccfg { cfg };
             ccfg.shelley_start_epoch(208);
             for (const auto &path: file::files_with_ext(install_path("data/babbage"), ".zpp")) {
-                const plutus::context ctx { path, ccfg };
+                plutus::context ctx { path, ccfg };
+                ctx.protocol_ver({ 8, 0 });
                 expect(boost::ut::nothrow([&] {
                     try {
                         for (const auto &[rid, rinfo]: ctx.redeemers()) {

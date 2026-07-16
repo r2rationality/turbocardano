@@ -1,14 +1,18 @@
 #pragma once
-/* This file is part of Daedalus Turbo project: https://github.com/sierkov/daedalus-turbo/
+/* This file is part of TurboCardano project: https://github.com/r2rationality/turbocardano
  * Copyright (c) 2022-2023 Alex Sierkov (alex dot sierkov at gmail dot com)
- * Copyright (c) 2024-2025 R2 Rationality OÜ (info at r2rationality dot com)
- * This code is distributed under the license specified in:
- * https://github.com/sierkov/daedalus-turbo/blob/main/LICENSE */
+ * Copyright (c) 2024-2026 R2 Rationality OÜ (info at r2rationality dot com)
+ * License: https://github.com/r2rationality/turbocardano/blob/main/LICENSE */
 
 #include <functional>
+#include <turbo/cardano/common/types.hpp>
 #include <turbo/plutus/types.hpp>
 
 namespace turbo::plutus {
+    enum class builtin_semantics: uint8_t {
+        a, b, c, d, e
+    };
+
     struct builtin_one_arg: std::function<value(allocator &, const value &)> {
         using std::function<value(allocator &, const value &)>::function;
     };
@@ -124,5 +128,9 @@ namespace turbo::plutus {
 
         extern const builtin_map &semantics_v1();
         extern const builtin_map &semantics_v2();
+        extern builtin_semantics semantics_variant(cardano::script_type, uint64_t protocol_major);
+        extern const builtin_map &semantics_for(cardano::script_type, uint64_t protocol_major);
+        extern bool available(builtin_tag, cardano::script_type, uint64_t protocol_major);
+        extern bool version_available(const version &, cardano::script_type, uint64_t protocol_major);
     }
 }

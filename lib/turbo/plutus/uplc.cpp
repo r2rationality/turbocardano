@@ -1,17 +1,18 @@
-/* This file is part of Daedalus Turbo project: https://github.com/sierkov/daedalus-turbo/
+/* This file is part of TurboCardano project: https://github.com/r2rationality/turbocardano
  * Copyright (c) 2022-2023 Alex Sierkov (alex dot sierkov at gmail dot com)
- * Copyright (c) 2024-2025 R2 Rationality OÜ (info at r2rationality dot com)
- * This code is distributed under the license specified in:
- * https://github.com/sierkov/daedalus-turbo/blob/main/LICENSE */
+ * Copyright (c) 2024-2026 R2 Rationality OÜ (info at r2rationality dot com)
+ * License: https://github.com/r2rationality/turbocardano/blob/main/LICENSE */
 
 #include <turbo/common/numeric-cast.hpp>
 #include <turbo/file.hpp>
+#include <turbo/plutus/script-validation.hpp>
 #include <turbo/plutus/uplc.hpp>
 #include <utfcpp/utf8.h>
 
 namespace turbo::plutus::uplc {
     struct script::impl {
-        impl(allocator &alloc, uint8_vector &&bytes): _alloc { alloc }, _bytes { std::move(bytes) }
+        impl(allocator &alloc, uint8_vector &&bytes, std::optional<script_validation> validation={}):
+            _alloc { alloc }, _validation { std::move(validation) }, _bytes { std::move(bytes) }
         {
             _decode_program();
             if (!_term || !_version) [[unlikely]]
@@ -29,6 +30,7 @@ namespace turbo::plutus::uplc {
         }
     private:
         allocator &_alloc;
+        std::optional<script_validation> _validation;
         uint8_vector _bytes;
         size_t _pos = 0;
         std::optional<plutus::version> _version {};
@@ -185,6 +187,8 @@ namespace turbo::plutus::uplc {
             ver.minor = static_cast<uint64_t>(*_decode_integer());
             _eat('.');
             ver.patch = static_cast<uint64_t>(*_decode_integer());
+            if (_validation)
+                _validation->check_version(ver);
             _version.emplace(std::move(ver));
         }
 
@@ -526,44 +530,47 @@ namespace turbo::plutus::uplc {
         {
             _eat_space();
             auto typ = _decode_constant_type();
+            if (_validation)
+                _validation->check_constant(typ);
             _eat_space();
             return { _alloc, _decode_constant_value(std::move(typ)) };
         }
 
         term _decode_constr()
         {
-            if (_version && (_version->empty() || (_version->major > 1 || (_version->major == 1 && _version->minor >= 1)))) {
-                _eat_space();
-                const auto tag = static_cast<uint64_t>(*_decode_integer());
-                _eat_space();
-                term_list::value_type args { _alloc };
-                while (!_next_is(')')) {
-                    args.emplace_back(_decode_term());
-                }
-                return { _alloc, t_constr { tag, term_list { _alloc, std::move(args) } } };
+            script_validation::check_term_version(*_version, term_tag::constr);
+            _eat_space();
+            const auto tag = static_cast<uint64_t>(*_decode_integer());
+            _eat_space();
+            term_list::value_type args { _alloc };
+            while (!_next_is(')')) {
+                args.emplace_back(_decode_term());
             }
-            throw error(fmt::format("constr term is allowed only for programs of versions 1.1.0 and higher but have: {}", _version));
+            if (_validation)
+                _validation->check_constr(args.size());
+            return { _alloc, t_constr { tag, term_list { _alloc, std::move(args) } } };
         }
 
         term _decode_case()
         {
-            if (_version && (_version->empty() || (_version->major > 1 || (_version->major == 1 && _version->minor >= 1)))) {
-                _eat_space();
-                auto arg = _decode_term();
-                _eat_space();
-                term_list::value_type cases { _alloc };
-                while (!_next_is(')')) {
-                    cases.emplace_back(_decode_term());
-                }
-                return { _alloc, t_case { std::move(arg), { _alloc, std::move(cases) } } };
+            script_validation::check_term_version(*_version, term_tag::acase);
+            _eat_space();
+            auto arg = _decode_term();
+            _eat_space();
+            term_list::value_type cases { _alloc };
+            while (!_next_is(')')) {
+                cases.emplace_back(_decode_term());
             }
-            throw error(fmt::format("case term is allowed only for programs of versions 1.1.0 and higher but have: {}", _version));
+            return { _alloc, t_case { std::move(arg), { _alloc, std::move(cases) } } };
         }
 
         term _decode_builtin()
         {
             const auto name = _eat_name();
-            return { _alloc, t_builtin::from_name(name) };
+            auto builtin = t_builtin::from_name(name);
+            if (_validation)
+                _validation->check_builtin(builtin);
+            return { _alloc, std::move(builtin) };
         }
 
         term _decode_lambda() {
@@ -687,6 +694,12 @@ namespace turbo::plutus::uplc {
     };
 
     script::script(allocator &alloc, uint8_vector &&bytes): _impl { std::make_unique<impl>(alloc, std::move(bytes)) }
+    {
+    }
+
+    script::script(allocator &alloc, uint8_vector &&bytes, const cardano::script_type typ,
+            const uint64_t protocol_major):
+        _impl { std::make_unique<impl>(alloc, std::move(bytes), script_validation { typ, protocol_major }) }
     {
     }
 

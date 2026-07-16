@@ -1,8 +1,7 @@
-/* This file is part of Daedalus Turbo project: https://github.com/sierkov/daedalus-turbo/
+/* This file is part of TurboCardano project: https://github.com/r2rationality/turbocardano
  * Copyright (c) 2022-2023 Alex Sierkov (alex dot sierkov at gmail dot com)
- * Copyright (c) 2024-2025 R2 Rationality OÜ (info at r2rationality dot com)
- * This code is distributed under the license specified in:
- * https://github.com/sierkov/daedalus-turbo/blob/main/LICENSE */
+ * Copyright (c) 2024-2026 R2 Rationality OÜ (info at r2rationality dot com)
+ * License: https://github.com/r2rationality/turbocardano/blob/main/LICENSE */
 
 #include <turbo/common/mutex.hpp>
 #include <turbo/common/progress.hpp>
@@ -48,7 +47,7 @@ namespace turbo::cli::plutus_benchmark {
                             const auto info = parse_name(paths[j].stem().string());
                             const auto start_time = std::chrono::high_resolution_clock::now();
                             allocator alloc {};
-                            flat::script s { alloc, bytes, true };
+                            flat::script s { alloc, bytes, info.typ, machine::builtin_case_protocol_major, true };
                             machine m { alloc, info.typ };
                             const auto s_res = m.evaluate(s.program());
                             const auto run_time = std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - start_time).count();

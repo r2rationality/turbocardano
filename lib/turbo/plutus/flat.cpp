@@ -1,20 +1,21 @@
-/* This file is part of Daedalus Turbo project: https://github.com/sierkov/daedalus-turbo/
+/* This file is part of TurboCardano project: https://github.com/r2rationality/turbocardano
  * Copyright (c) 2022-2023 Alex Sierkov (alex dot sierkov at gmail dot com)
- * Copyright (c) 2024-2025 R2 Rationality OÜ (info at r2rationality dot com)
- * This code is distributed under the license specified in:
- * https://github.com/sierkov/daedalus-turbo/blob/main/LICENSE */
+ * Copyright (c) 2024-2026 R2 Rationality OÜ (info at r2rationality dot com)
+ * License: https://github.com/r2rationality/turbocardano/blob/main/LICENSE */
 
 #include <turbo/cardano/common/types.hpp>
 #include <turbo/cbor/zero2.hpp>
 #include <turbo/crypto/blake2b.hpp>
 #include <turbo/plutus/builtins.hpp>
 #include <turbo/plutus/flat.hpp>
+#include <turbo/plutus/script-validation.hpp>
 #include <turbo/util.hpp>
 
 namespace turbo::plutus::flat {
     struct script::impl {
-        impl(allocator &alloc, uint8_vector &&bytes, const bool cbor):
-            _alloc { alloc }, _bytes_raw { std::move(bytes) },
+        impl(allocator &alloc, uint8_vector &&bytes, const bool cbor,
+                std::optional<script_validation> validation={}):
+            _alloc { alloc }, _validation { std::move(validation) }, _bytes_raw { std::move(bytes) },
             _bytes { cbor ? _extract_cbor_data(_bytes_raw) : static_cast<buffer>(_bytes_raw) },
             _ver { _decode_version() },
             _term { _decode_term() }
@@ -38,6 +39,7 @@ namespace turbo::plutus::flat {
         static constexpr size_t max_varint_bytes = max_varint_bits / 7;
 
         allocator &_alloc;
+        std::optional<script_validation> _validation;
         uint8_vector _bytes_raw;
         buffer _bytes { _bytes_raw };
         const uint8_t *_byte_next = _bytes.data();
@@ -293,14 +295,20 @@ namespace turbo::plutus::flat {
                 throw error(fmt::format("no type is defined at byte: {}!", _byte_pos()));
             auto types_it = types.begin();
             auto typ = _decode_constant_type(types_it, types.end());
+            if (_validation)
+                _validation->check_constant(typ);
             return _decode_constant_val(std::move(typ));
         }
 
         t_builtin _decode_builtin()
         {
             const auto tag = static_cast<builtin_tag>(_decode_fixed_uint<7>());
-            if (builtins::semantics_v2().contains(tag)) [[likely]]
-                return { tag };
+            if (builtins::semantics_v2().contains(tag)) [[likely]] {
+                t_builtin builtin { tag };
+                if (_validation)
+                    _validation->check_builtin(builtin);
+                return builtin;
+            }
             throw error(fmt::format("unsupported builtin: {}!", static_cast<int>(tag)));
         }
 
@@ -353,6 +361,8 @@ namespace turbo::plutus::flat {
             while (_next_bit()) {
                 args.emplace_back(_decode_term());
             }
+            if (_validation)
+                _validation->check_constr(args.size());
             return { tag, { _alloc, std::move(args) } };
         }
 
@@ -378,8 +388,12 @@ namespace turbo::plutus::flat {
                 case term_tag::force: return { _alloc, _decode_force() };
                 case term_tag::error: return { _alloc, _decode_error() };
                 case term_tag::builtin: return { _alloc, _decode_builtin() };
-                case term_tag::constr:  return { _alloc, _decode_constr() };
-                case term_tag::acase:  return { _alloc, _decode_case() };
+                case term_tag::constr:
+                    script_validation::check_term_version(_ver, typ);
+                    return { _alloc, _decode_constr() };
+                case term_tag::acase:
+                    script_validation::check_term_version(_ver, typ);
+                    return { _alloc, _decode_case() };
                 default: throw error(fmt::format("unexpected term: {}", static_cast<int>(typ)));
             }
         }
@@ -389,7 +403,10 @@ namespace turbo::plutus::flat {
             const auto major = static_cast<uint64_t>(_decode_varlen_uint());
             const auto minor = static_cast<uint64_t>(_decode_varlen_uint());
             const auto patch = static_cast<uint64_t>(_decode_varlen_uint());
-            return { major, minor, patch };
+            plutus::version ver { major, minor, patch };
+            if (_validation)
+                _validation->check_version(ver);
+            return ver;
         }
 
         static void _pad(std::vector<bool> &bits)
@@ -421,6 +438,18 @@ namespace turbo::plutus::flat {
 
     script::script(allocator &alloc, const buffer bytes, const bool cbor):
         script { alloc, uint8_vector { bytes }, cbor }
+    {
+    }
+
+    script::script(allocator &alloc, uint8_vector &&bytes, const cardano::script_type typ,
+            const uint64_t protocol_major, const bool cbor):
+        _impl { std::make_unique<impl>(alloc, std::move(bytes), cbor, script_validation { typ, protocol_major }) }
+    {
+    }
+
+    script::script(allocator &alloc, const buffer bytes, const cardano::script_type typ,
+            const uint64_t protocol_major, const bool cbor):
+        script { alloc, uint8_vector { bytes }, typ, protocol_major, cbor }
     {
     }
 

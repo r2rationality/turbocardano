@@ -1,8 +1,7 @@
-/* This file is part of Daedalus Turbo project: https://github.com/sierkov/daedalus-turbo/
+/* This file is part of TurboCardano project: https://github.com/r2rationality/turbocardano
  * Copyright (c) 2022-2023 Alex Sierkov (alex dot sierkov at gmail dot com)
- * Copyright (c) 2024-2025 R2 Rationality OÜ (info at r2rationality dot com)
- * This code is distributed under the license specified in:
- * https://github.com/sierkov/daedalus-turbo/blob/main/LICENSE */
+ * Copyright (c) 2024-2026 R2 Rationality OÜ (info at r2rationality dot com)
+ * License: https://github.com/r2rationality/turbocardano/blob/main/LICENSE */
 
 #include <turbo/common/test.hpp>
 #include <turbo/plutus/costs.hpp>
@@ -41,10 +40,19 @@ suite plutus_costs_suite = [] {
                 expect_equal(1, b.mem->cost(sizes, args));
             }
         };
+        "string sizes follow semantics variant"_test = [] {
+            allocator alloc {};
+            value_list args { alloc, {
+                value { alloc, std::string_view { "\xC3\xA9\xC3\xA9" } }
+            } };
+            const auto &op = defaults().v3->builtin_fun.at(builtin_tag::encode_utf8);
+            expect_equal(arg_sizes { 2 }, sizes_for(op, builtin_tag::encode_utf8, args, false));
+            expect_equal(arg_sizes { 1 }, sizes_for(op, builtin_tag::encode_utf8, args, true));
+        };
         "model sizes"_test = [] {
-            expect_equal(166, cost_arg_names_v1().size());
-            expect_equal(175, cost_arg_names_v2().size());
-            expect_equal(297, cost_arg_names_v3().size());
+            expect_equal(332, cost_arg_names_v1().size());
+            expect_equal(332, cost_arg_names_v2().size());
+            expect_equal(350, cost_arg_names_v3().size());
         };
     };
 };

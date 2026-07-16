@@ -1,8 +1,7 @@
-/* This file is part of Daedalus Turbo project: https://github.com/sierkov/daedalus-turbo/
+/* This file is part of TurboCardano project: https://github.com/r2rationality/turbocardano
  * Copyright (c) 2022-2023 Alex Sierkov (alex dot sierkov at gmail dot com)
- * Copyright (c) 2024-2025 R2 Rationality OÜ (info at r2rationality dot com)
- * This code is distributed under the license specified in:
- * https://github.com/sierkov/daedalus-turbo/blob/main/LICENSE */
+ * Copyright (c) 2024-2026 R2 Rationality OÜ (info at r2rationality dot com)
+ * License: https://github.com/r2rationality/turbocardano/blob/main/LICENSE */
 
 #include <turbo/cardano/ledger/state.hpp>
 #include <turbo/chunk-registry.hpp>
@@ -27,6 +26,7 @@ namespace turbo::cli::plutus_extract_scripts {
             cmd.args.expect({ "<ctx-dir>", "<tx-list-path|tx-hash>", "<output-dir>" });
             cmd.opts.try_emplace("uplc", "extract scripts in UPLC format");
             cmd.opts.try_emplace("file", "consider only files starting with a given prefix");
+            cmd.opts.try_emplace("protocol", "protocol major version for stored Conway-era contexts");
         }
 
         void run(const arguments &args, const options &opts) const override {
@@ -35,6 +35,8 @@ namespace turbo::cli::plutus_extract_scripts {
             const auto &out_dir = args.at(2);
             std::filesystem::create_directories(out_dir);
             user_config cfg { .uplc=opts.contains("uplc") };
+            if (const auto opt_it = opts.find("protocol"); opt_it != opts.end() && opt_it->second)
+                cfg.protocol = std::stoull(*opt_it->second);
             {
                 cfg.tx_list.emplace();
                 if (std::filesystem::exists(tx_list_path)) {
@@ -89,6 +91,7 @@ namespace turbo::cli::plutus_extract_scripts {
     private:
         struct user_config {
             std::optional<std::set<tx_hash>> tx_list {};
+            std::optional<uint64_t> protocol {};
             bool uplc = false;
         };
 
@@ -133,6 +136,8 @@ namespace turbo::cli::plutus_extract_scripts {
                 std::optional<uint64_t> epoch {};
                 try {
                     context ctx { std::move(stored_ctx) };
+                    if (cfg.protocol)
+                        ctx.protocol_ver({ *cfg.protocol, 0 });
                     epoch.emplace(ctx.slot().epoch());
                     auto it = std::upper_bound(epoch_cost_models.begin(), epoch_cost_models.end(), *epoch,
                         [&](const auto val, const auto &e) { return val < e.epoch; });

@@ -1,8 +1,7 @@
-/* This file is part of Daedalus Turbo project: https://github.com/sierkov/daedalus-turbo/
-* Copyright (c) 2022-2023 Alex Sierkov (alex dot sierkov at gmail dot com)
- * Copyright (c) 2024-2025 R2 Rationality OÜ (info at r2rationality dot com)
- * This code is distributed under the license specified in:
- * https://github.com/sierkov/daedalus-turbo/blob/main/LICENSE
+/* This file is part of TurboCardano project: https://github.com/r2rationality/turbocardano
+ * Copyright (c) 2022-2023 Alex Sierkov (alex dot sierkov at gmail dot com)
+ * Copyright (c) 2024-2026 R2 Rationality OÜ (info at r2rationality dot com)
+ * License: https://github.com/r2rationality/turbocardano/blob/main/LICENSE
  *
  * This code uses a binary dump of the ledger state produced by Cardano Node.
  * Moreover, at the moment it relies on the relative ordering of the data structures.

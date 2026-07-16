@@ -1,9 +1,8 @@
 #pragma once
-/* This file is part of Daedalus Turbo project: https://github.com/sierkov/daedalus-turbo/
+/* This file is part of TurboCardano project: https://github.com/r2rationality/turbocardano
  * Copyright (c) 2022-2023 Alex Sierkov (alex dot sierkov at gmail dot com)
- * Copyright (c) 2024-2025 R2 Rationality OÜ (info at r2rationality dot com)
- * This code is distributed under the license specified in:
- * https://github.com/sierkov/daedalus-turbo/blob/main/LICENSE */
+ * Copyright (c) 2024-2026 R2 Rationality OÜ (info at r2rationality dot com)
+ * License: https://github.com/r2rationality/turbocardano/blob/main/LICENSE */
 
 #include <turbo/cardano/common/mocks.hpp>
 #include <turbo/cardano/conway/block.hpp>
@@ -112,7 +111,7 @@ namespace turbo::plutus {
         uint8_vector _tx_body_bytes;
         uint8_vector _tx_wits_bytes;
         storage::block_info _block_info;
-        protocol_version _protocol_ver {};
+        std::optional<protocol_version> _protocol_ver {};
         tx_container _tx;
         stored_txo_list _inputs {};
         stored_txo_list _ref_inputs {};
@@ -139,6 +138,8 @@ namespace turbo::plutus {
         {
             return _cost_models;
         }
+
+        const protocol_version &_require_protocol_ver() const;
 
         term data(allocator &script_allocator, script_type typ, const tx_redeemer &) const;
 

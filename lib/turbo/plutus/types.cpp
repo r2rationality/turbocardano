@@ -1,8 +1,7 @@
-/* This file is part of Daedalus Turbo project: https://github.com/sierkov/daedalus-turbo/
+/* This file is part of TurboCardano project: https://github.com/r2rationality/turbocardano
  * Copyright (c) 2022-2023 Alex Sierkov (alex dot sierkov at gmail dot com)
- * Copyright (c) 2024-2025 R2 Rationality OÜ (info at r2rationality dot com)
- * This code is distributed under the license specified in:
- * https://github.com/sierkov/daedalus-turbo/blob/main/LICENSE */
+ * Copyright (c) 2024-2026 R2 Rationality OÜ (info at r2rationality dot com)
+ * License: https://github.com/r2rationality/turbocardano/blob/main/LICENSE */
 
 #include <turbo/cbor/zero2.hpp>
 #include <turbo/plutus/builtins.hpp>
@@ -227,11 +226,21 @@ namespace turbo::plutus {
     }
 
     data_constr::data_constr(allocator &alloc, uint64_t t, std::initializer_list<data> il):
-        _ptr { alloc.make<value_type>(t, list_type { alloc, std::move(il) }) }
+        _ptr { alloc.make<value_type>(bint_type { alloc, t }, list_type { alloc, std::move(il) }) }
     {
     }
 
     data_constr::data_constr(allocator &alloc, uint64_t t, list_type &&l):
+        _ptr { alloc.make<value_type>(bint_type { alloc, t }, list_type { alloc, std::move(l) }) }
+    {
+    }
+
+    data_constr::data_constr(allocator &alloc, const bint_type &t, std::initializer_list<data> il):
+        _ptr { alloc.make<value_type>(t, list_type { alloc, std::move(il) }) }
+    {
+    }
+
+    data_constr::data_constr(allocator &alloc, const bint_type &t, list_type &&l):
         _ptr { alloc.make<value_type>(t, list_type { alloc, std::move(l) }) }
     {
     }
@@ -460,21 +469,17 @@ namespace turbo::plutus {
                     _to_cbor(enc, p->second, level + 1);
                 }
             } else if constexpr (std::is_same_v<T, data_constr>) {
-                if (v->first < std::numeric_limits<uint64_t>::max()) [[likely]] {
-                    const auto id = static_cast<uint64_t>(v->first);
-                    if (id <= 6) {
-                        enc.tag(id + 121);
-                    } else if (id <= 127) {
-                        enc.tag(id - 7 + 1280);
-                    } else {
-                        enc.tag(102);
-                        enc.array(2);
-                        enc.uint(id);
-                    }
-                    _to_cbor(enc, v->second, level + 1);
+                const auto &id = *v->first;
+                if (id >= 0 && id <= 6) {
+                    enc.tag(static_cast<uint64_t>(id) + 121);
+                } else if (id >= 7 && id <= 127) {
+                    enc.tag(static_cast<uint64_t>(id) - 7 + 1280);
                 } else {
-                    throw error(fmt::format("constr id is too big: {}", v->first));
+                    enc.tag(102);
+                    enc.array(2);
+                    _to_cbor(enc, v->first, level + 1);
                 }
+                _to_cbor(enc, v->second, level + 1);
             } else {
                 _to_cbor(enc, v, level);
             }

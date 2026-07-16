@@ -1,8 +1,7 @@
-/* This file is part of Daedalus Turbo project: https://github.com/sierkov/daedalus-turbo/
+/* This file is part of TurboCardano project: https://github.com/r2rationality/turbocardano
  * Copyright (c) 2022-2023 Alex Sierkov (alex dot sierkov at gmail dot com)
- * Copyright (c) 2024-2025 R2 Rationality OÜ (info at r2rationality dot com)
- * This code is distributed under the license specified in:
- * https://github.com/sierkov/daedalus-turbo/blob/main/LICENSE */
+ * Copyright (c) 2024-2026 R2 Rationality OÜ (info at r2rationality dot com)
+ * License: https://github.com/r2rationality/turbocardano/blob/main/LICENSE */
 
 #include <bit>
 #include <ranges>
@@ -376,7 +375,7 @@ namespace turbo::plutus::builtins {
             constant_list::list_type cl { alloc };
             for (const auto &d: c->second)
                 cl.emplace_back(alloc, d);
-            return { alloc, constant { alloc, constant_pair { alloc, constant { alloc, bint_type { alloc, c->first } },
+            return { alloc, constant { alloc, constant_pair { alloc, constant { alloc, bint_type { c->first } },
                 constant { alloc, constant_list { alloc, constant_type { alloc, type_tag::data }, std::move(cl) } } } } };
         }
         throw error(fmt::format("invalid input for un_constr_data: {}!", t));
@@ -1046,4 +1045,92 @@ namespace turbo::plutus::builtins {
         static builtin_map m { make_semantics_v2() };
         return m;
     }
+
+    builtin_semantics semantics_variant(const cardano::script_type typ, const uint64_t protocol_major)
+    {
+        using cardano::script_type;
+        if (protocol_major >= 11) {
+            switch (typ) {
+                case script_type::plutus_v1:
+                case script_type::plutus_v2:
+                    return builtin_semantics::d;
+                case script_type::plutus_v3:
+                    return builtin_semantics::e;
+                default: break;
+            }
+        } else {
+            switch (typ) {
+                case script_type::plutus_v1:
+                case script_type::plutus_v2:
+                    return protocol_major < 9 ? builtin_semantics::a : builtin_semantics::b;
+                case script_type::plutus_v3:
+                    return builtin_semantics::c;
+                default: break;
+            }
+        }
+        throw error(fmt::format("unsupported script type: {}", typ));
+    }
+
+    const builtin_map &semantics_for(const cardano::script_type typ, const uint64_t protocol_major)
+    {
+        switch (semantics_variant(typ, protocol_major)) {
+            case builtin_semantics::a:
+            case builtin_semantics::b:
+            case builtin_semantics::d:
+                return semantics_v1();
+            case builtin_semantics::c:
+            case builtin_semantics::e:
+                return semantics_v2();
+            default: throw error("unsupported builtin semantics variant");
+        }
+    }
+
+    static bool _ledger_language_available(const cardano::script_type typ, const uint64_t protocol_major)
+    {
+        using cardano::script_type;
+        switch (typ) {
+            case script_type::plutus_v1: return protocol_major >= 5;
+            case script_type::plutus_v2: return protocol_major >= 7;
+            case script_type::plutus_v3: return protocol_major >= 9;
+            default: return false;
+        }
+    }
+
+    bool available(const builtin_tag tag, const cardano::script_type typ, const uint64_t protocol_major)
+    {
+        if (!_ledger_language_available(typ, protocol_major))
+            return false;
+        const auto batch = semantics_v1().at(tag).batch;
+        using cardano::script_type;
+        switch (typ) {
+            case script_type::plutus_v1:
+                return protocol_major >= 11 || batch == 1;
+            case script_type::plutus_v2:
+                if (protocol_major >= 11)
+                    return true;
+                if (protocol_major >= 10
+                        && (tag == builtin_tag::integer_to_byte_string || tag == builtin_tag::byte_string_to_integer))
+                    return true;
+                if (protocol_major >= 8)
+                    return batch <= 3;
+                return batch <= 2;
+            case script_type::plutus_v3:
+                if (protocol_major >= 11)
+                    return true;
+                return batch <= (protocol_major >= 10 ? 5 : 4);
+            default: return false;
+        }
+    }
+
+    bool version_available(const version &ver, const cardano::script_type typ, const uint64_t protocol_major)
+    {
+        if (!_ledger_language_available(typ, protocol_major))
+            return false;
+        if (ver == version { 1, 0, 0 })
+            return true;
+        if (!(ver == version { 1, 1, 0 }))
+            return false;
+        return typ == cardano::script_type::plutus_v3 || protocol_major >= 11;
+    }
+
 }

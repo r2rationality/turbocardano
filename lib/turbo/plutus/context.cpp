@@ -1,8 +1,7 @@
-/* This file is part of Daedalus Turbo project: https://github.com/sierkov/daedalus-turbo/
+/* This file is part of TurboCardano project: https://github.com/r2rationality/turbocardano
  * Copyright (c) 2022-2023 Alex Sierkov (alex dot sierkov at gmail dot com)
- * Copyright (c) 2024-2025 R2 Rationality OÜ (info at r2rationality dot com)
- * This code is distributed under the license specified in:
- * https://github.com/sierkov/daedalus-turbo/blob/main/LICENSE */
+ * Copyright (c) 2024-2026 R2 Rationality OÜ (info at r2rationality dot com)
+ * License: https://github.com/r2rationality/turbocardano/blob/main/LICENSE */
 
 #include <turbo/cbor/zero2.hpp>
 #include <turbo/history.hpp>
@@ -1119,27 +1118,34 @@ namespace turbo::plutus {
         protocol_version _pv;
     };
 
-    static protocol_version protocol_ver_for_era(const uint64_t era)
+    static std::optional<protocol_version> protocol_ver_for_era(const uint64_t era)
     {
         switch (era) {
             case 0:
             case 1:
-                return { 1, 0 };
+                return protocol_version { 1, 0 };
             case 2:
-                return { 2, 0 };
+                return protocol_version { 2, 0 };
             case 3:
-                return { 3, 0 };
+                return protocol_version { 3, 0 };
             case 4:
-                return { 4, 0 };
+                return protocol_version { 4, 0 };
             case 5:
-                return { 6, 0 };
-            case 6:
-                return { 8, 0 };
-            case 7:
-                return { 9, 0 };
+                return protocol_version { 6, 0 };
+            case 6: return {};
+            case 7: return {};
             default:
                 throw error(fmt::format("unsupported era for Plutus context protocol version fallback: {}", era));
         }
+    }
+
+    const protocol_version &context::_require_protocol_ver() const
+    {
+        if (_protocol_ver)
+            return *_protocol_ver;
+        throw error(fmt::format(
+            "the protocol version must be set explicitly for era {} because the era spans multiple protocol versions",
+            _block_info.era));
     }
 
     context::context(uint8_vector &&tx_body_data, uint8_vector &&tx_wits_data, const storage::block_info &block, const cardano::config &cfg):
@@ -1201,7 +1207,8 @@ namespace turbo::plutus {
 
     prepared_script context::apply_script(allocator &&script_alloc, const script_info &script, const std::initializer_list<term> args, const std::optional<ex_units> &budget) const
     {
-        const flat::script s { script_alloc, script.script() };
+        const auto &pv = _require_protocol_ver();
+        const flat::script s { script_alloc, script.script(), script.type(), pv.major };
         term t = s.program();
         for (auto it = args.begin(); it != args.end(); ++it) {
             // Uncomment to debug potential script context generation issues
@@ -1313,8 +1320,8 @@ namespace turbo::plutus {
     void context::eval_script(prepared_script &ps) const
     {
         try {
-            const auto &semantics = ps.typ == script_type::plutus_v3 ? builtins::semantics_v2() : builtins::semantics_v1();
-            machine m { ps.alloc, cost_models().for_script(ps.typ), semantics };
+            const auto &pv = _require_protocol_ver();
+            machine m { ps.alloc, cost_models().for_script(ps.typ), ps.typ, ps.budget, pv.major };
             m.evaluate_no_res(ps.expr);
         } catch (const std::exception &ex) {
             throw error(fmt::format("script {} {}: {}", ps.typ, ps.hash, ex.what()));
@@ -1402,10 +1409,11 @@ namespace turbo::plutus {
     {
         // allocate the per-script data with the per-script allocator
         // but allocate the shared date with the per-context allocator
-        data_encoder enc { script_alloc, typ, _protocol_ver };
+        const auto &pv = _require_protocol_ver();
+        data_encoder enc { script_alloc, typ, pv };
         auto shared_it = _shared.find(typ);
         if (shared_it == _shared.end()) {
-            data_encoder enc_shared { alloc(), typ, _protocol_ver };
+            data_encoder enc_shared { alloc(), typ, pv };
             auto [new_it, created] = _shared.try_emplace(typ, enc_shared.context_shared(*this));
             shared_it = new_it;
         }

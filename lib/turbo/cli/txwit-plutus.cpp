@@ -1,8 +1,7 @@
-/* This file is part of Daedalus Turbo project: https://github.com/sierkov/daedalus-turbo/
+/* This file is part of TurboCardano project: https://github.com/r2rationality/turbocardano
  * Copyright (c) 2022-2023 Alex Sierkov (alex dot sierkov at gmail dot com)
- * Copyright (c) 2024-2025 R2 Rationality OÜ (info at r2rationality dot com)
- * This code is distributed under the license specified in:
- * https://github.com/sierkov/daedalus-turbo/blob/main/LICENSE */
+ * Copyright (c) 2024-2026 R2 Rationality OÜ (info at r2rationality dot com)
+ * License: https://github.com/r2rationality/turbocardano/blob/main/LICENSE */
 
 #include <turbo/chunk-registry.hpp>
 #include <turbo/history.hpp>
@@ -24,6 +23,7 @@ namespace turbo::cli::txwit_plutus {
             cmd.opts.try_emplace("epoch", "evaluate only the given epoch");
             cmd.opts.try_emplace("file", "evaluate only the given file");
             cmd.opts.try_emplace("tx", "evaluate only the given transaction");
+            cmd.opts.try_emplace("protocol", "protocol major version for stored Conway-era contexts");
             cmd.opts.try_emplace("workers", "force the scheduler to use a given number of wokers");
         }
 
@@ -75,6 +75,7 @@ namespace turbo::cli::txwit_plutus {
     private:
         struct user_config {
             std::optional<uint64_t> epoch {};
+            std::optional<uint64_t> protocol {};
             std::optional<std::string> file {};
             std::optional<tx_hash> tx {};
             size_t num_workers = scheduler::default_worker_count();
@@ -87,6 +88,8 @@ namespace turbo::cli::txwit_plutus {
                     file = *opt_it->second;
                 if (const auto opt_it = opts.find("epoch"); opt_it != opts.end() && opt_it->second)
                     epoch = std::stoull(*opt_it->second);
+                if (const auto opt_it = opts.find("protocol"); opt_it != opts.end() && opt_it->second)
+                    protocol = std::stoull(*opt_it->second);
                 if (const auto opt_it = opts.find("workers"); opt_it != opts.end() && opt_it->second)
                     num_workers = std::stoull(*opt_it->second);
             }
@@ -126,6 +129,8 @@ namespace turbo::cli::txwit_plutus {
                 std::optional<uint64_t> epoch {};
                 try {
                     context ctx { std::move(stored_ctx) };
+                    if (cfg.protocol)
+                        ctx.protocol_ver({ *cfg.protocol, 0 });
                     epoch.emplace(ctx.slot().epoch());
                     if (cfg.epoch && *epoch != *cfg.epoch)
                         continue;

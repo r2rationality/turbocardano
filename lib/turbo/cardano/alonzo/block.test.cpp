@@ -1,8 +1,7 @@
-/* This file is part of Daedalus Turbo project: https://github.com/sierkov/daedalus-turbo/
+/* This file is part of TurboCardano project: https://github.com/r2rationality/turbocardano
  * Copyright (c) 2022-2023 Alex Sierkov (alex dot sierkov at gmail dot com)
- * Copyright (c) 2024-2025 R2 Rationality OÜ (info at r2rationality dot com)
- * This code is distributed under the license specified in:
- * https://github.com/sierkov/daedalus-turbo/blob/main/LICENSE */
+ * Copyright (c) 2024-2026 R2 Rationality OÜ (info at r2rationality dot com)
+ * License: https://github.com/r2rationality/turbocardano/blob/main/LICENSE */
 
 #include <turbo/cardano/alonzo/block.hpp>
 #include <turbo/common/test.hpp>
@@ -69,7 +68,14 @@ suite cardano_alonzo_suite = [] {
             ccfg.shelley_start_epoch(208);
             for (const auto &path: file::files_with_ext(install_path("data/alonzo"), ".zpp")) {
                 try {
-                    const plutus::context ctx { path, ccfg };
+                    plutus::context ctx { path, ccfg };
+                    // These legacy fixtures predate storing the protocol version in the context.
+                    // Preserve the protocol assumptions that were previously implicit in the era fallback.
+                    switch (ctx.tx().block().era()) {
+                        case 6: ctx.protocol_ver({ 8, 0 }); break;
+                        case 7: ctx.protocol_ver({ 9, 0 }); break;
+                        default: break;
+                    }
                     expect(ctx.tx().witnesses_ok(&ctx)) << path;
                 } catch (const error &err) {
                     expect(false) << fmt::format("validation of tx witnesses for tx {} failed with: {}", path, err.what());

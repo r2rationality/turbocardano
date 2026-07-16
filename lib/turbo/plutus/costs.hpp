@@ -1,9 +1,8 @@
 #pragma once
-/* This file is part of Daedalus Turbo project: https://github.com/sierkov/daedalus-turbo/
+/* This file is part of TurboCardano project: https://github.com/r2rationality/turbocardano
  * Copyright (c) 2022-2023 Alex Sierkov (alex dot sierkov at gmail dot com)
- * Copyright (c) 2024-2025 R2 Rationality OÜ (info at r2rationality dot com)
- * This code is distributed under the license specified in:
- * https://github.com/sierkov/daedalus-turbo/blob/main/LICENSE */
+ * Copyright (c) 2024-2026 R2 Rationality OÜ (info at r2rationality dot com)
+ * License: https://github.com/r2rationality/turbocardano/blob/main/LICENSE */
 
 #include <turbo/cardano/common/types.hpp>
 #include <turbo/plutus/types.hpp>
@@ -44,6 +43,8 @@ namespace turbo::plutus::costs {
             return cpu && o.cpu && *cpu == *o.cpu && mem && o.mem && *mem == *o.mem && size.get() == o.size.get();
         }
     };
+
+    extern arg_sizes sizes_for(const op_model &, builtin_tag, const value_list &, bool text_costed_by_byte_length);
 
     struct parsed_model {
         cardano::ex_units startup_op;

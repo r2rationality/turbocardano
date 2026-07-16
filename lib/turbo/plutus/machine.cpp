@@ -1,16 +1,19 @@
-/* This file is part of Daedalus Turbo project: https://github.com/sierkov/daedalus-turbo/
+/* This file is part of TurboCardano project: https://github.com/r2rationality/turbocardano
  * Copyright (c) 2022-2023 Alex Sierkov (alex dot sierkov at gmail dot com)
- * Copyright (c) 2024-2025 R2 Rationality OÜ (info at r2rationality dot com)
- * This code is distributed under the license specified in:
- * https://github.com/sierkov/daedalus-turbo/blob/main/LICENSE */
+ * Copyright (c) 2024-2026 R2 Rationality OÜ (info at r2rationality dot com)
+ * License: https://github.com/r2rationality/turbocardano/blob/main/LICENSE */
 
 #include <turbo/plutus/builtins.hpp>
 #include <turbo/plutus/machine.hpp>
+#include <limits>
 
 namespace turbo::plutus {
     struct machine::impl {
-        impl(allocator &alloc, const costs::parsed_model &model, const builtin_map &semantics, const optional_budget &budget):
-            _alloc { alloc }, _cost_model { model }, _budget { budget }, _semantics { semantics }
+        impl(allocator &alloc, const costs::parsed_model &model, const builtin_map &semantics,
+                const optional_budget &budget, const uint64_t protocol_major,
+                const builtin_semantics semantics_variant):
+            _alloc { alloc }, _cost_model { model }, _budget { budget }, _semantics { semantics },
+            _protocol_major { protocol_major }, _semantics_variant { semantics_variant }
         {
         }
 
@@ -40,6 +43,8 @@ namespace turbo::plutus {
         cardano::ex_units _cost {};
         value_list _empty_args { _alloc };
         const builtin_map &_semantics;
+        uint64_t _protocol_major;
+        builtin_semantics _semantics_variant;
 
         value _eval(const term &expr)
         {
@@ -72,10 +77,124 @@ namespace turbo::plutus {
             _spend(c.mem, c.steps);
         }
 
+        static const value &_arg(const value_list &args, const size_t idx)
+        {
+            return *std::next(args->begin(), idx);
+        }
+
+        static void _check_integer_range(const value &arg, const cpp_int &lower, const cpp_int &upper,
+                const std::string_view what)
+        {
+            const auto &i = *arg.as_int();
+            if (i < lower || i > upper)
+                throw error(fmt::format("{} is out of bounds: {}", what, i));
+        }
+
+        static void _check_cardano_integer(const value &arg)
+        {
+            static const cpp_int lower = -(cpp_int { 1 } << 262143);
+            static const cpp_int upper = (cpp_int { 1 } << 262143) - 1;
+            _check_integer_range(arg, lower, upper, "integer");
+        }
+
+        static void _check_cardano_bytestring(const value &arg)
+        {
+            if (arg.as_bstr()->size() > 65536)
+                throw error(fmt::format("bytestring size {} exceeds the protocol limit of 65536", arg.as_bstr()->size()));
+        }
+
+        void _check_ensurable_args(const builtin_tag tag, const value_list &args) const
+        {
+            if (_semantics_variant != builtin_semantics::d && _semantics_variant != builtin_semantics::e)
+                return;
+            switch (tag) {
+                case builtin_tag::add_integer:
+                case builtin_tag::subtract_integer:
+                case builtin_tag::multiply_integer:
+                case builtin_tag::divide_integer:
+                case builtin_tag::quotient_integer:
+                case builtin_tag::remainder_integer:
+                case builtin_tag::mod_integer:
+                case builtin_tag::less_than_integer:
+                case builtin_tag::less_than_equals_integer:
+                    _check_cardano_integer(_arg(args, 0));
+                    _check_cardano_integer(_arg(args, 1));
+                    break;
+                case builtin_tag::append_byte_string:
+                case builtin_tag::equals_byte_string:
+                case builtin_tag::less_than_byte_string:
+                case builtin_tag::less_than_equals_byte_string:
+                    _check_cardano_bytestring(_arg(args, 0));
+                    _check_cardano_bytestring(_arg(args, 1));
+                    break;
+                case builtin_tag::cons_byte_string:
+                    if (_semantics_variant == builtin_semantics::d)
+                        _check_cardano_integer(_arg(args, 0));
+                    _check_cardano_bytestring(_arg(args, 1));
+                    break;
+                case builtin_tag::slice_byte_string:
+                    _check_cardano_bytestring(_arg(args, 2));
+                    break;
+                case builtin_tag::index_byte_string:
+                case builtin_tag::sha2_256:
+                case builtin_tag::sha3_256:
+                case builtin_tag::blake2b_256:
+                case builtin_tag::decode_utf8:
+                case builtin_tag::bls12_381_g1_hash_to_group:
+                case builtin_tag::bls12_381_g2_hash_to_group:
+                case builtin_tag::keccak_256:
+                case builtin_tag::blake2b_224:
+                case builtin_tag::complement_byte_string:
+                case builtin_tag::read_bit:
+                case builtin_tag::count_set_bits:
+                case builtin_tag::find_first_set_bit:
+                case builtin_tag::ripemd_160:
+                    _check_cardano_bytestring(_arg(args, 0));
+                    break;
+                case builtin_tag::verify_ed25519_signature:
+                case builtin_tag::verify_schnorr_secp_256k1_signature:
+                case builtin_tag::byte_string_to_integer:
+                    _check_cardano_bytestring(_arg(args, 1));
+                    break;
+                case builtin_tag::and_byte_string:
+                case builtin_tag::or_byte_string:
+                case builtin_tag::xor_byte_string:
+                    _check_cardano_bytestring(_arg(args, 1));
+                    _check_cardano_bytestring(_arg(args, 2));
+                    break;
+                case builtin_tag::constr_data: {
+                    static const cpp_int upper = (cpp_int { 1 } << 64) - 1;
+                    _check_integer_range(_arg(args, 0), 0, upper, "data constructor tag");
+                    break;
+                }
+                case builtin_tag::bls12_381_g1_scalar_mul:
+                case builtin_tag::bls12_381_g2_scalar_mul: {
+                    static const cpp_int lower = -(cpp_int { 1 } << 4095);
+                    static const cpp_int upper = (cpp_int { 1 } << 4095) - 1;
+                    _check_integer_range(_arg(args, 0), lower, upper, "BLS scalar");
+                    break;
+                }
+                case builtin_tag::write_bits:
+                    if (_arg(args, 0).as_bstr()->size() > 4096)
+                        throw error(fmt::format("writeBits input size {} exceeds the protocol limit of 4096",
+                            _arg(args, 0).as_bstr()->size()));
+                    break;
+                case builtin_tag::shift_byte_string:
+                case builtin_tag::rotate_byte_string:
+                    _check_integer_range(_arg(args, 1), std::numeric_limits<int64_t>::min(),
+                        std::numeric_limits<int64_t>::max(), "bit shift");
+                    break;
+                default: break;
+            }
+        }
+
         void _spend(const builtin_tag tag, const value_list &args)
         {
+            _check_ensurable_args(tag, args);
             const auto &op_model = _cost_model.builtin_fun.at(tag);
-            const auto sizes = op_model.size->size(args);
+            const bool text_costed_by_byte_length =
+                _semantics_variant == builtin_semantics::d || _semantics_variant == builtin_semantics::e;
+            const auto sizes = costs::sizes_for(op_model, tag, args, text_costed_by_byte_length);
             const auto cpu_cost = op_model.cpu->cost(sizes, args);
             const auto mem_cost = op_model.mem->cost(sizes, args);
             _spend(mem_cost, cpu_cost);
@@ -305,17 +424,80 @@ namespace turbo::plutus {
             return value { _alloc, v_constr { e.tag, { _alloc, std::move(v_args) } } };
         }
 
+        value _case_branch(const environment &env, const t_case &e, const size_t idx)
+        {
+            if (idx >= e.cases->size()) [[unlikely]]
+                throw error(fmt::format("case branch index {} is out of bounds for {} branches", idx, e.cases->size()));
+            return _compute(env, *std::next(e.cases->begin(), idx));
+        }
+
+        value _case_branch_const(const environment &env, const t_case &e, const constant &c)
+        {
+            if (_protocol_major < machine::builtin_case_protocol_major) [[unlikely]] {
+                throw error(fmt::format(
+                    "case on builtin constants requires protocol version {} or later but got {}",
+                    machine::builtin_case_protocol_major, _protocol_major));
+            }
+            const auto num_branches = e.cases->size();
+            return std::visit<value>([&](const auto &v) -> value {
+                using T = std::decay_t<decltype(v)>;
+                if constexpr (std::is_same_v<T, std::monostate>) {
+                    if (num_branches == 1) [[likely]]
+                        return _case_branch(env, e, 0);
+                    throw error(fmt::format("casing on unit requires exactly one branch but got {}", num_branches));
+                } else if constexpr (std::is_same_v<T, bool>) {
+                    if (!v && (num_branches == 1 || num_branches == 2))
+                        return _case_branch(env, e, 0);
+                    if (v && num_branches == 2)
+                        return _case_branch(env, e, 1);
+                    throw error(fmt::format("builtin bool value {} has no matching case branch", v));
+                } else if constexpr (std::is_same_v<T, bint_type>) {
+                    if (*v >= 0 && *v < num_branches)
+                        return _case_branch(env, e, static_cast<size_t>(*v));
+                    throw error(fmt::format("builtin integer value {} has no matching case branch", *v));
+                } else if constexpr (std::is_same_v<T, constant_list>) {
+                    if (num_branches != 1 && num_branches != 2) [[unlikely]]
+                        throw error(fmt::format("casing on list requires exactly one or two branches but got {}", num_branches));
+                    if (v->vals.empty()) {
+                        if (num_branches == 2)
+                            return _case_branch(env, e, 1);
+                        throw error("expected a non-empty list when casing with one branch");
+                    }
+                    auto res = _case_branch(env, e, 0);
+                    res = _apply(*res, value { _alloc, v->vals.front() });
+                    constant_list::list_type tail { _alloc };
+                    std::copy(std::next(v->vals.begin()), v->vals.end(), std::back_inserter(tail));
+                    const auto tail_val = value::make_list(_alloc, constant_type { v->typ }, std::move(tail));
+                    return _apply(*res, tail_val);
+                } else if constexpr (std::is_same_v<T, constant_pair>) {
+                    if (num_branches != 1) [[unlikely]]
+                        throw error(fmt::format("casing on pair requires exactly one branch but got {}", num_branches));
+                    auto res = _case_branch(env, e, 0);
+                    res = _apply(*res, value { _alloc, v->first });
+                    return _apply(*res, value { _alloc, v->second });
+                } else {
+                    throw error(fmt::format("builtin constant type {} is not supported in case", typeid(T).name()));
+                }
+            }, *c);
+        }
+
         value _compute(const environment &env, const t_case &e)
         {
             _spend(_cost_model.case_op);
             const auto v_arg = _compute(env, e.arg);
-            const auto &cc = v_arg.as_constr();
-            if (cc.tag >= e.cases->size())
-                throw error(fmt::format("a case argument must have been less than {} but got {}!", e.cases->size(), cc.tag));
-            auto res = _compute(env, *std::next(e.cases->begin(), cc.tag));
-            for (size_t i = 0; i < cc.args->size(); ++i)
-                res = _apply(*res, *std::next(cc.args->begin(), i));
-            return res;
+            return std::visit<value>([&](const auto &v) -> value {
+                using T = std::decay_t<decltype(v)>;
+                if constexpr (std::is_same_v<T, v_constr>) {
+                    auto res = _case_branch(env, e, v.tag);
+                    for (const auto &arg: *v.args)
+                        res = _apply(*res, arg);
+                    return res;
+                } else if constexpr (std::is_same_v<T, constant>) {
+                    return _case_branch_const(env, e, v);
+                } else {
+                    throw error(fmt::format("case requires a constructor or builtin constant but got {}", typeid(T).name()));
+                }
+            }, *v_arg);
         }
 
         value _compute(const environment &, const failure &)
@@ -331,25 +513,23 @@ namespace turbo::plutus {
         }
     };
 
-    machine::machine(allocator &alloc, const cardano::script_type typ, const optional_budget &budget)
+    machine::machine(allocator &alloc, const cardano::script_type typ, const optional_budget &budget,
+            const uint64_t protocol_major):
+        machine { alloc, costs::defaults().for_script(typ), typ, budget, protocol_major }
     {
-        using cardano::script_type;
-        switch (typ) {
-            case script_type::plutus_v1:
-                _impl = std::make_unique<impl>(alloc, costs::defaults().v1.value(), builtins::semantics_v1(), budget);
-                break;
-            case script_type::plutus_v2:
-                _impl = std::make_unique<impl>(alloc, costs::defaults().v2.value(), builtins::semantics_v1(), budget);
-                break;
-            case script_type::plutus_v3:
-                _impl = std::make_unique<impl>(alloc, costs::defaults().v3.value(), builtins::semantics_v2(), budget);
-                break;
-            default: throw error(fmt::format("unsupported script type: {}", typ));
-        }
     }
 
-    machine::machine(allocator &alloc, const costs::parsed_model &model, const builtin_map &semantics, const optional_budget &budget):
-        _impl { std::make_unique<impl>(alloc, model, semantics, budget) }
+    machine::machine(allocator &alloc, const costs::parsed_model &model, const cardano::script_type typ,
+            const optional_budget &budget, const uint64_t protocol_major):
+        _impl { std::make_unique<impl>(alloc, model, builtins::semantics_for(typ, protocol_major), budget,
+            protocol_major, builtins::semantics_variant(typ, protocol_major)) }
+    {
+    }
+
+    machine::machine(allocator &alloc, const costs::parsed_model &model, const builtin_map &semantics,
+            const optional_budget &budget, const uint64_t protocol_major,
+            const builtin_semantics semantics_variant):
+        _impl { std::make_unique<impl>(alloc, model, semantics, budget, protocol_major, semantics_variant) }
     {
     }
 

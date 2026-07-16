@@ -1,11 +1,11 @@
-/* This file is part of Daedalus Turbo project: https://github.com/sierkov/daedalus-turbo/
+/* This file is part of TurboCardano project: https://github.com/r2rationality/turbocardano
  * Copyright (c) 2022-2023 Alex Sierkov (alex dot sierkov at gmail dot com)
- * Copyright (c) 2024-2025 R2 Rationality OÜ (info at r2rationality dot com)
- * This code is distributed under the license specified in:
- * https://github.com/sierkov/daedalus-turbo/blob/main/LICENSE */
+ * Copyright (c) 2024-2026 R2 Rationality OÜ (info at r2rationality dot com)
+ * License: https://github.com/r2rationality/turbocardano/blob/main/LICENSE */
 
 #include <turbo/common/file.hpp>
 #include <turbo/common/test.hpp>
+#include <turbo/plutus/flat-encoder.hpp>
 #include <turbo/plutus/flat.hpp>
 
 namespace {
@@ -54,6 +54,48 @@ suite turbo_plutus_flat_suite = [] {
                     script s { alloc, raw_cbor };
                 })) << fmt::format("{}", raw_cbor);
             }
+        };
+        "constr and case require UPLC 1.1"_test = [] {
+            allocator source_alloc {};
+            const term unit { source_alloc, plutus::constant { source_alloc, std::monostate {} } };
+            const term constr {
+                source_alloc,
+                t_constr { 0, term_list { source_alloc, { unit } } }
+            };
+            const term acase {
+                source_alloc,
+                t_case { constr, term_list { source_alloc, { unit } } }
+            };
+            for (const auto &expr: { constr, acase }) {
+                expect(throws([&] {
+                    allocator decode_alloc {};
+                    script s { decode_alloc, encode(version { 1, 0, 0 }, expr), false };
+                }));
+                expect(nothrow([&] {
+                    allocator decode_alloc {};
+                    script s { decode_alloc, encode(version { 1, 1, 0 }, expr), false };
+                }));
+            }
+        };
+        "ledger validation happens while decoding"_test = [] {
+            allocator source_alloc {};
+            const term expr {
+                source_alloc,
+                t_delay { term { source_alloc, t_builtin { builtin_tag::exp_mod_integer } } }
+            };
+            const auto bytes = encode(version { 1, 0, 0 }, expr);
+            expect(nothrow([&] {
+                allocator decode_alloc {};
+                script s { decode_alloc, buffer { bytes }, false };
+            }));
+            expect(throws([&] {
+                allocator decode_alloc {};
+                script s { decode_alloc, buffer { bytes }, cardano::script_type::plutus_v3, 10, false };
+            }));
+            expect(nothrow([&] {
+                allocator decode_alloc {};
+                script s { decode_alloc, buffer { bytes }, cardano::script_type::plutus_v3, 11, false };
+            }));
         };
         "scripts"_test = [] {
             struct script_info {

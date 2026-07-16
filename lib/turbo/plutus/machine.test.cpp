@@ -1,11 +1,11 @@
-/* This file is part of Daedalus Turbo project: https://github.com/sierkov/daedalus-turbo/
+/* This file is part of TurboCardano project: https://github.com/r2rationality/turbocardano
  * Copyright (c) 2022-2023 Alex Sierkov (alex dot sierkov at gmail dot com)
- * Copyright (c) 2024-2025 R2 Rationality OÜ (info at r2rationality dot com)
- * This code is distributed under the license specified in:
- * https://github.com/sierkov/daedalus-turbo/blob/main/LICENSE */
+ * Copyright (c) 2024-2026 R2 Rationality OÜ (info at r2rationality dot com)
+ * License: https://github.com/r2rationality/turbocardano/blob/main/LICENSE */
 
 #include <turbo/common/scheduler.hpp>
 #include <turbo/common/test.hpp>
+#include <turbo/plutus/flat-encoder.hpp>
 #include <turbo/plutus/machine.hpp>
 #include <turbo/plutus/uplc.hpp>
 
@@ -84,6 +84,23 @@ namespace {
         return m.evaluate(s.program());
     }
 
+    std::string eval_uplc(const std::string_view src, const uint64_t protocol_major)
+    {
+        plutus::allocator alloc {};
+        const uplc::script s { alloc, uint8_vector { src } };
+        machine m { alloc, costs::defaults().v3.value(), builtins::semantics_v2(), {}, protocol_major };
+        return fmt::format("{}", m.evaluate(s.program()).expr);
+    }
+
+    std::string eval_profile(const std::string_view src, const cardano::script_type typ,
+            const uint64_t protocol_major)
+    {
+        plutus::allocator alloc {};
+        const uplc::script s { alloc, uint8_vector { src }, typ, protocol_major };
+        machine m { alloc, typ, {}, protocol_major };
+        return fmt::format("{}", m.evaluate(s.program()).expr);
+    }
+
     void test_script(const std::filesystem::path &path, const optional_budget &budget={}, const reflection::source_location &loc=reflection::source_location::current())
     {
         plutus::allocator alloc {};
@@ -98,7 +115,7 @@ namespace {
         if (std::holds_alternative<script_meta>(res)) {
             try {
                 auto &si = std::get<script_meta>(res);
-                machine m { alloc, costs::defaults().v3.value(), builtins::semantics_v2(), budget };
+                machine m { alloc, costs::defaults().v3.value(), builtins::semantics_v2(), budget, 10 };
                 auto [res, cost] = m.evaluate(si.expr);
                 si.expr = std::move(res);
                 si.cost = std::move(cost);
@@ -145,6 +162,124 @@ suite plutus_machine_suite = [] {
             expect(throws([&] { run_script(alloc, "./data/plutus/conformance/example/factorial/factorial.uplc", cardano::ex_units { 50025, 9352174 }); }));
             // succeeds with a high-enough budget
             expect(nothrow([&] { run_script(alloc, "./data/plutus/conformance/example/factorial/factorial.uplc", cardano::ex_units { 50026, 9352174 }); }));
+        };
+        "protocol 11 builtin case"_test = [] {
+            expect_equal("(con integer 10)", eval_uplc("(program 1.1.0 (case (con unit ()) (con integer 10)))", 11));
+            expect_equal("(con integer 20)", eval_uplc("(program 1.1.0 (case (con bool True) (con integer 10) (con integer 20)))", 11));
+            expect_equal("(con integer 20)", eval_uplc("(program 1.1.0 (case (con integer 1) (con integer 10) (con integer 20)))", 11));
+            expect_equal("(con integer 7)", eval_uplc("(program 1.1.0 (case (con (list integer) [7, 8]) (lam h (lam t h)) (con integer 0)))", 11));
+            expect_equal("(con integer 0)", eval_uplc("(program 1.1.0 (case (con (list integer) []) (lam h (lam t h)) (con integer 0)))", 11));
+            expect_equal("(con integer 4)", eval_uplc("(program 1.1.0 (case (con (pair integer integer) (3, 4)) (lam a (lam b b))))", 11));
+        };
+        "pre-protocol 11 case"_test = [] {
+            const std::initializer_list<std::string_view> builtin_cases {
+                "(program 1.1.0 (case (con unit ()) (con integer 10)))",
+                "(program 1.1.0 (case (con bool False) (con integer 10)))",
+                "(program 1.1.0 (case (con integer 0) (con integer 10)))",
+                "(program 1.1.0 (case (con (list integer) []) (lam h (lam t h)) (con integer 0)))",
+                "(program 1.1.0 (case (con (pair integer integer) (3, 4)) (lam a (lam b b))))"
+            };
+            for (const uint64_t protocol_major: { 9, 10 }) {
+                expect_equal("(con integer 2)", eval_uplc("(program 1.1.0 (case (constr 0 (con integer 2)) (lam x x)))", protocol_major));
+                for (const auto src: builtin_cases)
+                    expect(throws([&] { eval_uplc(src, protocol_major); }));
+            }
+        };
+        "builtin semantics variants"_test = [] {
+            using cardano::script_type;
+            expect(builtins::semantics_variant(script_type::plutus_v1, 8) == builtin_semantics::a);
+            expect(builtins::semantics_variant(script_type::plutus_v2, 9) == builtin_semantics::b);
+            expect(builtins::semantics_variant(script_type::plutus_v3, 9) == builtin_semantics::c);
+            expect(builtins::semantics_variant(script_type::plutus_v1, 11) == builtin_semantics::d);
+            expect(builtins::semantics_variant(script_type::plutus_v3, 11) == builtin_semantics::e);
+
+            const std::string_view cons_out_of_range {
+                "(program 1.0.0 [[(builtin consByteString) (con integer 256)] (con bytestring #)])"
+            };
+            expect(nothrow([&] { eval_profile(cons_out_of_range, script_type::plutus_v1, 8); }));
+            expect(throws([&] { eval_profile(cons_out_of_range, script_type::plutus_v3, 9); }));
+            expect(nothrow([&] { eval_profile(cons_out_of_range, script_type::plutus_v1, 11); }));
+            expect(throws([&] { eval_profile(cons_out_of_range, script_type::plutus_v3, 11); }));
+
+            const std::string_view constr_data_out_of_range {
+                "(program 1.0.0 [[(builtin constrData) (con integer -1)] (con (list data) [])])"
+            };
+            expect(nothrow([&] { eval_profile(constr_data_out_of_range, script_type::plutus_v3, 10); }));
+            expect(throws([&] { eval_profile(constr_data_out_of_range, script_type::plutus_v3, 11); }));
+        };
+        "builtin availability by ledger language and protocol"_test = [] {
+            using cardano::script_type;
+            expect(!builtins::available(builtin_tag::add_integer, script_type::plutus_v1, 4));
+            expect(builtins::available(builtin_tag::add_integer, script_type::plutus_v1, 5));
+            expect(!builtins::available(builtin_tag::serialise_data, script_type::plutus_v1, 10));
+            expect(builtins::available(builtin_tag::serialise_data, script_type::plutus_v1, 11));
+
+            expect(builtins::available(builtin_tag::serialise_data, script_type::plutus_v2, 7));
+            expect(!builtins::available(builtin_tag::verify_ecdsa_secp_256k1_signature, script_type::plutus_v2, 7));
+            expect(builtins::available(builtin_tag::verify_ecdsa_secp_256k1_signature, script_type::plutus_v2, 8));
+            expect(builtins::available(builtin_tag::integer_to_byte_string, script_type::plutus_v2, 10));
+            expect(!builtins::available(builtin_tag::bls12_381_g1_add, script_type::plutus_v2, 10));
+            expect(builtins::available(builtin_tag::bls12_381_g1_add, script_type::plutus_v2, 11));
+
+            expect(builtins::available(builtin_tag::bls12_381_g1_add, script_type::plutus_v3, 9));
+            expect(!builtins::available(builtin_tag::and_byte_string, script_type::plutus_v3, 9));
+            expect(builtins::available(builtin_tag::and_byte_string, script_type::plutus_v3, 10));
+            expect(!builtins::available(builtin_tag::exp_mod_integer, script_type::plutus_v3, 10));
+            expect(builtins::available(builtin_tag::exp_mod_integer, script_type::plutus_v3, 11));
+
+            const std::string_view dead_batch_6 { "(program 1.0.0 (delay (builtin expModInteger)))" };
+            expect(throws([&] { eval_profile(dead_batch_6, script_type::plutus_v3, 10); }));
+            expect(nothrow([&] { eval_profile(dead_batch_6, script_type::plutus_v3, 11); }));
+        };
+        "UPLC versions by ledger language and protocol"_test = [] {
+            using cardano::script_type;
+            expect(nothrow([&] {
+                eval_profile("(program 1.0.0 (con unit ()))", script_type::plutus_v1, 10);
+            }));
+            expect(throws([&] {
+                eval_profile("(program 1.1.0 (con unit ()))", script_type::plutus_v1, 10);
+            }));
+            expect(nothrow([&] {
+                eval_profile("(program 1.1.0 (con unit ()))", script_type::plutus_v1, 11);
+            }));
+            expect(nothrow([&] {
+                eval_profile("(program 1.1.0 (con unit ()))", script_type::plutus_v3, 9);
+            }));
+            expect(throws([&] {
+                eval_profile("(program 1.2.0 (con unit ()))", script_type::plutus_v3, 11);
+            }));
+            expect(throws([&] {
+                eval_profile("(program 1.0.0 (con unit ()))", script_type::plutus_v2, 6);
+            }));
+        };
+        "protocol 11 Flat bounds"_test = [] {
+            {
+                allocator alloc {};
+                term_list::value_type args { alloc };
+                for (size_t i = 0; i < 1025; ++i)
+                    args.emplace_back(term { alloc, plutus::constant { alloc, std::monostate {} } });
+                const term expr { alloc, t_constr { 0, term_list { alloc, std::move(args) } } };
+                expect(throws([&] {
+                    allocator decode_alloc {};
+                    flat::script s { decode_alloc, flat::encode(version { 1, 1, 0 }, expr),
+                        cardano::script_type::plutus_v3, 11, false };
+                }));
+            }
+            {
+                allocator alloc {};
+                constant_type elem_type { alloc, type_tag::unit };
+                for (size_t i = 0; i < 15; ++i) {
+                    constant_type::list_type nested { alloc };
+                    nested.emplace_back(elem_type);
+                    elem_type = constant_type { alloc, type_tag::list, std::move(nested) };
+                }
+                const term expr { alloc, plutus::constant { alloc, constant_list { alloc, elem_type } } };
+                expect(throws([&] {
+                    allocator decode_alloc {};
+                    flat::script s { decode_alloc, flat::encode(version { 1, 1, 0 }, expr),
+                        cardano::script_type::plutus_v3, 11, false };
+                }));
+            }
         };
         "conformance"_test = [] {
             test_script_dir("./data/plutus/conformance/term");
