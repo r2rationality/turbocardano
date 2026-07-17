@@ -173,7 +173,7 @@ namespace turbo::plutus::uplc {
 
         str_type::value_type _eat_name()
         {
-            auto name = _eat_all([](char k) { return std::isalnum(k) || k == '_' || k == '\''; });
+            auto name = _eat_all([](char k) { return std::isalnum(k) || k == '_' || k == '\'' || k == '-'; });
             if (!name.empty()) [[likely]]
                 return name;
             throw error(fmt::format("name cannot be empty at pos: {}", _pos));
@@ -305,13 +305,13 @@ namespace turbo::plutus::uplc {
         bls12_381_g1_element _decode_bls12_381_g1()
         {
             _eat("0x");
-            return bls_g1_decompress(uint8_vector::from_hex(_decode_hex()));
+            return { _alloc, bls_g1_decompress(uint8_vector::from_hex(_decode_hex())) };
         }
 
         bls12_381_g2_element _decode_bls12_381_g2()
         {
             _eat("0x");
-            return bls_g2_decompress(uint8_vector::from_hex(_decode_hex()));
+            return { _alloc, bls_g2_decompress(uint8_vector::from_hex(_decode_hex())) };
         }
 
         data::list_type _decode_data_list()
@@ -402,17 +402,18 @@ namespace turbo::plutus::uplc {
             return d;
         }
 
-        constant_type _decode_list_type()
+        constant_type _decode_sequence_type(const type_tag tag)
         {
             _eat_space();
             constant_type::list_type n { _alloc, { _decode_constant_type() } };
-            return { _alloc, type_tag::list, std::move(n) };
+            return { _alloc, tag, std::move(n) };
         }
 
         constant_type _decode_pair_type()
         {
             _eat_space();
             constant_type::list_type n { _alloc };
+            n.reserve(2);
             n.emplace_back(_decode_constant_type());
             _eat_space();
             n.emplace_back(_decode_constant_type());
@@ -423,7 +424,9 @@ namespace turbo::plutus::uplc {
         {
             const auto typ = _eat_name();
             if (typ == "list")
-                return _decode_list_type();
+                return _decode_sequence_type(type_tag::list);
+            if (typ == "array")
+                return _decode_sequence_type(type_tag::array);
             if (typ == "pair")
                 return _decode_pair_type();
             throw error(fmt::format("unexpected token '{}' at pos: {}", typ, _pos));
@@ -465,6 +468,10 @@ namespace turbo::plutus::uplc {
                     if (typ != "unit") [[unlikely]]
                         throw error(fmt::format("unexpected token '{}' at pos: {}", typ, _pos));
                     return { _alloc, type_tag::unit };
+                case 'v':
+                    if (typ != "value") [[unlikely]]
+                        throw error(fmt::format("unexpected token '{}' at pos: {}", typ, _pos));
+                    return { _alloc, type_tag::value };
                 default: throw error(fmt::format("unexpected token '{}' at pos: {}", typ, _pos));
             }
         }
@@ -474,24 +481,25 @@ namespace turbo::plutus::uplc {
             if (typ->nested.size() != 2) [[unlikely]]
                     throw error(fmt::format("the nested type list for a pair must have two elements but has {}", typ->nested.size()));
             _eat_lpar();
-            auto fst = _decode_constant_value(constant_type { typ->nested.front() });
+            auto fst = _decode_constant_value(constant_type { typ->nested.front() }, true);
             _eat_space();
             _eat(',');
             _eat_space();
-            auto snd = _decode_constant_value(constant_type { typ->nested.back() });
+            auto snd = _decode_constant_value(constant_type { typ->nested.back() }, true);
             _eat_rpar();
             return { _alloc, std::move(fst), std::move(snd) };
         }
 
-        constant_list _decode_list_value(constant_type &&list_typ)
+        constant_list::value_type _decode_sequence_value(constant_type &&seq_typ, const std::string_view kind)
         {
-            if (list_typ->nested.size() != 1) [[unlikely]]
-                    throw error(fmt::format("the nested type list for a list must have just one element but has {}", list_typ->nested.size()));
+            if (seq_typ->nested.size() != 1) [[unlikely]]
+                throw error(fmt::format("the nested type list for an {} must have just one element but has {}",
+                    kind, seq_typ->nested.size()));
             _eat_lbr();
-            auto typ = list_typ->nested.front();
+            auto typ = seq_typ->nested.front();
             constant_list::list_type vals { _alloc };
             while (!_next_is(']')) {
-                vals.emplace_back(_decode_constant_value(constant_type { typ }));
+                vals.emplace_back(_decode_constant_value(constant_type { typ }, true));
                 _eat_space();
                 if (_next_is(',')) {
                     _eat(',');
@@ -499,7 +507,18 @@ namespace turbo::plutus::uplc {
                 }
             }
             _eat_rbr();
-            return { _alloc, { std::move(typ), std::move(vals) } };
+            return { std::move(typ), std::move(vals) };
+        }
+
+        constant_list _decode_list_value(constant_type &&list_typ)
+        {
+            return { _alloc, _decode_sequence_value(std::move(list_typ), "list") };
+        }
+
+        constant_array _decode_array_value(constant_type &&array_typ)
+        {
+            auto seq = _decode_sequence_value(std::move(array_typ), "array");
+            return { _alloc, seq.typ, std::move(seq.vals) };
         }
 
         std::monostate _decode_unit()
@@ -509,19 +528,60 @@ namespace turbo::plutus::uplc {
             return {};
         }
 
-        constant _decode_constant_value(constant_type &&typ)
+        asset_value _decode_value()
+        {
+            asset_value::input_type entries {};
+            _eat_lbr();
+            while (!_next_is(']')) {
+                _eat_lpar();
+                const auto currency_raw = _decode_bytestring();
+                asset_value::key_type currency { currency_raw->begin(), currency_raw->end() };
+                _eat_space();
+                _eat(',');
+                _eat_space();
+                asset_value::input_inner_type tokens {};
+                _eat_lbr();
+                while (!_next_is(']')) {
+                    _eat_lpar();
+                    const auto token_raw = _decode_bytestring();
+                    asset_value::key_type token { token_raw->begin(), token_raw->end() };
+                    _eat_space();
+                    _eat(',');
+                    _eat_space();
+                    tokens.emplace_back(std::move(token), *_decode_integer());
+                    _eat_rpar();
+                    if (_next_is(',')) {
+                        _eat(',');
+                        _eat_space();
+                    }
+                }
+                _eat_rbr();
+                _eat_rpar();
+                entries.emplace_back(std::move(currency), std::move(tokens));
+                if (_next_is(',')) {
+                    _eat(',');
+                    _eat_space();
+                }
+            }
+            _eat_rbr();
+            return asset_value::from_list(_alloc, std::move(entries));
+        }
+
+        constant _decode_constant_value(constant_type &&typ, const bool nested=false)
         {
             switch (const auto tag = typ->typ; tag) {
                 case type_tag::bls12_381_g1_element: return { _alloc, _decode_bls12_381_g1() };
                 case type_tag::bls12_381_g2_element: return { _alloc, _decode_bls12_381_g2() };
                 case type_tag::bytestring: return { _alloc, _decode_bytestring() };
                 case type_tag::boolean: return { _alloc, _decode_boolean() };
-                case type_tag::data: return { _alloc, _decode_data() };
+                case type_tag::data: return { _alloc, nested ? _decode_data_item() : _decode_data() };
                 case type_tag::integer: return { _alloc, _decode_integer() };
                 case type_tag::string: return { _alloc, _decode_string() };
                 case type_tag::unit: return { _alloc, _decode_unit() };
                 case type_tag::list: return { _alloc, _decode_list_value(std::move(typ)) };
+                case type_tag::array: return { _alloc, _decode_array_value(std::move(typ)) };
                 case type_tag::pair: return { _alloc, _decode_pair_value(std::move(typ)) };
+                case type_tag::value: return { _alloc, _decode_value() };
                 default: throw error(fmt::format("unexpected type: {}", tag));
             }
         }
@@ -669,8 +729,11 @@ namespace turbo::plutus::uplc {
                 return _decode_term_apply();
             const auto name = _eat_name();
             const auto it = std::find(_vars.rbegin(), _vars.rend(), name);
+            // Textual UPLC is a named representation and may contain open terms.
+            // Use the first index outside the current lexical environment for a
+            // free name; evaluation will then report the free-variable error.
             if (it == _vars.rend()) [[unlikely]]
-                throw error(fmt::format("unknown variable '{}' at pos: {}", name, _pos));
+                return { _alloc, variable { _vars.size() } };
             return { _alloc, variable { numeric_cast<size_t>(it.base() - 1 - _vars.begin()) } };
         }
 

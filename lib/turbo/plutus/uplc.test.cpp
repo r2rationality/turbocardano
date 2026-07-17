@@ -4,7 +4,7 @@
  * License: https://github.com/r2rationality/turbocardano/blob/main/LICENSE */
 
 #include <turbo/common/test.hpp>
-#include <turbo/config.hpp>
+#include <turbo/plutus/conformance-data.hpp>
 #include <turbo/plutus/uplc.hpp>
 
 using namespace turbo;
@@ -13,8 +13,18 @@ using namespace turbo::plutus::uplc;
 
 suite plutus_uplc_suite = [] {
     "plutus::uplc"_test = [] {
+        "generated names"_test = [] {
+            plutus::allocator alloc {};
+            const script s { alloc, uint8_vector { std::string_view { "(program 1.0.0 (lam j_1-0 j_1-0))" } } };
+            expect_equal("(lam v0 v0)", fmt::format("{}", s.program()));
+        };
+        "open term"_test = [] {
+            plutus::allocator alloc {};
+            const script s { alloc, uint8_vector { std::string_view { "(program 1.0.0 x)" } } };
+            expect_equal("v0", fmt::format("{}", s.program()));
+        };
         "conformance scripts"_test = [&] {
-            const auto paths = file::files_with_ext_path(install_path("./data/plutus/conformance"), ".uplc");
+            const auto paths = file::files_with_ext_path(conformance_data_dir().string(), ".uplc");
             size_t ok = 0;
             for (const auto &path: paths) {
                 try {

@@ -4,8 +4,10 @@
  * Copyright (c) 2024-2026 R2 Rationality OÜ (info at r2rationality dot com)
  * License: https://github.com/r2rationality/turbocardano/blob/main/LICENSE */
 
+#include <boost/container/static_vector.hpp>
 #include <deque>
 #include <memory_resource>
+#include <stdexcept>
 #include <turbo/cbor/encoder.hpp>
 #include <turbo/common/format.hpp>
 #include <turbo/common/logger.hpp>
@@ -73,7 +75,9 @@ namespace turbo::plutus {
         data                 = 8,
         bls12_381_g1_element = 9,
         bls12_381_g2_element = 10,
-        bls12_381_ml_result   = 11
+        bls12_381_ml_result   = 11,
+        array                 = 12,
+        value                 = 13
     };
 
     enum class builtin_tag: uint8_t {
@@ -167,7 +171,20 @@ namespace turbo::plutus {
         count_set_bits = 84,
         find_first_set_bit = 85,
         ripemd_160 = 86,
-        exp_mod_integer = 87
+        exp_mod_integer = 87,
+        drop_list = 88,
+        length_of_array = 89,
+        list_to_array = 90,
+        index_array = 91,
+        bls12_381_g1_multi_scalar_mul = 92,
+        bls12_381_g2_multi_scalar_mul = 93,
+        insert_coin = 94,
+        lookup_coin = 95,
+        union_value = 96,
+        value_contains = 97,
+        value_data = 98,
+        un_value_data = 99,
+        scale_value = 100
     };
 }
 
@@ -211,6 +228,8 @@ namespace fmt {
                 case type::bls12_381_g1_element: return fmt::format_to(ctx.out(), "bls12_381_g1_element");
                 case type::bls12_381_g2_element: return fmt::format_to(ctx.out(), "bls12_381_g2_element");
                 case type::bls12_381_ml_result: return fmt::format_to(ctx.out(), "bls12_381_ml_result");
+                case type::array: return fmt::format_to(ctx.out(), "array");
+                case type::value: return fmt::format_to(ctx.out(), "value");
                 default: throw turbo::error(fmt::format("unknown type: {}", static_cast<int>(v)));
             }
         }
@@ -324,7 +343,8 @@ namespace turbo::plutus {
             }
         private:
             static constexpr size_t _aligned_bytes(const size_t bytes, const size_t align) {
-                return bytes & align ? bytes + align - (bytes & align) : bytes;
+                const auto mask = align - 1;
+                return (bytes + mask) & ~mask;
             }
 
             my_alloc _alloc {};
@@ -368,7 +388,8 @@ namespace turbo::plutus {
             }
         private:
             static constexpr size_t _aligned_bytes(const size_t bytes, const size_t align) {
-                return bytes & align ? bytes + align - (bytes & align) : bytes;
+                const auto mask = align - 1;
+                return (bytes + mask) & ~mask;
             }
 
             struct info_t {
@@ -586,6 +607,7 @@ namespace turbo::plutus {
         static constant_type make_pair(allocator &alloc, constant_type &&fst, constant_type &&snd)
         {
             list_type n { alloc };
+            n.reserve(2);
             n.emplace_back(std::move(fst));
             n.emplace_back(std::move(snd));
             return { alloc, type_tag::pair, std::move(n) };
@@ -647,30 +669,60 @@ namespace turbo::plutus {
     };
 
     struct bls12_381_g1_element {
-        blst_p1 val {};
+        bls12_381_g1_element(allocator &alloc, const blst_p1 &val):
+            _ptr { alloc.make<blst_p1>(val) }
+        {
+        }
+
+        const blst_p1 &get() const
+        {
+            return *_ptr;
+        }
 
         bool operator==(const bls12_381_g1_element &o) const
         {
-            return blst_p1_is_equal(&val, &o.val);
+            return blst_p1_is_equal(&get(), &o.get());
         }
+    private:
+        allocator::ptr_type<blst_p1> _ptr;
     };
 
     struct bls12_381_g2_element {
-        blst_p2 val {};
+        bls12_381_g2_element(allocator &alloc, const blst_p2 &val):
+            _ptr { alloc.make<blst_p2>(val) }
+        {
+        }
+
+        const blst_p2 &get() const
+        {
+            return *_ptr;
+        }
 
         bool operator==(const bls12_381_g2_element &o) const
         {
-            return blst_p2_is_equal(&val, &o.val);
+            return blst_p2_is_equal(&get(), &o.get());
         }
+    private:
+        allocator::ptr_type<blst_p2> _ptr;
     };
 
     struct bls12_381_ml_result {
-        blst_fp12 val {};
+        bls12_381_ml_result(allocator &alloc, const blst_fp12 &val):
+            _ptr { alloc.make<blst_fp12>(val) }
+        {
+        }
+
+        const blst_fp12 &get() const
+        {
+            return *_ptr;
+        }
 
         bool operator==(const bls12_381_ml_result &o) const
         {
-            return memcmp(&val, &o.val, sizeof(val)) == 0;
+            return memcmp(&get(), &o.get(), sizeof(blst_fp12)) == 0;
         }
+    private:
+        allocator::ptr_type<blst_fp12> _ptr;
     };
 
     struct data;
@@ -997,8 +1049,82 @@ namespace turbo::plutus {
         allocator::ptr_type<value_type> _ptr;
     };
 
+    // Arrays and lists carry the same element type and constant storage, but
+    // remain distinct universe types.  Reuse the list storage implementation
+    // while retaining a distinct variant alternative.
+    struct constant_array {
+        constant_array(allocator &alloc, const constant_type &typ, constant_list::list_type &&vals):
+            _storage { alloc, typ, std::move(vals) }
+        {
+        }
+
+        constant_array(const constant_array &) =default;
+
+        bool operator==(const constant_array &o) const
+        {
+            return _storage == o._storage;
+        }
+
+        const constant_list::value_type *operator->() const
+        {
+            return _storage.operator->();
+        }
+    private:
+        constant_list _storage;
+    };
+
+    struct asset_value {
+        using key_type = std::vector<uint8_t>;
+        using quantity_type = cpp_int;
+        using inner_type = std::map<key_type, quantity_type>;
+        using map_type = std::map<key_type, inner_type>;
+        using input_inner_type = std::vector<std::pair<key_type, quantity_type>>;
+        using input_type = std::vector<std::pair<key_type, input_inner_type>>;
+
+        static constexpr size_t max_key_size = 32;
+        static constexpr size_t max_data_size = 40'000;
+
+        asset_value() =delete;
+        asset_value(const asset_value &o): _ptr { o._ptr }
+        {
+        }
+        asset_value(allocator &, map_type &&);
+
+        static asset_value from_list(allocator &, input_type &&);
+        static asset_value empty(allocator &alloc)
+        {
+            return { alloc, map_type {} };
+        }
+
+        size_t total_size() const;
+        size_t max_inner_size() const;
+        size_t negative_amounts() const;
+        bool operator==(const asset_value &o) const
+        {
+            return _ptr->map == o._ptr->map;
+        }
+        const map_type &operator*() const
+        {
+            return _ptr->map;
+        }
+        const map_type *operator->() const
+        {
+            return &_ptr->map;
+        }
+    private:
+        struct storage {
+            map_type map;
+            size_t total_size = 0;
+            size_t max_inner_size = 0;
+            size_t negative_amounts = 0;
+
+            explicit storage(map_type &&);
+        };
+        allocator::ptr_type<storage> _ptr;
+    };
+
     struct constant {
-        using value_type = std::variant<bint_type, bstr_type, str_type, bool, constant_list, constant_pair,
+        using value_type = std::variant<bint_type, bstr_type, str_type, bool, constant_list, constant_array, constant_pair, asset_value,
             data, bls12_381_g1_element, bls12_381_g2_element, bls12_381_ml_result, std::monostate>;
 
         constant() =delete;
@@ -1058,6 +1184,16 @@ namespace turbo::plutus {
             return std::get<constant_list>(*_ptr);
         }
 
+        const constant_array &as_array() const
+        {
+            return std::get<constant_array>(*_ptr);
+        }
+
+        const asset_value &as_value() const
+        {
+            return std::get<asset_value>(*_ptr);
+        }
+
         const value_type &operator*() const
         {
             return *_ptr;
@@ -1074,8 +1210,9 @@ namespace turbo::plutus {
     struct builtin_one_arg;
     struct builtin_two_arg;
     struct builtin_three_arg;
+    struct builtin_four_arg;
     struct builtin_six_arg;
-    using builtin_any = std::variant<builtin_one_arg, builtin_two_arg, builtin_three_arg, builtin_six_arg>;
+    using builtin_any = std::variant<builtin_one_arg, builtin_two_arg, builtin_three_arg, builtin_four_arg, builtin_six_arg>;
 
     struct t_builtin {
         builtin_tag tag {};
@@ -1160,11 +1297,129 @@ namespace turbo::plutus {
         const data &as_data() const;
         const constant_pair::value_type &as_pair() const;
         const constant_list &as_list() const;
+        const constant_array &as_array() const;
+        const asset_value &as_asset_value() const;
         bool operator==(const value &o) const;
         const value_type &operator*() const;
         const value_type *operator->() const;
     private:
         ptr_type _ptr;
+    };
+
+    struct value_args {
+        using const_iterator = const value *;
+
+        value_args() =default;
+        value_args(const value *data, const size_t size): _data { data }, _size { size }
+        {
+        }
+
+        size_t size() const noexcept
+        {
+            return _size;
+        }
+
+        bool empty() const noexcept
+        {
+            return !_size;
+        }
+
+        const value *data() const noexcept
+        {
+            return _data;
+        }
+
+        const_iterator begin() const noexcept
+        {
+            return _data;
+        }
+
+        const_iterator end() const noexcept
+        {
+            return _data ? _data + _size : _data;
+        }
+
+        const value &at(const size_t idx) const
+        {
+            if (idx >= _size) [[unlikely]]
+                throw std::out_of_range("value argument index is out of range");
+            return _data[idx];
+        }
+
+        const value &front() const
+        {
+            return at(0);
+        }
+
+        const value &operator[](const size_t idx) const noexcept
+        {
+            return _data[idx];
+        }
+
+    private:
+        const value *_data = nullptr;
+        size_t _size = 0;
+    };
+
+    struct builtin_args {
+        static constexpr size_t max_size = 6;
+
+        builtin_args() =default;
+        builtin_args(allocator &alloc, const builtin_args &args, const value &arg):
+            _ptr { alloc.make<storage>(args.values(), arg) }
+        {
+        }
+
+        size_t size() const noexcept
+        {
+            return _ptr ? _ptr->size() : 0;
+        }
+
+        value_args values() const noexcept
+        {
+            return _ptr ? value_args { _ptr->data(), _ptr->size() } : value_args {};
+        }
+
+        operator value_args() const noexcept
+        {
+            return values();
+        }
+
+        const value &at(const size_t idx) const
+        {
+            return values().at(idx);
+        }
+
+        const value &front() const
+        {
+            return values().front();
+        }
+
+        bool operator==(const builtin_args &o) const
+        {
+            const auto a = values();
+            const auto b = o.values();
+            if (a.size() != b.size())
+                return false;
+            for (size_t i = 0; i < a.size(); ++i) {
+                if (!(a[i] == b[i]))
+                    return false;
+            }
+            return true;
+        }
+    private:
+        struct storage: boost::container::static_vector<value, builtin_args::max_size> {
+            storage(const value_args args, const value &arg)
+            {
+                if (args.size() >= builtin_args::max_size) [[unlikely]]
+                    throw std::length_error("at most six builtin arguments are supported");
+                for (const auto &prev_arg: args)
+                    this->emplace_back(prev_arg);
+                this->emplace_back(arg);
+            }
+        };
+
+        allocator::ptr_type<storage> _ptr {};
     };
 
     struct value_list {
@@ -1177,6 +1432,10 @@ namespace turbo::plutus {
         bool operator==(const value_list &) const;
         const value_type &operator*() const;
         const value_type *operator->() const;
+        operator value_args() const noexcept
+        {
+            return { _ptr->data(), _ptr->size() };
+        }
     private:
         allocator::ptr_type<value_type> _ptr;
     };
@@ -1223,7 +1482,7 @@ namespace turbo::plutus {
 
     struct v_builtin {
         const t_builtin b;
-        value_list args;
+        builtin_args args;
         size_t forces = 0;
 
         bool operator==(const v_builtin &o) const;
@@ -1259,7 +1518,7 @@ namespace turbo::plutus {
     template<typename T, typename... Args>
     allocator::ptr_type<T> allocator::make(Args &&...a)
     {
-        T *p = new (_mr->allocate(sizeof(T), 0x10)) T { std::forward<Args>(a)... };
+        T *p = new (_mr->allocate(sizeof(T), alignof(T))) T { std::forward<Args>(a)... };
         return p;
     }
 #if defined(__GNUC__) && !defined(__clang__)
@@ -1274,7 +1533,7 @@ namespace turbo::plutus {
     template<typename T, typename... Args>
     allocator::ptr_type<T> allocator::make_foreign(Args &&...a)
     {
-        T *p = new (_mr->allocate(sizeof(T), 0x10)) T { std::forward<Args>(a)... };
+        T *p = new (_mr->allocate(sizeof(T), alignof(T))) T { std::forward<Args>(a)... };
         try {
             _ptrs.emplace_back(p, [](const void* x) { static_cast<const T*>(x)->~T(); });
         } catch (...) {
@@ -1293,8 +1552,8 @@ namespace turbo::plutus {
     extern builtin_tag builtin_tag_from_name(std::string_view name);
     extern bstr_type bls_g1_compress(allocator &alloc, const bls12_381_g1_element &val);
     extern bstr_type bls_g2_compress(allocator &alloc, const bls12_381_g2_element &val);
-    extern bls12_381_g1_element bls_g1_decompress(buffer bytes);
-    extern bls12_381_g2_element bls_g2_decompress(buffer bytes);
+    extern blst_p1 bls_g1_decompress(buffer bytes);
+    extern blst_p2 bls_g2_decompress(buffer bytes);
     extern std::string escape_utf8_string(std::string_view);
 }
 
@@ -1336,7 +1595,7 @@ namespace fmt {
         template<typename FormatContext>
         auto format(const turbo::plutus::bls12_381_g1_element &v, FormatContext &ctx) const -> decltype(ctx.out()) {
             turbo::byte_array<48> comp {};
-            blst_p1_compress(reinterpret_cast<byte *>(comp.data()), &v.val);
+            blst_p1_compress(reinterpret_cast<byte *>(comp.data()), &v.get());
             return fmt::format_to(ctx.out(), "0x{}", comp);
         }
     };
@@ -1346,7 +1605,7 @@ namespace fmt {
         template<typename FormatContext>
         auto format(const turbo::plutus::bls12_381_g2_element &v, FormatContext &ctx) const -> decltype(ctx.out()) {
             turbo::byte_array<96> comp {};
-            blst_p2_compress(reinterpret_cast<byte *>(comp.data()), &v.val);
+            blst_p2_compress(reinterpret_cast<byte *>(comp.data()), &v.get());
             return fmt::format_to(ctx.out(), "0x{}", comp);
         }
     };
@@ -1372,32 +1631,69 @@ namespace fmt {
         }
     };
 
+    template<bool nested, typename OutputIt>
+    OutputIt format_constant_value_to(OutputIt out, const turbo::plutus::constant::value_type &vv)
+    {
+        using namespace turbo;
+        using namespace turbo::plutus;
+        return std::visit([&out](const auto &v) {
+            using T = std::decay_t<decltype(v)>;
+            if constexpr (std::is_same_v<T, std::monostate>) {
+                return fmt::format_to(out, "()");
+            } else if constexpr (std::is_same_v<T, bool>) {
+                return fmt::format_to(out, "{}", v ? "True" : "False");
+            } else if constexpr (std::is_same_v<T, bstr_type>) {
+                return fmt::format_to(out, "#{}", buffer_lowercase { static_cast<buffer>(*v) });
+            } else if constexpr (std::is_same_v<T, plutus::data>) {
+                if constexpr (nested)
+                    return fmt::format_to(out, "{}", v);
+                else
+                    return fmt::format_to(out, "({})", v);
+            } else if constexpr (std::is_same_v<T, str_type>) {
+                return fmt::format_to(out, "\"{}\"", escape_utf8_string(*v));
+            } else if constexpr (std::is_same_v<T, constant_pair>) {
+                auto next = fmt::format_to(out, "(");
+                next = format_constant_value_to<true>(next, *v->first);
+                next = fmt::format_to(next, ", ");
+                next = format_constant_value_to<true>(next, *v->second);
+                return fmt::format_to(next, ")");
+            } else if constexpr (std::is_same_v<T, constant_list> || std::is_same_v<T, constant_array>) {
+                auto next = fmt::format_to(out, "[");
+                for (auto it = v->vals.begin(); it != v->vals.end(); ++it) {
+                    next = format_constant_value_to<true>(next, **it);
+                    if (std::next(it) != v->vals.end())
+                        next = fmt::format_to(next, ", ");
+                }
+                return fmt::format_to(next, "]");
+            } else if constexpr (std::is_same_v<T, asset_value>) {
+                auto next = fmt::format_to(out, "[");
+                for (auto currency_it = v->begin(); currency_it != v->end(); ++currency_it) {
+                    next = fmt::format_to(next, "(#{}", buffer_lowercase {
+                        buffer { currency_it->first.data(), currency_it->first.size() } });
+                    next = fmt::format_to(next, ", [");
+                    for (auto token_it = currency_it->second.begin(); token_it != currency_it->second.end(); ++token_it) {
+                        next = fmt::format_to(next, "(#{}", buffer_lowercase {
+                            buffer { token_it->first.data(), token_it->first.size() } });
+                        next = fmt::format_to(next, ", {})", token_it->second);
+                        if (std::next(token_it) != currency_it->second.end())
+                            next = fmt::format_to(next, ", ");
+                    }
+                    next = fmt::format_to(next, "])");
+                    if (std::next(currency_it) != v->end())
+                        next = fmt::format_to(next, ", ");
+                }
+                return fmt::format_to(next, "]");
+            } else {
+                return fmt::format_to(out, "{}", v);
+            }
+        }, vv);
+    }
+
     template<>
     struct formatter<turbo::plutus::constant::value_type>: formatter<int> {
         template<typename FormatContext>
         auto format(const auto &vv, FormatContext &ctx) const -> decltype(ctx.out()) {
-            using namespace turbo;
-            using namespace turbo::plutus;
-            return std::visit([&ctx](const auto &v) {
-                using T = std::decay_t<decltype(v)>;
-                if constexpr (std::is_same_v<T, std::monostate>) {
-                    return fmt::format_to(ctx.out(), "()");
-                } else if constexpr (std::is_same_v<T, bool>) {
-                    return fmt::format_to(ctx.out(), "{}", v ? "True" : "False");
-                } else if constexpr (std::is_same_v<T, bstr_type>) {
-                    return fmt::format_to(ctx.out(), "#{}", buffer_lowercase { static_cast<buffer>(*v) });
-                } else if constexpr (std::is_same_v<T, plutus::data>) {
-                    return fmt::format_to(ctx.out(), "({})", v);
-                } else if constexpr (std::is_same_v<T, str_type>) {
-                    return fmt::format_to(ctx.out(), "\"{}\"", escape_utf8_string(*v));
-                } else if constexpr (std::is_same_v<T, constant_pair>) {
-                    return fmt::format_to(ctx.out(), "({}, {})", *v->first, *v->second);
-                } else if constexpr (std::is_same_v<T, constant_list>) {
-                    return fmt::format_to(ctx.out(), "{}", constant_list_values_only { v->vals });
-                } else {
-                    return fmt::format_to(ctx.out(), "{}", v);
-                }
-            }, vv);
+            return format_constant_value_to<false>(ctx.out(), vv);
         }
     };
 
@@ -1408,7 +1704,8 @@ namespace fmt {
             auto out_it = fmt::format_to(ctx.out(), "[");
             for (auto it = v.vals.begin(); it != v.vals.end(); ++it) {
                 const std::string_view sep { std::next(it) == v.vals.end() ? "" : ", " };
-                out_it = fmt::format_to(out_it, "{}{}", **it, sep);
+                out_it = format_constant_value_to<true>(out_it, **it);
+                out_it = fmt::format_to(out_it, "{}", sep);
             }
             return fmt::format_to(out_it, "]");
         }
@@ -1421,9 +1718,9 @@ namespace fmt {
             using namespace turbo::plutus;
             if (v->nested.empty())
                 return fmt::format_to(ctx.out(), "{}", v->typ);
-            if (v->typ == type_tag::list) {
+            if (v->typ == type_tag::list || v->typ == type_tag::array) {
                 if (v->nested.size() != 1) [[unlikely]]
-                    throw error(fmt::format("the nested type list for a list must have just one element but has {}", v->nested.size()));
+                    throw error(fmt::format("the nested type list for a sequence must have just one element but has {}", v->nested.size()));
                 return fmt::format_to(ctx.out(), "({} {})", v->typ, v->nested.front());
             }
             if (v->typ == type_tag::pair) {
@@ -1563,6 +1860,18 @@ namespace fmt {
         template<typename FormatContext>
         auto format(const turbo::plutus::value_list &v, FormatContext &ctx) const -> decltype(ctx.out()) {
             return fmt::format_to(ctx.out(), "{}", *v);
+        }
+    };
+
+    template<>
+    struct formatter<turbo::plutus::builtin_args>: formatter<int> {
+        template<typename FormatContext>
+        auto format(const turbo::plutus::builtin_args &v, FormatContext &ctx) const -> decltype(ctx.out()) {
+            auto out_it = fmt::format_to(ctx.out(), "[");
+            const auto args = v.values();
+            for (size_t i = 0; i < args.size(); ++i)
+                out_it = fmt::format_to(out_it, "{}{}", args[i], i + 1 < args.size() ? ", " : "");
+            return fmt::format_to(out_it, "]");
         }
     };
 

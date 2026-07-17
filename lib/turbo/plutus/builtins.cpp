@@ -278,6 +278,7 @@ namespace turbo::plutus::builtins {
         if (const auto cx_typ = constant_type::from_val(alloc, cx); cx_typ != cl->typ) [[unlikely]]
             throw error(fmt::format("mkCons requires both arguments to be of the same type but got {} and {}", cx_typ, cl->typ));
         constant_list::list_type vals { alloc };
+        vals.reserve(cl->vals.size() + 1);
         vals.emplace_back(cx);
         std::copy(cl->vals.begin(), cl->vals.end(), std::back_inserter(vals));
         return value::make_list(alloc, constant_type::from_val(alloc, cx), std::move(vals));
@@ -297,6 +298,7 @@ namespace turbo::plutus::builtins {
         if (cl->vals.empty()) [[unlikely]]
             throw error("calling tail_list on an empty list!");
         constant_list::list_type vals { alloc };
+        vals.reserve(cl->vals.size() - 1);
         std::copy(std::next(cl->vals.begin(), 1), cl->vals.end(), std::back_inserter(vals));
         return value::make_list(alloc, constant_type { cl->typ }, std::move(vals));
     }
@@ -335,7 +337,9 @@ namespace turbo::plutus::builtins {
     value constr_data(allocator &alloc, const value &c, const value &l)
     {
         data::list_type dl { alloc };
-        for (const auto &d: l.as_list()->vals)
+        const auto &vals = l.as_list()->vals;
+        dl.reserve(vals.size());
+        for (const auto &d: vals)
             dl.emplace_back(d.as_data());
         return { alloc, data::constr(alloc, c.as_int(), std::move(dl)) };
     }
@@ -343,7 +347,9 @@ namespace turbo::plutus::builtins {
     value map_data(allocator &alloc, const value &m)
     {
         data::map_type dm { alloc };
-        for (const auto &c: m.as_list()->vals) {
+        const auto &vals = m.as_list()->vals;
+        dm.reserve(vals.size());
+        for (const auto &c: vals) {
             const auto &p = c.as_pair();
             dm.emplace_back(data_pair { alloc, data { p.first.as_data() }, data { p.second.as_data() } });
         }
@@ -353,7 +359,9 @@ namespace turbo::plutus::builtins {
     value list_data(allocator &alloc, const value &l)
     {
         data::list_type dl { alloc };
-        for (const auto &d: l.as_list()->vals)
+        const auto &vals = l.as_list()->vals;
+        dl.reserve(vals.size());
+        for (const auto &d: vals)
             dl.emplace_back(d.as_data());
         return { alloc, data::list(alloc, std::move(dl)) };
     }
@@ -373,6 +381,7 @@ namespace turbo::plutus::builtins {
         if (const auto &d = t.as_data(); std::holds_alternative<data_constr>(*d)) {
             const auto &c = std::get<data_constr>(*d);
             constant_list::list_type cl { alloc };
+            cl.reserve(c->second.size());
             for (const auto &d: c->second)
                 cl.emplace_back(alloc, d);
             return { alloc, constant { alloc, constant_pair { alloc, constant { alloc, bint_type { c->first } },
@@ -386,6 +395,7 @@ namespace turbo::plutus::builtins {
         if (const auto &d = t.as_data(); std::holds_alternative<data::map_type>(*d)) {
             const auto &m = std::get<data::map_type>(*d);
             constant_list::list_type cl { alloc };
+            cl.reserve(m.size());
             constant_type typ { alloc, type_tag::pair, { constant_type { alloc, type_tag::data }, constant_type { alloc, type_tag::data } } };
             for (const auto &p: m)
                 cl.emplace_back(alloc, constant_pair { alloc, constant { alloc, p->first }, constant { alloc, p->second } });
@@ -398,6 +408,7 @@ namespace turbo::plutus::builtins {
         if (const auto &d = t.as_data(); std::holds_alternative<data::list_type>(*d)) {
             const auto &l = std::get<data::list_type>(*d);
             constant_list::list_type cl { alloc };
+            cl.reserve(l.size());
             for (const auto &d: l)
                 cl.emplace_back(alloc, d);
             return value::make_list(alloc, constant_type { alloc, type_tag::data }, std::move(cl));
@@ -436,6 +447,7 @@ namespace turbo::plutus::builtins {
     value mk_nil_pair_data(allocator &alloc, const value &)
     {
         constant_type::list_type nested { alloc };
+        nested.reserve(2);
         nested.emplace_back(alloc, type_tag::data);
         nested.emplace_back(alloc, type_tag::data);
         return value::make_list(alloc, constant_type { alloc, type_tag::pair, std::move(nested) });
@@ -502,21 +514,21 @@ namespace turbo::plutus::builtins {
     value bls12_381_g1_add(allocator &alloc, const value &a, const value &b)
     {
         blst_p1 out;
-        blst_p1_add(&out, &a.as_bls_g1().val, &b.as_bls_g1().val);
+        blst_p1_add(&out, &a.as_bls_g1().get(), &b.as_bls_g1().get());
         return { alloc, out };
     }
 
     value bls12_381_g1_neg(allocator &alloc, const value &a)
     {
-        blst_p1 out { a.as_bls_g1().val };
+        blst_p1 out { a.as_bls_g1().get() };
         blst_p1_cneg(&out, true);
         return { alloc, out };
     }
 
-    static blst_scalar bls12_381_make_scalar(const value &k_t)
+    static blst_scalar bls12_381_make_scalar(const bint_type &k_t)
     {
         static const cpp_int scalar_period { "0x73eda753299d7d483339d80809a1d80553bda402fffe5bfeffffffff00000001" };
-        cpp_int k { *k_t.as_int() % scalar_period };
+        cpp_int k { *k_t % scalar_period };
         if (k < 0)
             k += scalar_period;
         uint8_vector k_bytes {};
@@ -530,17 +542,22 @@ namespace turbo::plutus::builtins {
         return k_s;
     }
 
+    static blst_scalar bls12_381_make_scalar(const value &k_t)
+    {
+        return bls12_381_make_scalar(k_t.as_int());
+    }
+
     value bls12_381_g1_scalar_mul(allocator &alloc, const value &k_t, const value &v_t)
     {
         blst_p1 out;
         const auto k_s = bls12_381_make_scalar(k_t);
-        blst_p1_mult(&out, &v_t.as_bls_g1().val, reinterpret_cast<const ::byte *>(&k_s), sizeof(k_s) * 8);
+        blst_p1_mult(&out, &v_t.as_bls_g1().get(), reinterpret_cast<const ::byte *>(&k_s), sizeof(k_s) * 8);
         return { alloc, out };
     }
 
     value bls12_381_g1_equal(allocator &alloc, const value &a, const value &b)
     {
-        return value::boolean(alloc, blst_p1_is_equal(&a.as_bls_g1().val, &b.as_bls_g1().val));
+        return value::boolean(alloc, blst_p1_is_equal(&a.as_bls_g1().get(), &b.as_bls_g1().get()));
     }
 
     value bls12_381_g1_hash_to_group(allocator &alloc, const value &msg_t, const value &dst_t)
@@ -561,19 +578,19 @@ namespace turbo::plutus::builtins {
 
     value bls12_381_g1_uncompress(allocator &alloc, const value &v)
     {
-        return { alloc, bls_g1_decompress(*v.as_bstr()).val };
+        return { alloc, bls_g1_decompress(*v.as_bstr()) };
     }
 
     value bls12_381_g2_add(allocator &alloc, const value &a, const value &b)
     {
         blst_p2 out;
-        blst_p2_add(&out, &a.as_bls_g2().val, &b.as_bls_g2().val);
+        blst_p2_add(&out, &a.as_bls_g2().get(), &b.as_bls_g2().get());
         return { alloc, out };
     }
 
     value bls12_381_g2_neg(allocator &alloc, const value &a)
     {
-        blst_p2 out { a.as_bls_g2().val };
+        blst_p2 out { a.as_bls_g2().get() };
         blst_p2_cneg(&out, true);
         return { alloc, out };
     }
@@ -582,13 +599,13 @@ namespace turbo::plutus::builtins {
     {
         blst_p2 out;
         const auto k_s = bls12_381_make_scalar(k_t);
-        blst_p2_mult(&out, &v_t.as_bls_g2().val, reinterpret_cast<const ::byte *>(&k_s), sizeof(k_s) * 8);
+        blst_p2_mult(&out, &v_t.as_bls_g2().get(), reinterpret_cast<const ::byte *>(&k_s), sizeof(k_s) * 8);
         return { alloc, out };
     }
 
     value bls12_381_g2_equal(allocator &alloc, const value &a, const value &b)
     {
-        return value::boolean(alloc, blst_p2_is_equal(&a.as_bls_g2().val, &b.as_bls_g2().val));
+        return value::boolean(alloc, blst_p2_is_equal(&a.as_bls_g2().get(), &b.as_bls_g2().get()));
     }
 
     value bls12_381_g2_hash_to_group(allocator &alloc, const value &msg_t, const value &dst_t)
@@ -609,15 +626,15 @@ namespace turbo::plutus::builtins {
 
     value bls12_381_g2_uncompress(allocator &alloc, const value &v)
     {
-        return { alloc, bls_g2_decompress(*v.as_bstr()).val };
+        return { alloc, bls_g2_decompress(*v.as_bstr()) };
     }
 
     value bls12_381_miller_loop(allocator &alloc, const value &g1, const value &g2)
     {
         blst_p1_affine g1_a {};
-        blst_p1_to_affine(&g1_a, &g1.as_bls_g1().val);
+        blst_p1_to_affine(&g1_a, &g1.as_bls_g1().get());
         blst_p2_affine g2_a {};
-        blst_p2_to_affine(&g2_a, &g2.as_bls_g2().val);
+        blst_p2_to_affine(&g2_a, &g2.as_bls_g2().get());
         blst_fp12 out;
         blst_miller_loop(&out, &g2_a, &g1_a);
         return { alloc, out };
@@ -626,13 +643,13 @@ namespace turbo::plutus::builtins {
     value bls12_381_mul_ml_result(allocator &alloc, const value &a, const value &b)
     {
         blst_fp12 out;
-        blst_fp12_mul(&out, &a.as_bls_ml_res().val,  &b.as_bls_ml_res().val);
+        blst_fp12_mul(&out, &a.as_bls_ml_res().get(), &b.as_bls_ml_res().get());
         return { alloc, out };
     }
 
     value bls12_381_final_verify(allocator &alloc, const value &a, const value &b)
     {
-        return value::boolean(alloc, blst_fp12_finalverify(&a.as_bls_ml_res().val, &b.as_bls_ml_res().val));
+        return value::boolean(alloc, blst_fp12_finalverify(&a.as_bls_ml_res().get(), &b.as_bls_ml_res().get()));
     }
 
     value and_byte_string(allocator &alloc, const value &extend_v, const value &a_v, const value &b_v)
@@ -891,18 +908,28 @@ namespace turbo::plutus::builtins {
         return { alloc, std::move(res) };
     }
 
-    static cpp_int gcd_extended(const cpp_int &a, const cpp_int &b, cpp_int &x, cpp_int &y)
+    static cpp_int modular_inverse(cpp_int a, const cpp_int &modulus)
     {
-        if (a == 0) {
-            x = 0;
-            y = 1;
-            return b;
+        a %= modulus;
+        if (a < 0)
+            a += modulus;
+        cpp_int old_r = modulus;
+        cpp_int r = a;
+        cpp_int old_t = 0;
+        cpp_int t = 1;
+        while (r != 0) {
+            const cpp_int quotient = old_r / r;
+            cpp_int next_r = old_r - quotient * r;
+            old_r = std::move(r);
+            r = std::move(next_r);
+            cpp_int next_t = old_t - quotient * t;
+            old_t = std::move(t);
+            t = std::move(next_t);
         }
-        cpp_int x1, y1;
-        const auto gcd = gcd_extended(b % a, a, x1, y1);
-        x = y1 - (b / a) * x1;
-        y = x1;
-        return gcd;
+        if (old_r != 1) [[unlikely]]
+            throw error("the base is not invertible for expModInteger");
+        old_t %= modulus;
+        return old_t < 0 ? old_t + modulus : old_t;
     }
 
     value exp_mod_integer(allocator &alloc, const value &a_v, const value &e_v, const value &m_v)
@@ -910,21 +937,266 @@ namespace turbo::plutus::builtins {
         const auto &a = a_v.as_int();
         const auto &e = e_v.as_int();
         const auto &m = m_v.as_int();
-        if (*m <= 0) [[unlikely]]
-            throw error(fmt::format("the modulo cannot be 0 or negative but got: {}!", *m));
-        if (*e >= std::numeric_limits<int64_t>::max()) [[unlikely]]
-            throw error(fmt::format("the exponent is too big: {}!", *e));
-        if (*e < std::numeric_limits<int64_t>::min()) [[unlikely]]
-            throw error(fmt::format("the exponent is too small: {}!", *e));
-        if (*e < 0) {
-            cpp_int x, y;
-            const cpp_int base = boost::multiprecision::pow(*a, -static_cast<int64_t>(*e));
-            if (const auto gcd = gcd_extended(base, *m, x, y); gcd != 1) [[unlikely]]
-                throw error(fmt::format("expect gcd of a and m of 1 for a: {} and m: {}!", *a, *m));
-            return { alloc, (x % *m + *m) % *m };
+        static const cpp_int min_integer = -(cpp_int { 1 } << 8191);
+        static const cpp_int max_integer = (cpp_int { 1 } << 8191) - 1;
+        if (*m <= 0 || *m > max_integer) [[unlikely]]
+            throw error(fmt::format("invalid modulus for expModInteger: {}", m));
+        if (*m == 1)
+            return { alloc, 0 };
+        if (*a == 0 && *e < 0) [[unlikely]]
+            throw error("zero is not invertible for expModInteger");
+        if (*a < min_integer || *a > max_integer || *e < min_integer || *e > max_integer) [[unlikely]]
+            throw error("an expModInteger argument is out of bounds");
+
+        cpp_int base = *a % *m;
+        if (base < 0)
+            base += *m;
+        cpp_int exponent = *e;
+        if (exponent < 0) {
+            base = modular_inverse(std::move(base), *m);
+            exponent = -exponent;
         }
-        const cpp_int res = boost::multiprecision::pow(*a, static_cast<int64_t>(*e));
-        return { alloc, res % *m };
+        return { alloc, boost::multiprecision::powm(base, exponent, *m) };
+    }
+
+    value drop_list(allocator &alloc, const value &count_v, const value &list_v)
+    {
+        const auto &src = list_v.as_list();
+        const auto &count = *count_v.as_int();
+        if (count <= 0)
+            return list_v;
+        constant_list::list_type vals { alloc };
+        if (count < src->vals.size()) {
+            const auto offset = count.convert_to<size_t>();
+            vals.reserve(src->vals.size() - offset);
+            std::copy(std::next(src->vals.begin(), offset), src->vals.end(), std::back_inserter(vals));
+        }
+        return value::make_list(alloc, constant_type { src->typ }, std::move(vals));
+    }
+
+    value length_of_array(allocator &alloc, const value &array_v)
+    {
+        return { alloc, numeric_cast<int64_t>(array_v.as_array()->vals.size()) };
+    }
+
+    value list_to_array(allocator &alloc, const value &list_v)
+    {
+        const auto &src = list_v.as_list();
+        constant_list::list_type vals { alloc };
+        vals.reserve(src->vals.size());
+        std::copy(src->vals.begin(), src->vals.end(), std::back_inserter(vals));
+        return { alloc, constant { alloc, constant_array {
+            alloc, constant_type { src->typ }, std::move(vals)
+        } } };
+    }
+
+    value index_array(allocator &alloc, const value &array_v, const value &index_v)
+    {
+        const auto &src = array_v.as_array();
+        const auto &index = *index_v.as_int();
+        if (index < 0 || index >= src->vals.size()) [[unlikely]]
+            throw error(fmt::format("array index {} is out of bounds for an array of size {}",
+                index_v.as_int(), src->vals.size()));
+        return { alloc, src->vals.at(index.convert_to<size_t>()) };
+    }
+
+    template<typename Point, typename Generator, typename Multiply, typename Add, typename Extract>
+    static Point bls12_381_multi_scalar_mul(const constant_list &scalars, const constant_list &points,
+            Generator generator, Multiply multiply, Add add, Extract extract)
+    {
+        static const cpp_int lower = -(cpp_int { 1 } << 4095);
+        static const cpp_int upper = (cpp_int { 1 } << 4095) - 1;
+        for (const auto &scalar: scalars->vals) {
+            const auto &i = *scalar.as_int();
+            if (i < lower || i > upper) [[unlikely]]
+                throw error("a multiScalarMul scalar exceeds the 512-byte bound");
+        }
+
+        const blst_scalar zero {};
+        Point result {};
+        multiply(&result, generator(), reinterpret_cast<const ::byte *>(&zero), sizeof(zero) * 8);
+        auto scalar_it = scalars->vals.begin();
+        auto point_it = points->vals.begin();
+        for (; scalar_it != scalars->vals.end() && point_it != points->vals.end(); ++scalar_it, ++point_it) {
+            const auto scalar = bls12_381_make_scalar(scalar_it->as_int());
+            Point term {};
+            multiply(&term, &extract(*point_it), reinterpret_cast<const ::byte *>(&scalar), sizeof(scalar) * 8);
+            Point sum {};
+            add(&sum, &result, &term);
+            result = sum;
+        }
+        return result;
+    }
+
+    value bls12_381_g1_multi_scalar_mul(allocator &alloc, const value &scalars_v, const value &points_v)
+    {
+        const auto point = bls12_381_multi_scalar_mul<blst_p1>(scalars_v.as_list(), points_v.as_list(),
+            blst_p1_generator, blst_p1_mult, blst_p1_add,
+            [](const constant &c) -> const blst_p1 & { return std::get<bls12_381_g1_element>(*c).get(); });
+        return { alloc, point };
+    }
+
+    value bls12_381_g2_multi_scalar_mul(allocator &alloc, const value &scalars_v, const value &points_v)
+    {
+        const auto point = bls12_381_multi_scalar_mul<blst_p2>(scalars_v.as_list(), points_v.as_list(),
+            blst_p2_generator, blst_p2_mult, blst_p2_add,
+            [](const constant &c) -> const blst_p2 & { return std::get<bls12_381_g2_element>(*c).get(); });
+        return { alloc, point };
+    }
+
+    static const cpp_int value_min_quantity = -(cpp_int { 1 } << 127);
+    static const cpp_int value_max_quantity = (cpp_int { 1 } << 127) - 1;
+
+    static asset_value::key_type value_key(const bstr_type &key)
+    {
+        return { key->begin(), key->end() };
+    }
+
+    static void check_value_quantity(const cpp_int &quantity)
+    {
+        if (quantity < value_min_quantity || quantity > value_max_quantity)
+            throw error("Value quantity is outside the signed 128-bit range");
+    }
+
+    static value make_asset_value(allocator &alloc, asset_value::map_type &&map)
+    {
+        return { alloc, constant { alloc, asset_value { alloc, std::move(map) } } };
+    }
+
+    value insert_coin(allocator &alloc, const value &currency_v, const value &token_v,
+            const value &quantity_v, const value &value_v)
+    {
+        auto map = *value_v.as_asset_value();
+        const auto currency = value_key(currency_v.as_bstr());
+        const auto token = value_key(token_v.as_bstr());
+        const auto &quantity = *quantity_v.as_int();
+        if (quantity == 0) {
+            if (auto currency_it = map.find(currency); currency_it != map.end()) {
+                currency_it->second.erase(token);
+                if (currency_it->second.empty())
+                    map.erase(currency_it);
+            }
+            return make_asset_value(alloc, std::move(map));
+        }
+        if (currency.size() > asset_value::max_key_size || token.size() > asset_value::max_key_size)
+            throw error("insertCoin key exceeds 32 bytes");
+        check_value_quantity(quantity);
+        map[currency][token] = quantity;
+        return make_asset_value(alloc, std::move(map));
+    }
+
+    value lookup_coin(allocator &alloc, const value &currency_v, const value &token_v, const value &value_v)
+    {
+        const auto &map = *value_v.as_asset_value();
+        const auto currency = value_key(currency_v.as_bstr());
+        const auto token = value_key(token_v.as_bstr());
+        if (const auto currency_it = map.find(currency); currency_it != map.end()) {
+            if (const auto token_it = currency_it->second.find(token); token_it != currency_it->second.end())
+                return { alloc, token_it->second };
+        }
+        return { alloc, 0 };
+    }
+
+    value union_value(allocator &alloc, const value &a_v, const value &b_v)
+    {
+        auto map = *a_v.as_asset_value();
+        for (const auto &[currency, tokens]: *b_v.as_asset_value()) {
+            auto &dst = map[currency];
+            for (const auto &[token, quantity]: tokens) {
+                auto &sum = dst[token];
+                sum += quantity;
+                check_value_quantity(sum);
+                if (sum == 0)
+                    dst.erase(token);
+            }
+            if (dst.empty())
+                map.erase(currency);
+        }
+        return make_asset_value(alloc, std::move(map));
+    }
+
+    value value_contains(allocator &alloc, const value &container_v, const value &contained_v)
+    {
+        const auto &container = container_v.as_asset_value();
+        const auto &contained = contained_v.as_asset_value();
+        if (container.negative_amounts() || contained.negative_amounts())
+            throw error("valueContains does not accept negative quantities");
+        if (container.total_size() < contained.total_size())
+            return value::boolean(alloc, false);
+        for (const auto &[currency, tokens]: *contained) {
+            const auto currency_it = container->find(currency);
+            if (currency_it == container->end())
+                return value::boolean(alloc, false);
+            for (const auto &[token, quantity]: tokens) {
+                const auto token_it = currency_it->second.find(token);
+                if (token_it == currency_it->second.end() || token_it->second < quantity)
+                    return value::boolean(alloc, false);
+            }
+        }
+        return value::boolean(alloc, true);
+    }
+
+    value value_data(allocator &alloc, const value &value_v)
+    {
+        const auto &v = value_v.as_asset_value();
+        if (v.total_size() > asset_value::max_data_size)
+            throw error("valueData input exceeds 40000 entries");
+        data::map_type currencies { alloc };
+        currencies.reserve(v->size());
+        for (const auto &[currency, tokens]: *v) {
+            data::map_type token_data { alloc };
+            token_data.reserve(tokens.size());
+            for (const auto &[token, quantity]: tokens) {
+                token_data.emplace_back(alloc,
+                    data::bstr(alloc, buffer { token.data(), token.size() }), data::bint(alloc, quantity));
+            }
+            currencies.emplace_back(alloc,
+                data::bstr(alloc, buffer { currency.data(), currency.size() }), data::map(alloc, std::move(token_data)));
+        }
+        return { alloc, data::map(alloc, std::move(currencies)) };
+    }
+
+    value un_value_data(allocator &alloc, const value &data_v)
+    {
+        asset_value::input_type entries {};
+        const auto &outer_data = data_v.as_data();
+        if (!std::holds_alternative<data::map_type>(*outer_data))
+            throw error("unValueData expects a map");
+        for (const auto &currency_pair: std::get<data::map_type>(*outer_data)) {
+            if (!std::holds_alternative<data::bstr_type>(*currency_pair->first)
+                    || !std::holds_alternative<data::map_type>(*currency_pair->second))
+                throw error("unValueData has an invalid currency entry");
+            const auto &currency_raw = std::get<data::bstr_type>(*currency_pair->first);
+            asset_value::key_type currency { currency_raw->begin(), currency_raw->end() };
+            asset_value::input_inner_type tokens {};
+            for (const auto &token_pair: std::get<data::map_type>(*currency_pair->second)) {
+                if (!std::holds_alternative<data::bstr_type>(*token_pair->first)
+                        || !std::holds_alternative<data::int_type>(*token_pair->second))
+                    throw error("unValueData has an invalid token entry");
+                const auto &token_raw = std::get<data::bstr_type>(*token_pair->first);
+                const auto &quantity = std::get<data::int_type>(*token_pair->second);
+                tokens.emplace_back(asset_value::key_type { token_raw->begin(), token_raw->end() }, *quantity);
+            }
+            entries.emplace_back(std::move(currency), std::move(tokens));
+        }
+        return { alloc, constant { alloc, asset_value::from_list(alloc, std::move(entries)) } };
+    }
+
+    value scale_value(allocator &alloc, const value &factor_v, const value &value_v)
+    {
+        const auto &factor = *factor_v.as_int();
+        if (factor == 0)
+            return make_asset_value(alloc, asset_value::map_type {});
+        auto map = *value_v.as_asset_value();
+        for (auto &[currency, tokens]: map) {
+            static_cast<void>(currency);
+            for (auto &[token, quantity]: tokens) {
+                static_cast<void>(token);
+                quantity *= factor;
+                check_value_quantity(quantity);
+            }
+        }
+        return make_asset_value(alloc, std::move(map));
     }
 
     static void init_builtin_map(builtin_map &m)
@@ -1017,6 +1289,19 @@ namespace turbo::plutus::builtins {
         m.try_emplace(builtin_tag::replicate_byte, 2, replicate_byte, "replicateByte", 0, 5);
         m.try_emplace(builtin_tag::ripemd_160, 1, ripemd_160, "ripemd_160", 0, 5);
         m.try_emplace(builtin_tag::exp_mod_integer, 3, exp_mod_integer, "expModInteger", 0, 6);
+        m.try_emplace(builtin_tag::drop_list, 2, drop_list, "dropList", 1, 6);
+        m.try_emplace(builtin_tag::length_of_array, 1, length_of_array, "lengthOfArray", 1, 6);
+        m.try_emplace(builtin_tag::list_to_array, 1, list_to_array, "listToArray", 1, 6);
+        m.try_emplace(builtin_tag::index_array, 2, index_array, "indexArray", 1, 6);
+        m.try_emplace(builtin_tag::bls12_381_g1_multi_scalar_mul, 2, bls12_381_g1_multi_scalar_mul, "bls12_381_G1_multiScalarMul", 0, 6);
+        m.try_emplace(builtin_tag::bls12_381_g2_multi_scalar_mul, 2, bls12_381_g2_multi_scalar_mul, "bls12_381_G2_multiScalarMul", 0, 6);
+        m.try_emplace(builtin_tag::insert_coin, 4, insert_coin, "insertCoin", 0, 6);
+        m.try_emplace(builtin_tag::lookup_coin, 3, lookup_coin, "lookupCoin", 0, 6);
+        m.try_emplace(builtin_tag::union_value, 2, union_value, "unionValue", 0, 6);
+        m.try_emplace(builtin_tag::value_contains, 2, value_contains, "valueContains", 0, 6);
+        m.try_emplace(builtin_tag::value_data, 1, value_data, "valueData", 0, 6);
+        m.try_emplace(builtin_tag::un_value_data, 1, un_value_data, "unValueData", 0, 6);
+        m.try_emplace(builtin_tag::scale_value, 2, scale_value, "scaleValue", 0, 6);
     }
 
     static builtin_map make_semantics_v1()

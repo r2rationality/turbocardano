@@ -28,7 +28,7 @@ namespace turbo::plutus {
                 uint64_t protocol_major=builtin_case_protocol_major);
         machine(allocator &alloc, const costs::parsed_model &model, cardano::script_type typ,
                 const optional_budget &budget={}, uint64_t protocol_major=builtin_case_protocol_major);
-        machine(allocator &alloc, const costs::parsed_model &model=costs::defaults().v3.value(),
+        machine(allocator &alloc, const costs::parsed_model &model=costs::defaults().for_script(cardano::script_type::plutus_v3, builtin_semantics::c),
                 const builtin_map &semantics=builtins::semantics_v2(), const optional_budget &budget={},
                 uint64_t protocol_major=builtin_case_protocol_major,
                 builtin_semantics semantics_variant=builtin_semantics::c);

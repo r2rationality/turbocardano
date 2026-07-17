@@ -52,6 +52,10 @@ namespace turbo::plutus {
                     if (!std::holds_alternative<builtin_three_arg>(it->second.func))
                         throw error("internal error: invalid plutus builtin configuration!");
                     break;
+                case 4:
+                    if (!std::holds_alternative<builtin_four_arg>(it->second.func))
+                        throw error("internal error: invalid plutus builtin configuration!");
+                    break;
                 case 6:
                     if (!std::holds_alternative<builtin_six_arg>(it->second.func))
                         throw error("internal error: invalid plutus builtin configuration!");
@@ -128,6 +132,76 @@ namespace turbo::plutus {
         return *_ptr;
     }
 
+    asset_value::storage::storage(map_type &&v): map { std::move(v) }
+    {
+        for (const auto &[currency, tokens]: map) {
+            static_cast<void>(currency);
+            total_size += tokens.size();
+            max_inner_size = std::max(max_inner_size, tokens.size());
+            for (const auto &[token, quantity]: tokens) {
+                static_cast<void>(token);
+                negative_amounts += quantity < 0;
+            }
+        }
+    }
+
+    asset_value::asset_value(allocator &alloc, map_type &&v):
+        _ptr { alloc.make_foreign<storage>(std::move(v)) }
+    {
+    }
+
+    asset_value asset_value::from_list(allocator &alloc, input_type &&entries)
+    {
+        static const cpp_int min_quantity = -(cpp_int { 1 } << 127);
+        static const cpp_int max_quantity = (cpp_int { 1 } << 127) - 1;
+        map_type res {};
+        const key_type *prev_currency = nullptr;
+        for (auto &[currency, tokens]: entries) {
+            if (currency.size() > max_key_size)
+                throw error("Value currency key exceeds 32 bytes");
+            if (prev_currency && !(*prev_currency < currency))
+                throw error("Value currency keys are not strictly ascending");
+            if (tokens.empty())
+                throw error("Value contains an empty token map");
+            inner_type inner {};
+            const key_type *prev_token = nullptr;
+            for (auto &[token, quantity]: tokens) {
+                if (token.size() > max_key_size)
+                    throw error("Value token key exceeds 32 bytes");
+                if (prev_token && !(*prev_token < token))
+                    throw error("Value token keys are not strictly ascending");
+                if (quantity < min_quantity || quantity > max_quantity)
+                    throw error("Value quantity is outside the signed 128-bit range");
+                if (quantity == 0)
+                    throw error("Value contains a zero quantity");
+                auto [it, created] = inner.emplace(token, std::move(quantity));
+                if (!created)
+                    throw error("Value contains a duplicate token key");
+                prev_token = &it->first;
+            }
+            auto [it, created] = res.emplace(currency, std::move(inner));
+            if (!created)
+                throw error("Value contains a duplicate currency key");
+            prev_currency = &it->first;
+        }
+        return { alloc, std::move(res) };
+    }
+
+    size_t asset_value::total_size() const
+    {
+        return _ptr->total_size;
+    }
+
+    size_t asset_value::max_inner_size() const
+    {
+        return _ptr->max_inner_size;
+    }
+
+    size_t asset_value::negative_amounts() const
+    {
+        return _ptr->negative_amounts;
+    }
+
     template<typename T>
     T &require_front(list_type<T> &l)
     {
@@ -195,6 +269,10 @@ namespace turbo::plutus {
                 return constant_type { alloc, type_tag::bls12_381_ml_result };
             } else if constexpr (std::is_same_v<T, constant_list>) {
                 return constant_type { alloc, type_tag::list, { alloc, { v->typ } } };
+            } else if constexpr (std::is_same_v<T, constant_array>) {
+                return constant_type { alloc, type_tag::array, { alloc, { v->typ } } };
+            } else if constexpr (std::is_same_v<T, asset_value>) {
+                return constant_type { alloc, type_tag::value };
             } else if constexpr (std::is_same_v<T, constant_pair>) {
                 return constant_type { alloc, type_tag::pair, { alloc, { from_val(alloc, v->first), from_val(alloc, v->second) } } };
             } else {
@@ -576,15 +654,15 @@ namespace turbo::plutus {
     {
     }
 
-    value::value(allocator &alloc, const blst_p1 &b): value { alloc, value_type { constant { alloc, bls12_381_g1_element { b } } } }
+    value::value(allocator &alloc, const blst_p1 &b): value { alloc, value_type { constant { alloc, bls12_381_g1_element { alloc, b } } } }
     {
     }
 
-    value::value(allocator &alloc, const blst_p2 &b): value { alloc, value_type { constant { alloc, bls12_381_g2_element { b } } } }
+    value::value(allocator &alloc, const blst_p2 &b): value { alloc, value_type { constant { alloc, bls12_381_g2_element { alloc, b } } } }
     {
     }
 
-    value::value(allocator &alloc, const blst_fp12 &b): value { alloc, value_type { constant { alloc, bls12_381_ml_result { b } } } }
+    value::value(allocator &alloc, const blst_fp12 &b): value { alloc, value_type { constant { alloc, bls12_381_ml_result { alloc, b } } } }
     {
     }
 
@@ -713,6 +791,16 @@ namespace turbo::plutus {
     const constant_list &value::as_list() const
     {
         return as_const().as_list();
+    }
+
+    const constant_array &value::as_array() const
+    {
+        return as_const().as_array();
+    }
+
+    const asset_value &value::as_asset_value() const
+    {
+        return as_const().as_value();
     }
 
     value value::boolean(allocator &alloc, const bool b)
@@ -857,18 +945,18 @@ namespace turbo::plutus {
     bstr_type bls_g1_compress(allocator &alloc, const bls12_381_g1_element &v)
     {
         bstr_type::value_type res { alloc, 48 };
-        blst_p1_compress(res.data(), &v.val);
+        blst_p1_compress(res.data(), &v.get());
         return { alloc, std::move(res) };
     }
 
     bstr_type bls_g2_compress(allocator &alloc, const bls12_381_g2_element &v)
     {
         bstr_type::value_type res { alloc, 96 };
-        blst_p2_compress(res.data(), &v.val);
+        blst_p2_compress(res.data(), &v.get());
         return { alloc, std::move(res) };
     }
 
-    bls12_381_g1_element bls_g1_decompress(const buffer bytes)
+    blst_p1 bls_g1_decompress(const buffer bytes)
     {
         if (bytes.size() != 48) [[unlikely]]
             throw error(fmt::format("bls12_381_g1 elements must provide 48 bytes but got: {}", bytes.size()));
@@ -877,12 +965,12 @@ namespace turbo::plutus {
             throw error(fmt::format("blst12_381_g1 element decoding failed for 0x{}", bytes));
         if (!blst_p1_affine_in_g1(&out_a)) [[unlikely]]
             throw error(fmt::format("blst12_381_g1 element is invalid 0x{}", bytes));
-        bls12_381_g1_element out;
-        blst_p1_from_affine(&out.val, &out_a);
+        blst_p1 out {};
+        blst_p1_from_affine(&out, &out_a);
         return out;
     }
 
-    bls12_381_g2_element bls_g2_decompress(const buffer bytes)
+    blst_p2 bls_g2_decompress(const buffer bytes)
     {
         if (bytes.size() != 96) [[unlikely]]
             throw error(fmt::format("bls12_381_g2 elements must provide 96 bytes but got: {}", bytes.size()));
@@ -891,8 +979,8 @@ namespace turbo::plutus {
             throw error(fmt::format("blst12_381_g2 element decoding failed at for 0x{}", bytes));
         if (!blst_p2_affine_in_g2(&out_a)) [[unlikely]]
             throw error(fmt::format("blst12_381_g2 element is invalid 0x{}", bytes));
-        bls12_381_g2_element out;
-        blst_p2_from_affine(&out.val, &out_a);
+        blst_p2 out {};
+        blst_p2_from_affine(&out, &out_a);
         return out;
     }
 

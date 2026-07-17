@@ -96,6 +96,23 @@ suite turbo_plutus_flat_suite = [] {
                 allocator decode_alloc {};
                 script s { decode_alloc, buffer { bytes }, cardano::script_type::plutus_v3, 11, false };
             }));
+
+            asset_value::input_type entries {};
+            asset_value::input_inner_type tokens {};
+            tokens.emplace_back(asset_value::key_type { 0xBB }, cpp_int { 100 });
+            entries.emplace_back(asset_value::key_type { 0xAA }, std::move(tokens));
+            const term value_expr { source_alloc,
+                plutus::constant { source_alloc, asset_value::from_list(source_alloc, std::move(entries)) } };
+            const auto value_bytes = encode(version { 1, 0, 0 }, value_expr);
+            expect(throws([&] {
+                allocator decode_alloc {};
+                script s { decode_alloc, buffer { value_bytes }, cardano::script_type::plutus_v3, 10, false };
+            }));
+            expect(nothrow([&] {
+                allocator decode_alloc {};
+                script s { decode_alloc, buffer { value_bytes }, cardano::script_type::plutus_v3, 11, false };
+                expect_equal(*value_expr, *s.program());
+            }));
         };
         "scripts"_test = [] {
             struct script_info {

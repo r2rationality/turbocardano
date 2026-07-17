@@ -135,10 +135,11 @@ namespace turbo::plutus::flat {
                     }
                     break;
                 }
-                case type_tag::list: {
+                case type_tag::list:
+                case type_tag::array: {
                     encode(type_tag::application);
                     put_bit(true);
-                    encode(type_tag::list);
+                    encode(t->typ);
                     for (const auto &tt: t->nested) {
                         put_bit(true);
                         encode_type(tt);
@@ -158,6 +159,15 @@ namespace turbo::plutus::flat {
             encode(type_tag::list);
             put_bit(true);
             encode_type(l->typ);
+        }
+
+        void encode_type(const constant_array &a)
+        {
+            encode(type_tag::application);
+            put_bit(true);
+            encode(type_tag::array);
+            put_bit(true);
+            encode_type(a->typ);
         }
 
         void encode_type(const constant_pair &p)
@@ -197,24 +207,34 @@ namespace turbo::plutus::flat {
             encode(type_tag::bls12_381_ml_result);
         }
 
+        void encode_type(const asset_value &)
+        {
+            encode(type_tag::value);
+        }
+
         void encode_type(const std::monostate)
         {
             encode(type_tag::unit);
         }
 
-        void encode_val(const bint_type &i)
+        void encode_integer_val(const cpp_int &i)
         {
             cpp_int u;
-            if (*i >= 0) {
-                u = *i << 1;
+            if (i >= 0) {
+                u = i << 1;
             } else {
-                u = *i;
+                u = i;
                 u += 1;
                 u = boost::multiprecision::abs(u);
                 u = u << 1;
                 u |= 1;
             }
             var_uint(u);
+        }
+
+        void encode_val(const bint_type &i)
+        {
+            encode_integer_val(*i);
         }
 
         void encode_val(const bstr_type &b)
@@ -232,15 +252,26 @@ namespace turbo::plutus::flat {
             put_bit(b);
         }
 
-        void encode_val(const constant_list &l)
+        template<typename Sequence>
+        void encode_sequence_val(const Sequence &seq)
         {
-            for (const auto &v: l->vals) {
+            for (const auto &v: seq->vals) {
                 put_bit(true);
                 std::visit([&](const auto &vv) {
                     encode_val(vv);
                 }, *v);
             }
             put_bit(false);
+        }
+
+        void encode_val(const constant_list &l)
+        {
+            encode_sequence_val(l);
+        }
+
+        void encode_val(const constant_array &a)
+        {
+            encode_sequence_val(a);
         }
 
         void encode_val(const constant_pair &p)
@@ -260,17 +291,32 @@ namespace turbo::plutus::flat {
             bytestring(enc.cbor());
         }
 
+        void encode_val(const asset_value &v)
+        {
+            for (const auto &[currency, tokens]: *v) {
+                put_bit(true);
+                bytestring(buffer { currency.data(), currency.size() });
+                for (const auto &[token, quantity]: tokens) {
+                    put_bit(true);
+                    bytestring(buffer { token.data(), token.size() });
+                    encode_integer_val(quantity);
+                }
+                put_bit(false);
+            }
+            put_bit(false);
+        }
+
         void encode_val(const bls12_381_g1_element &v)
         {
             byte_array<48> comp {};
-            blst_p1_compress(reinterpret_cast<byte *>(comp.data()), &v.val);
+            blst_p1_compress(reinterpret_cast<byte *>(comp.data()), &v.get());
             bytestring(comp);
         }
 
         void encode_val(const bls12_381_g2_element &v)
         {
             byte_array<96> comp {};
-            blst_p2_compress(reinterpret_cast<byte *>(comp.data()), &v.val);
+            blst_p2_compress(reinterpret_cast<byte *>(comp.data()), &v.get());
             bytestring(comp);
         }
 
@@ -324,6 +370,14 @@ namespace turbo::plutus::flat {
             encode_val(l);
         }
 
+        void encode(const constant_array &a)
+        {
+            put_bit(true);
+            encode_type(a);
+            put_bit(false);
+            encode_val(a);
+        }
+
         void encode(const constant_pair &p)
         {
             put_bit(true);
@@ -338,6 +392,14 @@ namespace turbo::plutus::flat {
             encode_type(d);
             put_bit(false);
             encode_val(d);
+        }
+
+        void encode(const asset_value &v)
+        {
+            put_bit(true);
+            encode_type(v);
+            put_bit(false);
+            encode_val(v);
         }
 
         void encode(const bls12_381_g1_element &v)

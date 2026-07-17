@@ -47,5 +47,26 @@ suite plutus_types_suite = [] {
             expect_equal(66, static_cast<int>(builtin_tag::bls12_381_g2_uncompress));
             expect_equal(67, static_cast<int>(builtin_tag::bls12_381_g2_hash_to_group));
         };
+        "builtin arguments use immutable fixed-capacity storage"_test = [] {
+            allocator alloc {};
+            const auto unit = value::unit(alloc);
+            const auto boolean = value::boolean(alloc, true);
+            const builtin_args empty {};
+            const builtin_args one { alloc, empty, unit };
+            const builtin_args two { alloc, one, boolean };
+            const builtin_args three { alloc, two, unit };
+            const builtin_args four { alloc, three, unit };
+            const builtin_args five { alloc, four, unit };
+            const builtin_args six { alloc, five, unit };
+
+            expect_equal(0, empty.size());
+            expect_equal(1, one.size());
+            expect_equal(2, two.size());
+            expect(one.at(0) == unit);
+            expect(two.at(0) == unit);
+            expect(two.at(1) == boolean);
+            expect_equal(builtin_args::max_size, six.size());
+            expect(throws([&] { builtin_args { alloc, six, unit }; }));
+        };
     };
 };

@@ -5,6 +5,7 @@
 
 #include <turbo/common/scheduler.hpp>
 #include <turbo/common/test.hpp>
+#include <turbo/plutus/conformance-data.hpp>
 #include <turbo/plutus/flat-encoder.hpp>
 #include <turbo/plutus/machine.hpp>
 #include <turbo/plutus/uplc.hpp>
@@ -47,6 +48,16 @@ namespace fmt {
 }
 
 namespace {
+    static constexpr uint64_t conformance_protocol_major = machine::builtin_case_protocol_major;
+
+    const costs::parsed_model &conformance_cost_model()
+    {
+        // The upstream corpus is generated with Plutus' testing defaults, not
+        // with the node configuration's currently active ledger parameters.
+        static const auto models = costs::parse({});
+        return models.for_script(cardano::script_type::plutus_v3, builtin_semantics::e);
+    }
+
     cardano::ex_units parse_budget(const std::string &path)
     {
         cardano::ex_units budget {};
@@ -80,7 +91,8 @@ namespace {
     machine::result run_script(plutus::allocator &alloc, const std::string &path, const optional_budget &budget={})
     {
         const uplc::script s { alloc, file::read(path) };
-        machine m { alloc, costs::defaults().v3.value(), builtins::semantics_v2(), budget };
+        machine m { alloc, conformance_cost_model(), cardano::script_type::plutus_v3, budget,
+            conformance_protocol_major };
         return m.evaluate(s.program());
     }
 
@@ -88,7 +100,7 @@ namespace {
     {
         plutus::allocator alloc {};
         const uplc::script s { alloc, uint8_vector { src } };
-        machine m { alloc, costs::defaults().v3.value(), builtins::semantics_v2(), {}, protocol_major };
+        machine m { alloc, cardano::script_type::plutus_v3, {}, protocol_major };
         return fmt::format("{}", m.evaluate(s.program()).expr);
     }
 
@@ -115,7 +127,8 @@ namespace {
         if (std::holds_alternative<script_meta>(res)) {
             try {
                 auto &si = std::get<script_meta>(res);
-                machine m { alloc, costs::defaults().v3.value(), builtins::semantics_v2(), budget, 10 };
+                machine m { alloc, conformance_cost_model(), cardano::script_type::plutus_v3, budget,
+                    conformance_protocol_major };
                 auto [res, cost] = m.evaluate(si.expr);
                 si.expr = std::move(res);
                 si.cost = std::move(cost);
@@ -145,7 +158,7 @@ suite plutus_machine_suite = [] {
             const std::string_view uplc { "(program 1.0.0 [(lam v0 (lam v1 v1)) (con bool True)])" };
             allocator alloc {};
             uplc::script s { alloc, uint8_vector { uplc } };
-            machine m { alloc, costs::defaults().v3.value(), builtins::semantics_v2() };
+            machine m { alloc, costs::defaults().for_script(cardano::script_type::plutus_v3, builtin_semantics::c), builtins::semantics_v2() };
             const auto [res, cost] = m.evaluate(s.program());
             const std::string exp { "(lam v0 v0)" };
             const auto act = fmt::format("{}", res);
@@ -153,15 +166,16 @@ suite plutus_machine_suite = [] {
         };
         "budget"_test = [] {
             allocator alloc {};
-            const auto [res, cost] = run_script(alloc, "./data/plutus/conformance/example/factorial/factorial.uplc");
+            const auto factorial = (conformance_data_dir() / "example/factorial/factorial.uplc").string();
+            const auto [res, cost] = run_script(alloc, factorial);
             expect_equal(50026, cost.mem);
             expect_equal(9352174, cost.steps);
             // fails with a low cpu budget
-            expect(throws([&] { run_script(alloc, "./data/plutus/conformance/example/factorial/factorial.uplc", cardano::ex_units { 50026, 9352173 }); }));
+            expect(throws([&] { run_script(alloc, factorial, cardano::ex_units { 50026, 9352173 }); }));
             // fails with a low mem budget
-            expect(throws([&] { run_script(alloc, "./data/plutus/conformance/example/factorial/factorial.uplc", cardano::ex_units { 50025, 9352174 }); }));
+            expect(throws([&] { run_script(alloc, factorial, cardano::ex_units { 50025, 9352174 }); }));
             // succeeds with a high-enough budget
-            expect(nothrow([&] { run_script(alloc, "./data/plutus/conformance/example/factorial/factorial.uplc", cardano::ex_units { 50026, 9352174 }); }));
+            expect(nothrow([&] { run_script(alloc, factorial, cardano::ex_units { 50026, 9352174 }); }));
         };
         "protocol 11 builtin case"_test = [] {
             expect_equal("(con integer 10)", eval_uplc("(program 1.1.0 (case (con unit ()) (con integer 10)))", 11));
@@ -226,10 +240,20 @@ suite plutus_machine_suite = [] {
             expect(builtins::available(builtin_tag::and_byte_string, script_type::plutus_v3, 10));
             expect(!builtins::available(builtin_tag::exp_mod_integer, script_type::plutus_v3, 10));
             expect(builtins::available(builtin_tag::exp_mod_integer, script_type::plutus_v3, 11));
+            expect(!builtins::available(builtin_tag::insert_coin, script_type::plutus_v3, 10));
+            expect(builtins::available(builtin_tag::insert_coin, script_type::plutus_v3, 11));
 
             const std::string_view dead_batch_6 { "(program 1.0.0 (delay (builtin expModInteger)))" };
             expect(throws([&] { eval_profile(dead_batch_6, script_type::plutus_v3, 10); }));
             expect(nothrow([&] { eval_profile(dead_batch_6, script_type::plutus_v3, 11); }));
+
+            for (const auto constant: {
+                    std::string_view { "(program 1.0.0 (con (array integer) []))" },
+                    std::string_view { "(program 1.0.0 (con value []))" }
+            }) {
+                expect(throws([&] { eval_profile(constant, script_type::plutus_v3, 10); }));
+                expect(nothrow([&] { eval_profile(constant, script_type::plutus_v3, 11); }));
+            }
         };
         "UPLC versions by ledger language and protocol"_test = [] {
             using cardano::script_type;
@@ -282,9 +306,10 @@ suite plutus_machine_suite = [] {
             }
         };
         "conformance"_test = [] {
-            test_script_dir("./data/plutus/conformance/term");
-            test_script_dir("./data/plutus/conformance/builtin");
-            test_script_dir("./data/plutus/conformance/example");
+            const auto &root = conformance_data_dir();
+            test_script_dir((root / "term").string());
+            test_script_dir((root / "builtin").string());
+            test_script_dir((root / "example").string());
         };
     };
 };

@@ -576,6 +576,43 @@ suite plutus_builtins_suite = [] {
         };
         "v3"_test = [] {
             allocator alloc {};
+            "expModInteger"_test = [&] {
+                expect_equal(bint_type { alloc, 4 }, exp_mod_integer(alloc, { alloc, 2 }, { alloc, 10 }, { alloc, 5 }).as_int());
+                expect_equal(bint_type { alloc, 3 }, exp_mod_integer(alloc, { alloc, 2 }, { alloc, -1 }, { alloc, 5 }).as_int());
+                expect_equal(bint_type { alloc, 2 }, exp_mod_integer(alloc, { alloc, -2 }, { alloc, 3 }, { alloc, 5 }).as_int());
+                expect_equal(bint_type { alloc, 0 }, exp_mod_integer(alloc, { alloc, 0 }, { alloc, -1 }, { alloc, 1 }).as_int());
+                expect(throws([&] { exp_mod_integer(alloc, { alloc, 0 }, { alloc, -1 }, { alloc, 2 }); }));
+                cpp_int out_of_bounds { 1 };
+                out_of_bounds <<= 8191;
+                expect(throws([&] {
+                    exp_mod_integer(alloc, { alloc, out_of_bounds }, { alloc, 1 }, { alloc, 2 });
+                }));
+            };
+            "dropList"_test = [&] {
+                const auto src = value::make_list(alloc, {
+                    constant { alloc, bint_type { alloc, 1 } },
+                    constant { alloc, bint_type { alloc, 2 } },
+                    constant { alloc, bint_type { alloc, 3 } }
+                });
+                expect_equal(size_t { 3 }, drop_list(alloc, { alloc, -1 }, src).as_list()->vals.size());
+                const auto dropped = drop_list(alloc, { alloc, 2 }, src);
+                expect_equal(size_t { 1 }, dropped.as_list()->vals.size());
+                expect_equal(bint_type { alloc, 3 }, dropped.as_list()->vals.front().as_int());
+                cpp_int huge_count { 1 };
+                huge_count <<= 100;
+                expect(drop_list(alloc, { alloc, huge_count }, src).as_list()->vals.empty());
+            };
+            "arrays"_test = [&] {
+                const auto src = value::make_list(alloc, {
+                    constant { alloc, bint_type { alloc, 11 } },
+                    constant { alloc, bint_type { alloc, 22 } }
+                });
+                const auto array = list_to_array(alloc, src);
+                expect_equal(bint_type { alloc, 2 }, length_of_array(alloc, array).as_int());
+                expect_equal(bint_type { alloc, 22 }, index_array(alloc, array, { alloc, 1 }).as_int());
+                expect(throws([&] { index_array(alloc, array, { alloc, -1 }); }));
+                expect(throws([&] { index_array(alloc, array, { alloc, 2 }); }));
+            };
             "bls12_381_g1_compress_types"_test = [&] {
                 const auto compressed_zero = bstr_type::from_hex(alloc, "C00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000");
                 const auto compressed_zero_short = bstr_type::from_hex(alloc, "C000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000");

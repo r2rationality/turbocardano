@@ -67,12 +67,22 @@ namespace turbo::plutus {
             _shared.clear();
         }
 
+        const protocol_version &protocol_ver() const
+        {
+            return _require_protocol_ver();
+        }
+
         const tx_base &tx() const;
         script_hash redeemer_script(const redeemer_id &) const;
 
         prepared_script apply_script(allocator &&script_alloc, const script_info &script, std::initializer_list<term> args, const std::optional<ex_units> &budget) const;
         prepared_script prepare_script(const tx_redeemer &r) const;
         void eval_script(prepared_script &ps) const;
+        static ex_units validate_redeemer_budgets(const redeemer_map &, const ex_units &limit);
+        ex_units validate_redeemer_budgets(const ex_units &limit) const
+        {
+            return validate_redeemer_budgets(_redeemers, limit);
+        }
 
         cardano::slot slot() const
         {

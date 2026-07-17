@@ -22,12 +22,16 @@ namespace turbo::cli::plutus_benchmark {
             cmd.name = "plutus-benchmark";
             cmd.desc = "run the plutus benchmark and save a CSV file with the results in <script-dir>/<run-id>-<thread-count>.csv";
             cmd.args.expect({ "<script-dir>", "<thread-count>", "<run-id>" });
+            cmd.opts.try_emplace("protocol",
+                "Cardano major protocol version for legacy script names; 'auto' infers it from a mainnet epoch directory",
+                "auto");
         }
 
-        void run(const arguments &args) const override {
+        void run(const arguments &args, const options &opts) const override {
             const auto &script_dir = args.at(0);
             const auto num_workers = std::stoull(args.at(1));
             const auto &run_id = args.at(2);
+            const auto fallback_protocol = parse_protocol_option(opts.at("protocol").value());
             const auto res_path = fmt::format("{}/{}-{}.csv", script_dir, run_id, num_workers);
 
             const auto paths = file::files_with_ext_path(script_dir, ".flat");
@@ -45,10 +49,11 @@ namespace turbo::cli::plutus_benchmark {
                         const auto bytes = file::read(script_path);
                         try {
                             const auto info = parse_name(paths[j].stem().string());
+                            const auto protocol_major = resolve_protocol(paths[j], info, fallback_protocol);
                             const auto start_time = std::chrono::high_resolution_clock::now();
                             allocator alloc {};
-                            flat::script s { alloc, bytes, info.typ, machine::builtin_case_protocol_major, true };
-                            machine m { alloc, info.typ };
+                            flat::script s { alloc, bytes, info.typ, protocol_major, true };
+                            machine m { alloc, info.typ, {}, protocol_major };
                             const auto s_res = m.evaluate(s.program());
                             const auto run_time = std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - start_time).count();
                             res.try_emplace(script_path, flat::encode_cbor(s.version(), s_res.expr), run_time);
@@ -83,7 +88,76 @@ namespace turbo::cli::plutus_benchmark {
             script_hash script_id {};
             uint16_t redeemer_idx {};
             script_type typ;
+            std::optional<uint64_t> protocol {};
         };
+
+        static uint64_t parse_protocol(const std::string &text)
+        {
+            size_t parsed = 0;
+            try {
+                const auto protocol = std::stoull(text, &parsed);
+                if (parsed == text.size())
+                    return protocol;
+            } catch (const std::exception &) {
+            }
+            throw error(fmt::format("unsupported protocol version: {}", text));
+        }
+
+        static std::optional<uint64_t> parse_protocol_option(const std::string &text)
+        {
+            if (text == "auto")
+                return {};
+            return parse_protocol(text);
+        }
+
+        static uint64_t infer_mainnet_protocol(const std::filesystem::path &path)
+        {
+            const auto epoch_text = path.parent_path().filename().string();
+            size_t parsed = 0;
+            uint64_t epoch = 0;
+            try {
+                epoch = std::stoull(epoch_text, &parsed);
+            } catch (const std::exception &) {
+            }
+            if (epoch_text.empty() || parsed != epoch_text.size()) [[unlikely]] {
+                throw error(fmt::format(
+                    "cannot infer the protocol version for legacy script {}: its parent directory '{}' is not a mainnet epoch; "
+                    "use --protocol=N or re-extract the scripts",
+                    path.string(), epoch_text));
+            }
+
+            // Mainnet protocol-version epoch boundaries through the last interval
+            // that can be inferred unambiguously without metadata in the file name.
+            if (epoch < 290) [[unlikely]] {
+                throw error(fmt::format(
+                    "cannot infer a Plutus protocol version for legacy script {} from pre-Alonzo mainnet epoch {}",
+                    path.string(), epoch));
+            }
+            if (epoch < 298)
+                return 5;
+            if (epoch < 365)
+                return 6;
+            if (epoch < 394)
+                return 7;
+            if (epoch < 507)
+                return 8;
+            if (epoch <= 536)
+                return 9;
+            throw error(fmt::format(
+                "cannot safely infer the protocol version for legacy script {} from mainnet epoch {}; "
+                "use --protocol=N or re-extract the scripts",
+                path.string(), epoch));
+        }
+
+        static uint64_t resolve_protocol(const std::filesystem::path &path, const script_info &info,
+            const std::optional<uint64_t> &fallback)
+        {
+            if (info.protocol)
+                return *info.protocol;
+            if (fallback)
+                return *fallback;
+            return infer_mainnet_protocol(path);
+        }
 
         static void save_results(const std::string &res_path, const script_res_map &res)
         {
@@ -105,11 +179,16 @@ namespace turbo::cli::plutus_benchmark {
             while (std::getline (ss, item, '-')) {
                 items.emplace_back(item);
             }
-            if (items.size() != 4)
-                throw error(fmt::format("script name must encode 4 fields but got: {}", stem));
+            if (items.size() != 4 && items.size() != 5)
+                throw error(fmt::format("script name must encode 4 or 5 fields but got: {}", stem));
+            std::optional<uint64_t> protocol {};
+            if (items.size() == 5) {
+                if (!items[4].starts_with('p')) [[unlikely]]
+                    throw error(fmt::format("invalid protocol field in script name: {}", stem));
+                protocol.emplace(parse_protocol(items[4].substr(1)));
+            }
             return { tx_hash::from_hex(items[0]), script_hash::from_hex(items[2]),
-                numeric_cast<uint16_t>(std::stoul(items[1])), script_type_from_str(items[3])
-            };
+                numeric_cast<uint16_t>(std::stoul(items[1])), script_type_from_str(items[3]), protocol };
         }
     };
     static auto instance = command::reg(std::make_shared<cmd>());

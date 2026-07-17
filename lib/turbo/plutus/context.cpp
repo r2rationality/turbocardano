@@ -1317,11 +1317,28 @@ namespace turbo::plutus {
         }
     }
 
+    ex_units context::validate_redeemer_budgets(const redeemer_map &redeemers, const ex_units &limit)
+    {
+        ex_units total {};
+        for (const auto &[id, redeemer]: redeemers) {
+            if (redeemer.budget.mem > limit.mem - total.mem
+                    || redeemer.budget.steps > limit.steps - total.steps) [[unlikely]] {
+                throw error(fmt::format(
+                    "the total redeemer execution-unit budget exceeds maxTxExUnits {} at {}#{}: "
+                    "accumulated {{ mem: {}, steps: {} }}, next {}",
+                    limit, id.tag, id.ref_idx, total.mem, total.steps, redeemer.budget));
+            }
+            total.mem += redeemer.budget.mem;
+            total.steps += redeemer.budget.steps;
+        }
+        return total;
+    }
+
     void context::eval_script(prepared_script &ps) const
     {
         try {
             const auto &pv = _require_protocol_ver();
-            machine m { ps.alloc, cost_models().for_script(ps.typ), ps.typ, ps.budget, pv.major };
+            machine m { ps.alloc, cost_models().for_script(ps.typ, builtins::semantics_variant(ps.typ, pv.major)), ps.typ, ps.budget, pv.major };
             m.evaluate_no_res(ps.expr);
         } catch (const std::exception &ex) {
             throw error(fmt::format("script {} {}: {}", ps.typ, ps.hash, ex.what()));

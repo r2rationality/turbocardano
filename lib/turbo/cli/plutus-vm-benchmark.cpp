@@ -2,8 +2,16 @@
  * Copyright (c) 2026 R2 Rationality OÜ (info at r2rationality dot com)
  * License: https://github.com/r2rationality/turbocardano/blob/main/LICENSE */
 
+#include <algorithm>
+#include <array>
+#include <chrono>
 #include <cmath>
 #include <iostream>
+#include <limits>
+#include <string>
+#include <string_view>
+#include <utility>
+#include <vector>
 #include <nanobench.h>
 #include <turbo/common/file.hpp>
 #include <turbo/plutus/flat.hpp>
@@ -18,20 +26,36 @@ namespace turbo::cli::plutus_vm_benchmark {
     static constexpr auto plutus_language = script_type::plutus_v3;
     static constexpr uint64_t protocol_major = 11;
 
+    struct measurement_stats {
+        uint64_t mean_ns = 0;
+        uint64_t median_ns = 0;
+        uint64_t min_ns = 0;
+        uint64_t max_ns = 0;
+        uint64_t stddev_ns = 0;
+        size_t iterations = 0;
+        std::chrono::nanoseconds total_time {};
+    };
+
     struct cmd: command {
         void configure(config &cmd) const override
         {
             cmd.name = "plutus-vm-benchmark";
             cmd.desc = "benchmark raw Flat decode and Plutus VM evaluation, writing benchmark-suite CSV output";
             cmd.args.expect({ "<script-dir>", "<output-csv>" });
-            cmd.opts.try_emplace("iterations", "measured evaluations per script", "50");
+            cmd.opts.try_emplace("iterations", "minimum measured evaluations per script", "50");
+            cmd.opts.try_emplace("min-time", "minimum measured time per script", "1s");
+            cmd.opts.try_emplace("max-iterations", "maximum measured evaluations per script", "10000");
             cmd.opts.try_emplace("warmup", "unmeasured warmup iterations per script", "5");
         }
 
         void run(const arguments &args, const options &opts) const override
         {
-            const auto iterations = parse_iterations(opts);
-            const auto warmup = parse_warmup(opts);
+            const auto min_iterations = parse_positive_size(opts, "iterations");
+            const auto min_time = parse_duration(opts.at("min-time").value());
+            const auto max_iterations = parse_positive_size(opts, "max-iterations");
+            const auto warmup = from_str<size_t>(opts.at("warmup").value());
+            if (max_iterations < min_iterations)
+                throw error("--max-iterations must be greater than or equal to --iterations");
             auto paths = file::files_with_ext_path(args.at(0), ".flat");
             std::ranges::sort(paths);
             if (paths.empty())
@@ -47,24 +71,16 @@ namespace turbo::cli::plutus_vm_benchmark {
                     for (size_t i = 0; i < warmup; ++i)
                         evaluate(bytes);
 
-                    ankerl::nanobench::Bench bench {};
-                    bench.title("TurboCardano raw Flat decode + Plutus VM evaluate")
-                        .unit("script")
-                        .epochs(iterations)
-                        .epochIterations(1)
-                        .performanceCounters(false)
-                        .output(&std::cerr)
-                        .run(name, [&] { evaluate(bytes); });
-
-                    const auto &result = bench.results().back();
-                    const auto mean = result.average(ankerl::nanobench::Result::Measure::elapsed);
-                    const auto median = result.median(ankerl::nanobench::Result::Measure::elapsed);
-                    const auto minimum = result.minimum(ankerl::nanobench::Result::Measure::elapsed);
-                    const auto maximum = result.maximum(ankerl::nanobench::Result::Measure::elapsed);
-                    const auto stddev = standard_deviation(result, mean);
+                    const auto stats = measure(bytes, min_iterations, min_time, max_iterations);
+                    if (stats.iterations == max_iterations && stats.total_time < min_time) {
+                        logger::warn("benchmark {} reached --max-iterations={} after {:.3f}s, before --min-time={:.3f}s",
+                            name, max_iterations, to_seconds(stats.total_time), to_seconds(min_time));
+                    }
+                    std::cerr << fmt::format("{}: mean {} ns, median {} ns, {} iterations, {:.3f}s measured\n",
+                        name, stats.mean_ns, stats.median_ns, stats.iterations, to_seconds(stats.total_time));
                     out = fmt::format_to(out, "{},{},{},{},{},{},{},{}\n",
-                        vm_name, name, to_ns(mean), to_ns(median), to_ns(minimum), to_ns(maximum),
-                        to_ns(stddev), result.size());
+                        vm_name, name, stats.mean_ns, stats.median_ns, stats.min_ns, stats.max_ns,
+                        stats.stddev_ns, stats.iterations);
                     ++succeeded;
                 } catch (const std::exception &ex) {
                     logger::error("EVAL_FAIL: {}: {}", name, ex.what());
@@ -77,17 +93,44 @@ namespace turbo::cli::plutus_vm_benchmark {
         }
 
     private:
-        static size_t parse_iterations(const options &opts)
+        static size_t parse_positive_size(const options &opts, const std::string_view name)
         {
-            const auto iterations = from_str<size_t>(opts.at("iterations").value());
-            if (iterations == 0)
-                throw error("--iterations must be greater than zero");
-            return iterations;
+            const auto value = from_str<size_t>(opts.at(std::string { name }).value());
+            if (value == 0)
+                throw error(fmt::format("--{} must be greater than zero", name));
+            return value;
         }
 
-        static size_t parse_warmup(const options &opts)
+        static std::chrono::nanoseconds parse_duration(const std::string &text)
         {
-            return from_str<size_t>(opts.at("warmup").value());
+            static constexpr std::array units {
+                std::pair { std::string_view { "ns" }, 1.0 },
+                std::pair { std::string_view { "us" }, 1'000.0 },
+                std::pair { std::string_view { "ms" }, 1'000'000.0 },
+                std::pair { std::string_view { "s" }, 1'000'000'000.0 },
+            };
+            const std::string_view view { text };
+            for (const auto &[suffix, multiplier]: units) {
+                if (!view.ends_with(suffix))
+                    continue;
+                const auto number = view.substr(0, view.size() - suffix.size());
+                size_t parsed = 0;
+                double value = 0.0;
+                try {
+                    value = std::stod(std::string { number }, &parsed);
+                } catch (const std::exception &) {
+                    throw error(fmt::format("invalid --min-time value: {}", text));
+                }
+                if (parsed != number.size() || !std::isfinite(value) || value <= 0.0)
+                    throw error(fmt::format("invalid --min-time value: {}", text));
+                const auto nanos = value * multiplier;
+                if (!std::isfinite(nanos) || nanos > static_cast<double>(std::numeric_limits<int64_t>::max()))
+                    throw error(fmt::format("--min-time value is too large: {}", text));
+                if (nanos < 1.0)
+                    throw error(fmt::format("--min-time must be at least 1ns: {}", text));
+                return std::chrono::nanoseconds { numeric_cast<int64_t>(std::llround(nanos)) };
+            }
+            throw error(fmt::format("invalid --min-time value '{}': expected ns, us, ms, or s", text));
         }
 
         static void evaluate(const uint8_vector &bytes)
@@ -99,22 +142,53 @@ namespace turbo::cli::plutus_vm_benchmark {
             ankerl::nanobench::doNotOptimizeAway(result.expr);
         }
 
-        static double standard_deviation(const ankerl::nanobench::Result &result, const double mean)
+        static measurement_stats measure(const uint8_vector &bytes, const size_t min_iterations,
+            const std::chrono::nanoseconds min_time, const size_t max_iterations)
         {
-            if (result.empty())
-                return 0.0;
-            double squared_difference_sum = 0.0;
-            for (size_t i = 0; i < result.size(); ++i) {
-                const auto value = result.get(i, ankerl::nanobench::Result::Measure::elapsed);
-                const auto difference = value - mean;
+            using clock = std::chrono::steady_clock;
+            std::vector<uint64_t> samples {};
+            samples.reserve(max_iterations);
+            std::chrono::nanoseconds total_time {};
+            while ((samples.size() < min_iterations || total_time < min_time)
+                    && samples.size() < max_iterations) {
+                const auto start = clock::now();
+                evaluate(bytes);
+                const auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(clock::now() - start);
+                samples.emplace_back(numeric_cast<uint64_t>(elapsed.count()));
+                total_time += elapsed;
+            }
+
+            long double sum = 0.0;
+            for (const auto sample: samples)
+                sum += static_cast<long double>(sample);
+            const auto mean = sum / static_cast<long double>(samples.size());
+
+            long double squared_difference_sum = 0.0;
+            for (const auto sample: samples) {
+                const auto difference = static_cast<long double>(sample) - mean;
                 squared_difference_sum += difference * difference;
             }
-            return std::sqrt(squared_difference_sum / static_cast<double>(result.size()));
+
+            std::ranges::sort(samples);
+            const auto middle = samples.size() / 2;
+            const auto median = samples.size() % 2 == 0
+                ? samples[middle - 1] + (samples[middle] - samples[middle - 1]) / 2
+                : samples[middle];
+            return {
+                numeric_cast<uint64_t>(std::llround(mean)),
+                median,
+                samples.front(),
+                samples.back(),
+                numeric_cast<uint64_t>(std::llround(std::sqrt(
+                    squared_difference_sum / static_cast<long double>(samples.size())))),
+                samples.size(),
+                total_time,
+            };
         }
 
-        static uint64_t to_ns(const double seconds)
+        static double to_seconds(const std::chrono::nanoseconds duration)
         {
-            return numeric_cast<uint64_t>(std::llround(seconds * 1'000'000'000.0));
+            return std::chrono::duration<double> { duration }.count();
         }
     };
     static auto instance = command::reg(std::make_shared<cmd>());

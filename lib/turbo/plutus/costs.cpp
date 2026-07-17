@@ -8,19 +8,69 @@
 #include <turbo/plutus/machine.hpp>
 
 namespace turbo::plutus::costs {
+    static int64_t _saturated_add_signed(const int64_t a, const int64_t b) noexcept
+    {
+        if (b > 0 && a > std::numeric_limits<int64_t>::max() - b)
+            return std::numeric_limits<int64_t>::max();
+        if (b < 0 && a < std::numeric_limits<int64_t>::min() - b)
+            return std::numeric_limits<int64_t>::min();
+        return a + b;
+    }
+
+    static int64_t _saturated_mul_signed(const int64_t a, const int64_t b) noexcept
+    {
+        if (!a || !b)
+            return 0;
+        if (a > 0) {
+            if (b > 0 && a > std::numeric_limits<int64_t>::max() / b)
+                return std::numeric_limits<int64_t>::max();
+            if (b < 0 && b < std::numeric_limits<int64_t>::min() / a)
+                return std::numeric_limits<int64_t>::min();
+        } else {
+            if (b > 0 && a < std::numeric_limits<int64_t>::min() / b)
+                return std::numeric_limits<int64_t>::min();
+            if (b < 0 && a < std::numeric_limits<int64_t>::max() / b)
+                return std::numeric_limits<int64_t>::max();
+        }
+        return a * b;
+    }
+
+    static uint64_t _non_negative_cost(const int64_t val)
+    {
+        if (val >= 0) [[likely]]
+            return static_cast<uint64_t>(val);
+        throw error("costing function results in a negative cost!");
+    }
+
+    static cpp_int _cpp_int_abs(const bint_type &i)
+    {
+        cpp_int res {};
+        res = *i;
+        if (res < 0)
+            res = -res;
+        return res;
+    }
+
+    static uint64_t _num_bytes_as_num_words(const bint_type &i)
+    {
+        const auto n = _cpp_int_abs(i);
+        if (!n)
+            return 0;
+        const cpp_int words = (n - 1) / 8 + 1;
+        if (words >= max_cost)
+            return max_cost;
+        return words.convert_to<uint64_t>();
+    }
+
     static uint64_t _mem_usage(const value::value_type &val);
     static uint64_t _mem_usage(const data &d);
 
     static uint64_t _mem_usage(const bint_type &i)
     {
-        if (*i > 0)
-            return boost::multiprecision::msb(*i) / 64 + 1;
-        if (*i < 0) {
-            if (const auto i_adj = *i + 1; i_adj != 0) [[likely]]
-                return boost::multiprecision::msb(i_adj * -1) / 64 + 1;
+        const auto abs_i = _cpp_int_abs(i);
+        if (!abs_i)
             return 1;
-        }
-        return 1;
+        return std::min<uint64_t>(boost::multiprecision::msb(abs_i) / 64 + 1, max_cost);
     }
 
     static uint64_t _mem_usage(const buffer b)
@@ -43,7 +93,7 @@ namespace turbo::plutus::costs {
     {
         uint64_t sum = 0;
         for (const auto &d: l)
-            sum += _mem_usage(d);
+            sum = saturated_add(sum, _mem_usage(d));
         return sum;
     }
 
@@ -52,16 +102,16 @@ namespace turbo::plutus::costs {
         return std::visit([](const auto &v) {
             using t = std::decay_t<decltype(v)>;
             if constexpr (std::is_same_v<t, data_constr>) {
-                return 4 + _mem_usage(v->second);
+                return saturated_add(4, _mem_usage(v->second));
             } else if constexpr (std::is_same_v<t, data::map_type>) {
                 uint64_t sum = 4;
                 for (const auto &p: v)
-                    sum += _mem_usage(p->first) + _mem_usage(p->second);
+                    sum = saturated_add(sum, saturated_add(_mem_usage(p->first), _mem_usage(p->second)));
                 return sum;
             } else if constexpr (std::is_same_v<t, data::bstr_type>) {
-                return 4 + _mem_usage(*v);
+                return saturated_add(4, _mem_usage(*v));
             } else {
-                return 4 + _mem_usage(v);
+                return saturated_add(4, _mem_usage(v));
             }
         }, *d);
     }
@@ -81,18 +131,17 @@ namespace turbo::plutus::costs {
             } else if constexpr (std::is_same_v<T, str_type>) {
                 return _mem_usage(std::string_view { *v });
             } else if constexpr (std::is_same_v<T, bls12_381_g1_element>) {
-                return static_cast<uint64_t>(sizeof(bls12_381_g1_element) / 8);
+                return static_cast<uint64_t>(sizeof(blst_p1) / 8);
             } else if constexpr (std::is_same_v<T, bls12_381_g2_element>) {
-                return static_cast<uint64_t>(sizeof(bls12_381_g2_element) / 8);
+                return static_cast<uint64_t>(sizeof(blst_p2) / 8);
             } else if constexpr (std::is_same_v<T, bls12_381_ml_result>) {
-                return static_cast<uint64_t>(sizeof(bls12_381_ml_result) / 8);
-            } else if constexpr (std::is_same_v<T, constant_list>) {
-                uint64_t sum = 0;
-                for (const auto &ci: v->vals)
-                    sum += _mem_usage(ci);
-                return sum;
+                return static_cast<uint64_t>(sizeof(blst_fp12) / 8);
+            } else if constexpr (std::is_same_v<T, constant_list> || std::is_same_v<T, constant_array>) {
+                return numeric_cast<uint64_t>(v->vals.size());
+            } else if constexpr (std::is_same_v<T, asset_value>) {
+                return numeric_cast<uint64_t>(v.total_size());
             } else if constexpr (std::is_same_v<T, constant_pair>) {
-                return _mem_usage(v->first) + _mem_usage(v->second);
+                return saturated_add(_mem_usage(v->first), _mem_usage(v->second));
             } else {
                 return _mem_usage(v);
             }
@@ -106,37 +155,104 @@ namespace turbo::plutus::costs {
         return 1;
     }
 
-    arg_sizes default_size_fun::size(const value_list &args) const
+    arg_sizes default_size_fun::size(const value_args &args) const
     {
-        arg_sizes sizes {};
-        for (const auto &arg: *args) {
-            sizes.emplace_back(_mem_usage(*arg));
-        }
-        return sizes;
+        const auto *args_ptr = args.data();
+        return { args.size(), [args_ptr](const size_t idx) {
+            return _mem_usage(*args_ptr[idx]);
+        } };
     };
 
-    arg_sizes sizes_for(const op_model &model, const builtin_tag tag, const value_list &args,
+    arg_sizes literal_in_x_size_fun::size(const value_args &args) const
+    {
+        const auto *args_ptr = args.data();
+        return { args.size(), [args_ptr](const size_t idx) {
+            const auto &arg = args_ptr[idx];
+            if (idx != 0)
+                return _mem_usage(*arg);
+            const auto &literal = *arg.as_int();
+            if (literal == 0)
+                return uint64_t { 0 };
+            const cpp_int magnitude = literal < 0 ? -literal : literal;
+            if (magnitude >= max_cost)
+                return max_cost;
+            return magnitude.convert_to<uint64_t>();
+        } };
+    }
+
+    static uint64_t _tree_depth(size_t size)
+    {
+        uint64_t depth = 0;
+        while (size) {
+            ++depth;
+            size >>= 1;
+        }
+        return depth;
+    }
+
+    arg_sizes value_max_depth_size_fun::size(const value_args &args) const
+    {
+        const auto *args_ptr = args.data();
+        const auto index = _index;
+        return { args.size(), [args_ptr, index](const size_t idx) {
+            const auto &arg = args_ptr[idx];
+            if (idx != index)
+                return _mem_usage(*arg);
+            const auto &v = arg.as_asset_value();
+            return saturated_add(_tree_depth(v->size()), _tree_depth(v.max_inner_size()));
+        } };
+    }
+
+    static uint64_t _data_node_count(const data &d)
+    {
+        return std::visit([](const auto &v) {
+            using T = std::decay_t<decltype(v)>;
+            uint64_t count = 1;
+            if constexpr (std::is_same_v<T, data_constr>) {
+                for (const auto &item: v->second)
+                    count = saturated_add(count, _data_node_count(item));
+            } else if constexpr (std::is_same_v<T, data::map_type>) {
+                for (const auto &item: v) {
+                    count = saturated_add(count, _data_node_count(item->first));
+                    count = saturated_add(count, _data_node_count(item->second));
+                }
+            } else if constexpr (std::is_same_v<T, data::list_type>) {
+                for (const auto &item: v)
+                    count = saturated_add(count, _data_node_count(item));
+            }
+            return count;
+        }, *d);
+    }
+
+    arg_sizes data_node_count_size_fun::size(const value_args &args) const
+    {
+        const auto *args_ptr = args.data();
+        return { args.size(), [args_ptr](const size_t idx) {
+            const auto &arg = args_ptr[idx];
+            return idx == 0 ? _data_node_count(arg.as_data()) : _mem_usage(*arg);
+        } };
+    }
+
+    arg_sizes sizes_for(const op_model &model, const builtin_tag tag, const value_args &args,
             const bool text_costed_by_byte_length)
     {
-        auto sizes = model.size->size(args);
         if (text_costed_by_byte_length
                 && (tag == builtin_tag::append_string || tag == builtin_tag::equals_string
                     || tag == builtin_tag::encode_utf8)) {
-            sizes.clear();
-            for (const auto &arg: *args)
-                sizes.emplace_back(arg.as_str()->size() / 4);
+            const auto *args_ptr = args.data();
+            return { args.size(), [args_ptr](const size_t idx) {
+                return args_ptr[idx].as_str()->size() / 4;
+            } };
         }
-        return sizes;
+        return model.size->size(args);
     }
 
-    arg_sizes num_bytes_as_num_words_fun::size(const value_list &args) const
+    arg_sizes num_bytes_as_num_words_fun::size(const value_args &args) const
     {
-        arg_sizes sizes {};
-        for (const auto &arg: *args) {
-            const auto bytes = static_cast<size_t>(*arg.as_int());
-            sizes.emplace_back(bytes ? (bytes - 1) / 8 + 1 : 0);
-        }
-        return sizes;
+        const auto *args_ptr = args.data();
+        return { args.size(), [args_ptr](const size_t idx) {
+            return _num_bytes_as_num_words(args_ptr[idx].as_int());
+        } };
     };
 
     // the names of the classes match the names in the builtinCostModel config JSON
@@ -146,7 +262,7 @@ namespace turbo::plutus::costs {
         {
         }
 
-        uint64_t cost(const arg_sizes &, const value_list &) const override
+        uint64_t cost(const arg_sizes &, const value_args &) const override
         {
             return _cost;
         }
@@ -166,9 +282,9 @@ namespace turbo::plutus::costs {
         {
         }
 
-        uint64_t cost(const arg_sizes &sizes, const value_list &) const override
+        uint64_t cost(const arg_sizes &sizes, const value_args &) const override
         {
-            return _intercept + _slope * sizes.at(0);
+            return saturated_add(_intercept, saturated_mul(_slope, sizes.at(0)));
         }
 
         bool operator==(const cost_fun &o_) const override
@@ -183,40 +299,97 @@ namespace turbo::plutus::costs {
     struct linear_in_y: linear_in_x {
         using linear_in_x::linear_in_x;
 
-        uint64_t cost(const arg_sizes &sizes, const value_list &) const override
+        uint64_t cost(const arg_sizes &sizes, const value_args &) const override
         {
-            return _intercept + _slope * sizes.at(1);
+            return saturated_add(_intercept, saturated_mul(_slope, sizes.at(1)));
         }
     };
 
     struct linear_in_z: linear_in_x {
         using linear_in_x::linear_in_x;
 
-        uint64_t cost(const arg_sizes &sizes, const value_list &) const override
+        uint64_t cost(const arg_sizes &sizes, const value_args &) const override
         {
-            return _intercept + _slope * sizes.at(2);
+            return saturated_add(_intercept, saturated_mul(_slope, sizes.at(2)));
         }
+    };
+
+    struct linear_in_u: linear_in_x {
+        using linear_in_x::linear_in_x;
+
+        uint64_t cost(const arg_sizes &sizes, const value_args &) const override
+        {
+            return saturated_add(_intercept, saturated_mul(_slope, sizes.at(3)));
+        }
+    };
+
+    struct linear_in_x_and_y: cost_fun {
+        linear_in_x_and_y(const arg_map &args):
+            _intercept { std::stoull(args.at("arguments-intercept")) },
+            _slope1 { std::stoull(args.at("arguments-slope1")) },
+            _slope2 { std::stoull(args.at("arguments-slope2")) }
+        {
+        }
+
+        uint64_t cost(const arg_sizes &sizes, const value_args &) const override
+        {
+            return saturated_add(_intercept,
+                saturated_add(saturated_mul(_slope1, sizes.at(0)), saturated_mul(_slope2, sizes.at(1))));
+        }
+
+        bool operator==(const cost_fun &other) const override
+        {
+            const auto &o = dynamic_cast<const linear_in_x_and_y &>(other);
+            return _intercept == o._intercept && _slope1 == o._slope1 && _slope2 == o._slope2;
+        }
+    private:
+        uint64_t _intercept, _slope1, _slope2;
+    };
+
+    struct with_interaction_in_x_and_y: cost_fun {
+        with_interaction_in_x_and_y(const arg_map &args):
+            _c00 { std::stoull(args.at("arguments-c00")) },
+            _c01 { std::stoull(args.at("arguments-c01")) },
+            _c10 { std::stoull(args.at("arguments-c10")) },
+            _c11 { std::stoull(args.at("arguments-c11")) }
+        {
+        }
+
+        uint64_t cost(const arg_sizes &sizes, const value_args &) const override
+        {
+            return saturated_add(_c00, saturated_add(saturated_mul(_c10, sizes.at(0)),
+                saturated_add(saturated_mul(_c01, sizes.at(1)),
+                    saturated_mul(_c11, saturated_mul(sizes.at(0), sizes.at(1))))));
+        }
+
+        bool operator==(const cost_fun &other) const override
+        {
+            const auto &o = dynamic_cast<const with_interaction_in_x_and_y &>(other);
+            return _c00 == o._c00 && _c01 == o._c01 && _c10 == o._c10 && _c11 == o._c11;
+        }
+    private:
+        uint64_t _c00, _c01, _c10, _c11;
     };
 
     struct linear_in_max_yz: linear_in_x {
         using linear_in_x::linear_in_x;
 
-        uint64_t cost(const arg_sizes &sizes, const value_list &) const override
+        uint64_t cost(const arg_sizes &sizes, const value_args &) const override
         {
-            return _intercept + _slope * std::max(sizes.at(1), sizes.at(2));
+            return saturated_add(_intercept, saturated_mul(_slope, std::max(sizes.at(1), sizes.at(2))));
         }
     };
 
     struct literal_in_y_or_linear_in_z: linear_in_x {
         using linear_in_x::linear_in_x;
 
-        uint64_t cost(const arg_sizes &sizes, const value_list &args) const override
+        uint64_t cost(const arg_sizes &sizes, const value_args &args) const override
         {
-            if (args->size() < 2) [[unlikely]]
-                throw error(fmt::format("cost_function {} requires two arguments but got {}", typeid(*this).name(), args->size()));
-            if (const auto &y_val = static_cast<uint64_t>(*std::next(args->begin())->as_int()); y_val != 0)
-                return (y_val + 7) / 8;
-            return _intercept + _slope * sizes.at(2);
+            if (args.size() < 2) [[unlikely]]
+                throw error(fmt::format("cost_function {} requires two arguments but got {}", typeid(*this).name(), args.size()));
+            if (const auto &y_val = args[1].as_int(); *y_val != 0)
+                return _num_bytes_as_num_words(y_val);
+            return saturated_add(_intercept, saturated_mul(_slope, sizes.at(2)));
         }
     };
 
@@ -228,9 +401,9 @@ namespace turbo::plutus::costs {
         {
         }
 
-        uint64_t cost(const arg_sizes &sizes, const value_list &) const override
+        uint64_t cost(const arg_sizes &sizes, const value_args &) const override
         {
-            return _intercept + _slope1 * sizes.at(1) + _slope2 * sizes.at(2);
+            return saturated_add(_intercept, saturated_add(saturated_mul(_slope1, sizes.at(1)), saturated_mul(_slope2, sizes.at(2))));
         }
 
         bool operator==(const cost_fun &o_) const override
@@ -250,10 +423,10 @@ namespace turbo::plutus::costs {
         {
         }
 
-        uint64_t cost(const arg_sizes &sizes, const value_list &) const override
+        uint64_t cost(const arg_sizes &sizes, const value_args &) const override
         {
             const auto &y = sizes.at(1);
-            return _c0 + _c1 * y + _c2 * y * y;
+            return saturated_add(_c0, saturated_add(saturated_mul(_c1, y), saturated_mul(_c2, saturated_mul(y, y))));
         }
 
         bool operator==(const cost_fun &o_) const override
@@ -265,13 +438,23 @@ namespace turbo::plutus::costs {
         const uint64_t _c0, _c1, _c2;
     };
 
+    struct quadratic_in_x: quadratic_in_y {
+        using quadratic_in_y::quadratic_in_y;
+
+        uint64_t cost(const arg_sizes &sizes, const value_args &) const override
+        {
+            const auto &x = sizes.at(0);
+            return saturated_add(_c0, saturated_add(saturated_mul(_c1, x), saturated_mul(_c2, saturated_mul(x, x))));
+        }
+    };
+
     struct quadratic_in_z: quadratic_in_y {
         using quadratic_in_y::quadratic_in_y;
 
-        uint64_t cost(const arg_sizes &sizes, const value_list &) const override
+        uint64_t cost(const arg_sizes &sizes, const value_args &) const override
         {
             const auto &z = sizes.at(2);
-            return _c0 + _c1 * z + _c2 * z * z;
+            return saturated_add(_c0, saturated_add(saturated_mul(_c1, z), saturated_mul(_c2, saturated_mul(z, z))));
         }
     };
 
@@ -287,14 +470,17 @@ namespace turbo::plutus::costs {
         {
         }
 
-        uint64_t cost(const arg_sizes &sizes, const value_list &) const override
+        uint64_t cost(const arg_sizes &sizes, const value_args &) const override
         {
-            const int64_t x = sizes.at(0);
-            const int64_t y = sizes.at(1);
-            const int64_t res = std::max(_minimum, _c00 + _c10 * x + _c01 * y + _c20 * x * x + _c11 * x * y + _c02 * y * y);
-            if (res >= 0) [[likely]]
-                return static_cast<uint64_t>(res);
-            throw error("quadratic_in_x_and_y results in a negative cost!");
+            const auto x = static_cast<int64_t>(std::min(sizes.at(0), max_cost));
+            const auto y = static_cast<int64_t>(std::min(sizes.at(1), max_cost));
+            auto res = _c00;
+            res = _saturated_add_signed(res, _saturated_mul_signed(_c10, x));
+            res = _saturated_add_signed(res, _saturated_mul_signed(_c01, y));
+            res = _saturated_add_signed(res, _saturated_mul_signed(_saturated_mul_signed(_c20, x), x));
+            res = _saturated_add_signed(res, _saturated_mul_signed(_saturated_mul_signed(_c11, x), y));
+            res = _saturated_add_signed(res, _saturated_mul_signed(_saturated_mul_signed(_c02, y), y));
+            return _non_negative_cost(std::max(_minimum, res));
         }
 
         bool operator==(const cost_fun &o_) const override
@@ -310,12 +496,12 @@ namespace turbo::plutus::costs {
     struct added_sizes: linear_in_x {
         using linear_in_x::linear_in_x;
 
-        uint64_t cost(const arg_sizes &sizes, const value_list &) const override
+        uint64_t cost(const arg_sizes &sizes, const value_args &) const override
         {
             if (sizes.size() != 2) [[unlikely]]
-                throw error("added_sizes costing function requires at least two arguments");
-            const auto sum = std::accumulate(sizes.begin(), sizes.end(), uint64_t { 0 });
-            return _intercept + _slope * sum;
+                throw error(fmt::format("added_sizes costing function requires exactly two arguments but got {}", sizes.size()));
+            const auto sum = saturated_add(sizes.at(0), sizes.at(1));
+            return saturated_add(_intercept, saturated_mul(_slope, sum));
         }
     };
 
@@ -326,9 +512,10 @@ namespace turbo::plutus::costs {
         {
         }
 
-        uint64_t cost(const arg_sizes &sizes, const value_list &) const override
+        uint64_t cost(const arg_sizes &sizes, const value_args &) const override
         {
-            return _intercept + _slope * std::max(_minimum, (sizes.at(0) - sizes.at(1)));
+            const auto difference = sizes.at(0) > sizes.at(1) ? sizes.at(0) - sizes.at(1) : 0;
+            return saturated_add(_intercept, saturated_mul(_slope, std::max(_minimum, difference)));
         }
 
         bool operator==(const cost_fun &o_) const override
@@ -343,36 +530,36 @@ namespace turbo::plutus::costs {
     struct max_size: linear_in_x {
         using linear_in_x::linear_in_x;
 
-        uint64_t cost(const arg_sizes &sizes, const value_list &) const override
+        uint64_t cost(const arg_sizes &sizes, const value_args &) const override
         {
             if (sizes.size() != 2) [[unlikely]]
-                throw error("max_size costing function requires at least two arguments");
-            const auto max = std::max_element(sizes.begin(), sizes.end());
-            return _intercept + _slope * (*max);
+                throw error(fmt::format("max_size costing function requires exactly two arguments but got {}", sizes.size()));
+            const auto max = std::max(sizes.at(0), sizes.at(1));
+            return saturated_add(_intercept, saturated_mul(_slope, max));
         }
     };
 
     struct min_size: linear_in_x {
         using linear_in_x::linear_in_x;
 
-        uint64_t cost(const arg_sizes &sizes, const value_list &) const override
+        uint64_t cost(const arg_sizes &sizes, const value_args &) const override
         {
             if (sizes.size() != 2) [[unlikely]]
-                throw error("max_size costing function requires at least two arguments");
-            const auto min = std::min_element(sizes.begin(), sizes.end());
-            return _intercept + _slope * (*min);
+                throw error(fmt::format("min_size costing function requires exactly two arguments but got {}", sizes.size()));
+            const auto min = std::min(sizes.at(0), sizes.at(1));
+            return saturated_add(_intercept, saturated_mul(_slope, min));
         }
     };
 
     struct multiplied_sizes: linear_in_x {
         using linear_in_x::linear_in_x;
 
-        uint64_t cost(const arg_sizes &sizes, const value_list &) const override
+        uint64_t cost(const arg_sizes &sizes, const value_args &) const override
         {
             if (sizes.size() != 2) [[unlikely]]
-                throw error("added_sizes costing function requires at least two arguments");
-            const auto prod = std::accumulate(sizes.begin(), sizes.end(), uint64_t { 1 }, std::multiplies<uint64_t>());
-            return _intercept + _slope * prod;
+                throw error(fmt::format("multiplied_sizes costing function requires exactly two arguments but got {}", sizes.size()));
+            const auto prod = saturated_mul(sizes.at(0), sizes.at(1));
+            return saturated_add(_intercept, saturated_mul(_slope, prod));
         }
     };
 
@@ -385,7 +572,7 @@ namespace turbo::plutus::costs {
         {
         }
 
-        uint64_t cost(const arg_sizes &sizes, const value_list &args) const override
+        uint64_t cost(const arg_sizes &sizes, const value_args &args) const override
         {
             const auto &x = sizes.at(0);
             const auto &y = sizes.at(1);
@@ -407,7 +594,7 @@ namespace turbo::plutus::costs {
     struct const_below_diagonal: const_above_diagonal {
         using const_above_diagonal::const_above_diagonal;
 
-        uint64_t cost(const arg_sizes &sizes, const value_list &args) const override
+        uint64_t cost(const arg_sizes &sizes, const value_args &args) const override
         {
             const auto &x = sizes.at(0);
             const auto &y = sizes.at(1);
@@ -424,12 +611,12 @@ namespace turbo::plutus::costs {
         {
         }
 
-        uint64_t cost(const arg_sizes &sizes, const value_list &) const override
+        uint64_t cost(const arg_sizes &sizes, const value_args &) const override
         {
             const auto &x = sizes.at(0);
             const auto &y = sizes.at(1);
             if (x == y)
-                return _intercept + _slope * x;
+                return saturated_add(_intercept, saturated_mul(_slope, x));
             return _cost;
         }
 
@@ -442,6 +629,57 @@ namespace turbo::plutus::costs {
         const uint64_t _cost;
     };
 
+    struct above_and_below_diagonal: cost_fun {
+        above_and_below_diagonal(const arg_map &args):
+            _model { cost_fun_from_prefixed_args(args, "arguments-model-") }
+        {
+        }
+
+        uint64_t cost(const arg_sizes &sizes, const value_args &args) const override
+        {
+            if (sizes.size() != 2) [[unlikely]]
+                throw error(fmt::format("above_and_below_diagonal costing function requires exactly two arguments but got {}", sizes.size()));
+            const arg_sizes ordered { std::max(sizes.at(0), sizes.at(1)), std::min(sizes.at(0), sizes.at(1)) };
+            return _model->cost(ordered, args);
+        }
+
+        bool operator==(const cost_fun &o_) const override
+        {
+            const auto &o = dynamic_cast<decltype(*this) &>(o_);
+            return _model && o._model && *_model == *o._model;
+        }
+    private:
+        const cost_fun_ptr _model;
+    };
+
+    struct exp_mod_cost: cost_fun {
+        exp_mod_cost(const arg_map &args):
+            _coefficient00 { std::stoull(args.at("arguments-coefficient00")) },
+            _coefficient11 { std::stoull(args.at("arguments-coefficient11")) },
+            _coefficient12 { std::stoull(args.at("arguments-coefficient12")) }
+        {
+        }
+
+        uint64_t cost(const arg_sizes &sizes, const value_args &) const override
+        {
+            if (sizes.size() != 3) [[unlikely]]
+                throw error(fmt::format("exp_mod_cost costing function requires exactly three arguments but got {}", sizes.size()));
+            const auto exponent_modulus = saturated_mul(sizes.at(1), sizes.at(2));
+            const auto cost0 = saturated_add(_coefficient00,
+                saturated_add(saturated_mul(_coefficient11, exponent_modulus),
+                    saturated_mul(_coefficient12, saturated_mul(exponent_modulus, sizes.at(2)))));
+            return sizes.at(0) <= sizes.at(2) ? cost0 : saturated_add(cost0, cost0 / 2);
+        }
+
+        bool operator==(const cost_fun &o_) const override
+        {
+            const auto &o = dynamic_cast<decltype(*this) &>(o_);
+            return _coefficient00 == o._coefficient00 && _coefficient11 == o._coefficient11
+                && _coefficient12 == o._coefficient12;
+        }
+    private:
+        const uint64_t _coefficient00, _coefficient11, _coefficient12;
+    };
     static op_tag op_tag_from_cek_name(const std::string &name) {
         if (name == "cekApplyCost")
             return term_tag::apply;
@@ -483,10 +721,18 @@ namespace turbo::plutus::costs {
             return std::make_shared<linear_in_x>(args);
         if (typ == "linear_in_x")
             return std::make_shared<linear_in_x>(args);
-        if (typ == "linear_in_y")
+        if (typ == "linear_in_y" || typ == "linear_in_y2")
             return std::make_shared<linear_in_y>(args);
         if (typ == "linear_in_z")
             return std::make_shared<linear_in_z>(args);
+        if (typ == "linear_in_u")
+            return std::make_shared<linear_in_u>(args);
+        if (typ == "linear_in_x_and_y")
+            return std::make_shared<linear_in_x_and_y>(args);
+        if (typ == "with_interaction_in_x_and_y")
+            return std::make_shared<with_interaction_in_x_and_y>(args);
+        if (typ == "quadratic_in_x")
+            return std::make_shared<quadratic_in_x>(args);
         if (typ == "quadratic_in_y")
             return std::make_shared<quadratic_in_y>(args);
         if (typ == "quadratic_in_z")
@@ -507,6 +753,10 @@ namespace turbo::plutus::costs {
             return std::make_shared<const_below_diagonal>(args);
         if (typ == "linear_on_diagonal")
             return std::make_shared<linear_on_diagonal>(args);
+        if (typ == "above_and_below_diagonal")
+            return std::make_shared<above_and_below_diagonal>(args);
+        if (typ == "exp_mod_cost")
+            return std::make_shared<exp_mod_cost>(args);
         throw error(fmt::format("unsupported cost model type: {}", typ));
     }
 
@@ -732,8 +982,28 @@ namespace turbo::plutus::costs {
                     if (!created) [[unlikely]]
                         throw error("internal error: duplicate tag in the parsed cost model!");
                     switch (tag) {
+                        case builtin_tag::drop_list: {
+                            static auto custom_fun = std::make_shared<literal_in_x_size_fun>();
+                            it->second.size = custom_fun;
+                            break;
+                        }
                         case builtin_tag::replicate_byte: {
                             static auto custom_fun = std::make_shared<num_bytes_as_num_words_fun>();
+                            it->second.size = custom_fun;
+                            break;
+                        }
+                        case builtin_tag::insert_coin: {
+                            static auto custom_fun = std::make_shared<value_max_depth_size_fun>(3);
+                            it->second.size = custom_fun;
+                            break;
+                        }
+                        case builtin_tag::lookup_coin: {
+                            static auto custom_fun = std::make_shared<value_max_depth_size_fun>(2);
+                            it->second.size = custom_fun;
+                            break;
+                        }
+                        case builtin_tag::un_value_data: {
+                            static auto custom_fun = std::make_shared<data_node_count_size_fun>();
                             it->second.size = custom_fun;
                             break;
                         }
@@ -748,31 +1018,51 @@ namespace turbo::plutus::costs {
         return m;
     }
 
-    const parsed_model &parsed_models::for_script(const cardano::script_type typ) const
+    const parsed_model &parsed_models::for_script(const cardano::script_type typ,
+            const builtin_semantics semantics) const
     {
+        const variants *models = nullptr;
         switch (typ) {
-            case cardano::script_type::plutus_v1: return v1.value();
-            case cardano::script_type::plutus_v2: return v2.value();
-            case cardano::script_type::plutus_v3: return v3.value();
+            case cardano::script_type::plutus_v1: models = &v1; break;
+            case cardano::script_type::plutus_v2: models = &v2; break;
+            case cardano::script_type::plutus_v3: models = &v3; break;
             default: throw error(fmt::format("unsupported script type: {}", static_cast<int>(typ)));
         }
+        const auto &model = models->at(static_cast<size_t>(semantics));
+        if (model) [[likely]]
+            return *model;
+        throw error(fmt::format("cost model semantics variant {} is unavailable for {}",
+            static_cast<int>(semantics), typ));
     }
 
-    const arg_map &default_cost_args_v1()
+    const arg_map &default_cost_args_a()
     {
         static auto args = load_cost_args(install_path("etc/plutus/cekMachineCostsA.json"), install_path("etc/plutus/builtinCostModelA.json"));
         return args;
     }
 
-    const arg_map &default_cost_args_v2()
+    const arg_map &default_cost_args_b()
     {
         static auto args = load_cost_args(install_path("etc/plutus/cekMachineCostsB.json"), install_path("etc/plutus/builtinCostModelB.json"));
         return args;
     }
 
-    const arg_map &default_cost_args_v3()
+    const arg_map &default_cost_args_c()
     {
-        static auto args = load_cost_args(install_path("etc/plutus/cekMachineCostsC.json"), install_path("./etc/plutus/builtinCostModelC.json"));
+        static auto args = load_cost_args(install_path("etc/plutus/cekMachineCostsC.json"), install_path("etc/plutus/builtinCostModelC.json"));
+        return args;
+    }
+
+    // Variants C, D, and E use the same CEK machine costs; only their builtin models differ.
+    const arg_map &default_cost_args_d()
+    {
+        static auto args = load_cost_args(install_path("etc/plutus/cekMachineCostsC.json"), install_path("etc/plutus/builtinCostModelD.json"));
+        return args;
+    }
+
+    const arg_map &default_cost_args_e()
+    {
+        static auto args = load_cost_args(install_path("etc/plutus/cekMachineCostsC.json"), install_path("etc/plutus/builtinCostModelE.json"));
         return args;
     }
 
@@ -806,9 +1096,19 @@ namespace turbo::plutus::costs {
         const auto *v1 = models.find(0);
         const auto *v2 = models.find(1);
         const auto *v3 = models.find(2);
-        res.v1.emplace(parse(v1 ? plutus_costs_to_args(*v1, default_cost_args_v1()) : default_cost_args_v1()));
-        res.v2.emplace(parse(v2 ? plutus_costs_to_args(*v2, default_cost_args_v2()) : default_cost_args_v2()));
-        res.v3.emplace(parse(v3 ? plutus_costs_to_args(*v3, default_cost_args_v3()) : default_cost_args_v3()));
+        const auto add = [](parsed_models::variants &variants, const builtin_semantics semantics,
+                const cardano::plutus_cost_model *params, const arg_map &defaults) {
+            variants.at(static_cast<size_t>(semantics)).emplace(
+                parse(params ? plutus_costs_to_args(*params, defaults) : defaults));
+        };
+        add(res.v1, builtin_semantics::a, v1, default_cost_args_a());
+        add(res.v1, builtin_semantics::b, v1, default_cost_args_b());
+        add(res.v1, builtin_semantics::d, v1, default_cost_args_d());
+        add(res.v2, builtin_semantics::a, v2, default_cost_args_a());
+        add(res.v2, builtin_semantics::b, v2, default_cost_args_b());
+        add(res.v2, builtin_semantics::d, v2, default_cost_args_d());
+        add(res.v3, builtin_semantics::c, v3, default_cost_args_c());
+        add(res.v3, builtin_semantics::e, v3, default_cost_args_e());
         return res;
     }
 

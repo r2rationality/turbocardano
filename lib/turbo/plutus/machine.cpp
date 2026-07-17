@@ -41,7 +41,6 @@ namespace turbo::plutus {
         const costs::parsed_model &_cost_model;
         optional_budget _budget;
         cardano::ex_units _cost {};
-        value_list _empty_args { _alloc };
         const builtin_map &_semantics;
         uint64_t _protocol_major;
         builtin_semantics _semantics_variant;
@@ -66,8 +65,8 @@ namespace turbo::plutus {
 
         void _spend(const uint64_t mem_cost, const uint64_t cpu_cost)
         {
-            _cost.steps += cpu_cost;
-            _cost.mem += mem_cost;
+            _cost.steps = costs::saturated_add(_cost.steps, cpu_cost);
+            _cost.mem = costs::saturated_add(_cost.mem, mem_cost);
             //logger::info("SPEND cpu: {} mem: {} TOTAL cpu: {} mem: {}", cpu_cost, mem_cost, _cost.steps, _cost.mem);
             _check_budget();
         }
@@ -77,9 +76,9 @@ namespace turbo::plutus {
             _spend(c.mem, c.steps);
         }
 
-        static const value &_arg(const value_list &args, const size_t idx)
+        static const value &_arg(const value_args &args, const size_t idx)
         {
-            return *std::next(args->begin(), idx);
+            return args[idx];
         }
 
         static void _check_integer_range(const value &arg, const cpp_int &lower, const cpp_int &upper,
@@ -103,7 +102,7 @@ namespace turbo::plutus {
                 throw error(fmt::format("bytestring size {} exceeds the protocol limit of 65536", arg.as_bstr()->size()));
         }
 
-        void _check_ensurable_args(const builtin_tag tag, const value_list &args) const
+        void _check_ensurable_args(const builtin_tag tag, const value_args &args) const
         {
             if (_semantics_variant != builtin_semantics::d && _semantics_variant != builtin_semantics::e)
                 return;
@@ -188,21 +187,22 @@ namespace turbo::plutus {
             }
         }
 
-        void _spend(const builtin_tag tag, const value_list &args)
+        void _spend(const builtin_tag tag, const value_args &args)
         {
             _check_ensurable_args(tag, args);
             const auto &op_model = _cost_model.builtin_fun.at(tag);
             const bool text_costed_by_byte_length =
                 _semantics_variant == builtin_semantics::d || _semantics_variant == builtin_semantics::e;
             const auto sizes = costs::sizes_for(op_model, tag, args, text_costed_by_byte_length);
-            const auto cpu_cost = op_model.cpu->cost(sizes, args);
-            const auto mem_cost = op_model.mem->cost(sizes, args);
+            uint64_t cpu_cost = 0;
+            uint64_t mem_cost = 0;
+            try {
+                cpu_cost = op_model.cpu->cost(sizes, args);
+                mem_cost = op_model.mem->cost(sizes, args);
+            } catch (const std::exception &ex) {
+                throw error(fmt::format("failed to cost builtin {} with {} arguments: {}", tag, args.size(), ex.what()));
+            }
             _spend(mem_cost, cpu_cost);
-        }
-
-        void _spend(const builtin_tag tag)
-        {
-            _spend(tag, _empty_args);
         }
 
         std::optional<value> _lookup_opt(const environment &env, const size_t var_idx) const
@@ -239,13 +239,13 @@ namespace turbo::plutus {
                     return term { _alloc, t_delay { _discharge_term(env, v.expr, level, var_idx_diff) } };
                 } else if constexpr (std::is_same_v<T, t_case>) {
                     term_list::value_type l { _alloc };
-                    //l.reserve(v.cases->size());
+                    l.reserve(v.cases->size());
                     for (auto &c: *v.cases)
                         l.emplace_back(_discharge_term(env, c, level, var_idx_diff));
                     return term { _alloc, t_case { _discharge_term(env, v.arg, level, var_idx_diff), term_list { _alloc, std::move(l) } } };
                 } else if constexpr (std::is_same_v<T, t_constr>) {
                     term_list::value_type l { _alloc };
-                    //l.reserve(v.args->size());
+                    l.reserve(v.args->size());
                     for (auto &a: *v.args)
                         l.emplace_back(_discharge_term(env, a, level, var_idx_diff));
                     return term { _alloc, t_constr { v.tag, term_list { _alloc, std::move(l) } } };
@@ -269,11 +269,12 @@ namespace turbo::plutus {
                     auto t = term { _alloc, v.b };
                     for (size_t i = 0; i < v.forces; ++i)
                         t = term { _alloc, force { std::move(t) } };
-                    for (const auto &arg: *v.args)
+                    for (const auto &arg: v.args.values())
                         t = term { _alloc, apply { std::move(t), _discharge(*arg, level, var_idx_diff) } };
                     return t;
                 } else if constexpr (std::is_same_v<T, v_constr>) {
                     term_list::value_type args { _alloc };
+                    args.reserve(v.args->size());
                     for (const auto &arg: *v.args)
                         args.emplace_back(_discharge(*arg, level, var_idx_diff));
                     t_constr pc { v.tag, term_list { _alloc, std::move(args) } };
@@ -292,34 +293,19 @@ namespace turbo::plutus {
         value _apply_builtin(const v_builtin &b)
         {
             const auto num_args = b.b.num_args();
-            if (b.args->size() != num_args) [[unlikely]]
-                throw error(fmt::format("can't apply builtin {} to {} arguments: {} arguments are required!", b.b.tag, b.args->size(), num_args));
+            const auto args = b.args.values();
+            if (args.size() != num_args) [[unlikely]]
+                throw error(fmt::format("can't apply builtin {} to {} arguments: {} arguments are required!", b.b.tag, args.size(), num_args));
             if (b.forces != b.b.polymorphic_args()) [[unlikely]]
                 throw error(fmt::format("can't apply builtin {} with {} forces: {} forces are required!", b.b.tag, b.forces, b.b.polymorphic_args()));
-            _spend(b.b.tag, b.args);
+            _spend(b.b.tag, args);
             const auto func = _get_builtin_func(b.b.tag);
             switch (num_args) {
-                case 1: return std::get<builtin_one_arg>(func)(_alloc, b.args->front());
-                case 2: {
-                    auto first = b.args->begin();
-                    auto second = std::next(first);
-                    return std::get<builtin_two_arg>(func)(_alloc, *first, *second);
-                }
-                case 3: {
-                    auto first = b.args->begin();
-                    auto second = std::next(first);
-                    auto third = std::next(second);
-                    return std::get<builtin_three_arg>(func)(_alloc, *first, *second, *third);
-                }
-                case 6: {
-                    auto first = b.args->begin();
-                    auto second = std::next(first);
-                    auto third = std::next(second);
-                    auto fourth = std::next(third);
-                    auto fifth = std::next(fourth);
-                    auto sixth = std::next(fifth);
-                    return std::get<builtin_six_arg>(func)(_alloc, *first, *second, *third, *fourth, *fifth, *sixth);
-                }
+                case 1: return std::get<builtin_one_arg>(func)(_alloc, args[0]);
+                case 2: return std::get<builtin_two_arg>(func)(_alloc, args[0], args[1]);
+                case 3: return std::get<builtin_three_arg>(func)(_alloc, args[0], args[1], args[2]);
+                case 4: return std::get<builtin_four_arg>(func)(_alloc, args[0], args[1], args[2], args[3]);
+                case 6: return std::get<builtin_six_arg>(func)(_alloc, args[0], args[1], args[2], args[3], args[4], args[5]);
                 default: throw error(fmt::format("unsupported number of arguments: {}!", num_args));
             }
         }
@@ -333,14 +319,10 @@ namespace turbo::plutus {
                     return _compute(new_env, f.body);
                 }
                 if constexpr (std::is_same_v<T, v_builtin>) {
-                    value_list::value_type new_args { _alloc };
-                    for (const auto &arg: *f.args)
-                        new_args.emplace_back(arg);
-                    new_args.emplace_back(arg);
-                    v_builtin new_b { f.b, { _alloc, std::move(new_args) }, f.forces };
+                    v_builtin new_b { f.b, { _alloc, f.args, arg }, f.forces };
                     if (new_b.b.polymorphic_args() != new_b.forces)
                         throw error(fmt::format("an application of an polymorphic builtin with an incorrect number of forces: {}", new_b.b.tag));
-                    if (new_b.args->size() < new_b.b.num_args()) [[likely]]
+                    if (new_b.args.size() < new_b.b.num_args()) [[likely]]
                         return value { _alloc, std::move(new_b) };
                     //logger::info("{} {}", new_b.b.tag, new_b.args);
                     auto res = _apply_builtin(new_b);
@@ -398,7 +380,7 @@ namespace turbo::plutus {
         value _compute(const environment &, const t_builtin &e)
         {
             _spend(_cost_model.builtin_op);
-            return { _alloc, v_builtin { e, { _alloc } } };
+            return { _alloc, v_builtin { e, {} } };
         }
 
         value _compute(const environment &env, const force &e)
@@ -419,6 +401,7 @@ namespace turbo::plutus {
         {
             _spend(_cost_model.constr_op);
             value_list::value_type v_args { _alloc };
+            v_args.reserve(e.args->size());
             for (const auto &arg: *e.args)
                 v_args.emplace_back(_compute(env, arg));
             return value { _alloc, v_constr { e.tag, { _alloc, std::move(v_args) } } };
@@ -466,6 +449,7 @@ namespace turbo::plutus {
                     auto res = _case_branch(env, e, 0);
                     res = _apply(*res, value { _alloc, v->vals.front() });
                     constant_list::list_type tail { _alloc };
+                    tail.reserve(v->vals.size() - 1);
                     std::copy(std::next(v->vals.begin()), v->vals.end(), std::back_inserter(tail));
                     const auto tail_val = value::make_list(_alloc, constant_type { v->typ }, std::move(tail));
                     return _apply(*res, tail_val);
@@ -515,7 +499,7 @@ namespace turbo::plutus {
 
     machine::machine(allocator &alloc, const cardano::script_type typ, const optional_budget &budget,
             const uint64_t protocol_major):
-        machine { alloc, costs::defaults().for_script(typ), typ, budget, protocol_major }
+        machine { alloc, costs::defaults().for_script(typ, builtins::semantics_variant(typ, protocol_major)), typ, budget, protocol_major }
     {
     }
 

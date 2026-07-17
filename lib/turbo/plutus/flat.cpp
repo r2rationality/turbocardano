@@ -192,12 +192,12 @@ namespace turbo::plutus::flat {
 
         bls12_381_g1_element _decode_bls_g1()
         {
-            return bls_g1_decompress(_decode_bytestring());
+            return { _alloc, bls_g1_decompress(_decode_bytestring()) };
         }
 
         bls12_381_g2_element _decode_bls_g2()
         {
-            return bls_g2_decompress(_decode_bytestring());
+            return { _alloc, bls_g2_decompress(_decode_bytestring()) };
         }
 
         constant_type _decode_type_application(std::vector<type_tag>::iterator &it, const std::vector<type_tag>::iterator &end)
@@ -205,17 +205,20 @@ namespace turbo::plutus::flat {
             if (++it == end)
                 throw error("type list too short!");
             switch (*it) {
-                case type_tag::list: {
+                case type_tag::list:
+                case type_tag::array: {
+                    const auto container_tag = *it;
                     if (++it == end)
                         throw error("type list too short!");
                     constant_type::list_type nested { _alloc };
                     nested.emplace_back(_decode_constant_type(it, end));
-                    return { _alloc, type_tag::list, { std::move(nested) } };
+                    return { _alloc, container_tag, { std::move(nested) } };
                 }
                 case type_tag::pair: {
                     if (++it == end)
                         throw error("type list too short!");
                     constant_type::list_type nested { _alloc };
+                    nested.reserve(2);
                     nested.emplace_back(_decode_constant_type(it, end));
                     if (++it == end)
                         throw error("type list too short!");
@@ -241,14 +244,28 @@ namespace turbo::plutus::flat {
                 case type_tag::data:
                 case type_tag::bls12_381_g1_element:
                 case type_tag::bls12_381_g2_element:
+                case type_tag::value:
                     return { _alloc, typ };
                 case type_tag::list:
+                case type_tag::array:
                 case type_tag::pair:
                     throw error("list and pair types are supported only within a type application");
                 case type_tag::application:
                     return _decode_type_application(it, end);
                 default: throw error(fmt::format("unsupported constant type: {}", static_cast<int>(typ)));
             }
+        }
+
+        constant_list::list_type _decode_sequence_vals(const constant_type &typ, const std::string_view kind)
+        {
+            if (typ->nested.size() != 1) [[unlikely]]
+                throw error(fmt::format("the nested type list for an {} must have just one element but has {}",
+                    kind, typ->nested.size()));
+            constant_list::list_type vals { _alloc };
+            _decode_list([&] {
+                vals.emplace_back(_decode_constant_val(typ->nested.front()));
+            });
+            return vals;
         }
 
         constant _decode_constant_val(const constant_type &typ)
@@ -262,14 +279,28 @@ namespace turbo::plutus::flat {
                 case type_tag::data: return { _alloc, _decode_data() };
                 case type_tag::bls12_381_g1_element: return { _alloc, _decode_bls_g1() };
                 case type_tag::bls12_381_g2_element: return { _alloc, _decode_bls_g2() };
-                case type_tag::list: {
-                    constant_list::list_type cl { _alloc };
+                case type_tag::value: {
+                    asset_value::input_type entries {};
                     _decode_list([&] {
-                        cl.emplace_back(_decode_constant_val(typ->nested.front()));
+                        const auto currency_raw = _decode_bytestring();
+                        asset_value::key_type currency { currency_raw.begin(), currency_raw.end() };
+                        asset_value::input_inner_type tokens {};
+                        _decode_list([&] {
+                            const auto token_raw = _decode_bytestring();
+                            asset_value::key_type token { token_raw.begin(), token_raw.end() };
+                            tokens.emplace_back(std::move(token), *_decode_integer());
+                        });
+                        entries.emplace_back(std::move(currency), std::move(tokens));
                     });
-                    if (typ->nested.size() != 1) [[unlikely]]
-                        throw error(fmt::format("the nested type list for a list must have just one element but has {}", typ->nested.size()));
-                    return { _alloc, constant_list { _alloc, constant_type { typ->nested.front() }, std::move(cl) } };
+                    return { _alloc, asset_value::from_list(_alloc, std::move(entries)) };
+                }
+                case type_tag::list: {
+                    auto vals = _decode_sequence_vals(typ, "list");
+                    return { _alloc, constant_list { _alloc, constant_type { typ->nested.front() }, std::move(vals) } };
+                }
+                case type_tag::array: {
+                    auto vals = _decode_sequence_vals(typ, "array");
+                    return { _alloc, constant_array { _alloc, constant_type { typ->nested.front() }, std::move(vals) } };
                 }
                 case type_tag::pair: {
                     if (typ->nested.size() != 2) [[unlikely]]

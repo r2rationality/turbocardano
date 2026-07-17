@@ -22,6 +22,9 @@ namespace turbo::plutus {
     struct builtin_three_arg: std::function<value(allocator &, const value &, const value &, const value &)> {
         using std::function<value(allocator &, const value &, const value &, const value &)>::function;
     };
+    struct builtin_four_arg: std::function<value(allocator &, const value &, const value &, const value &, const value &)> {
+        using std::function<value(allocator &, const value &, const value &, const value &, const value &)>::function;
+    };
     struct builtin_six_arg: std::function<value(allocator &, const value &, const value &, const value &, const value &, const value &, const value &)> {
         using std::function<value(allocator &, const value &, const value &, const value &, const value &, const value &, const value &)>::function;
     };
@@ -125,6 +128,19 @@ namespace turbo::plutus {
         extern value replicate_byte(allocator &, const value &, const value &);
         extern value ripemd_160(allocator &, const value &);
         extern value exp_mod_integer(allocator &, const value &, const value &, const value &);
+        extern value drop_list(allocator &, const value &, const value &);
+        extern value length_of_array(allocator &, const value &);
+        extern value list_to_array(allocator &, const value &);
+        extern value index_array(allocator &, const value &, const value &);
+        extern value bls12_381_g1_multi_scalar_mul(allocator &, const value &, const value &);
+        extern value bls12_381_g2_multi_scalar_mul(allocator &, const value &, const value &);
+        extern value insert_coin(allocator &, const value &, const value &, const value &, const value &);
+        extern value lookup_coin(allocator &, const value &, const value &, const value &);
+        extern value union_value(allocator &, const value &, const value &);
+        extern value value_contains(allocator &, const value &, const value &);
+        extern value value_data(allocator &, const value &);
+        extern value un_value_data(allocator &, const value &);
+        extern value scale_value(allocator &, const value &, const value &);
 
         extern const builtin_map &semantics_v1();
         extern const builtin_map &semantics_v2();

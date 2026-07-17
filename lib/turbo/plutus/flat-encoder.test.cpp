@@ -6,6 +6,7 @@
 #include <turbo/cbor/zero2.hpp>
 #include <turbo/common/test.hpp>
 #include <turbo/file.hpp>
+#include <turbo/plutus/conformance-data.hpp>
 #include <turbo/plutus/flat-encoder.hpp>
 #include <turbo/plutus/uplc.hpp>
 
@@ -82,7 +83,7 @@ suite plutus_flat_encoder_suite = [] {
             test_uplc_hex("(program 1.1.0 (constr 1 (con integer 0) (con integer 1)))", "4a010100801a4001480081");
         };
         "terms"_test = [] {
-            for (const auto &path: file::files_with_ext_path("./data/plutus/conformance", ".uplc")) {
+            for (const auto &path: file::files_with_ext_path(conformance_data_dir().string(), ".uplc")) {
                 const auto exp_path = (path.parent_path() / path.stem()).string() + ".uplc.expected";
                 if (file::read(exp_path).str() != "parse error")
                     test_uplc(path.string());

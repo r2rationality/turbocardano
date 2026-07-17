@@ -4,15 +4,15 @@
  * License: https://github.com/r2rationality/turbocardano/blob/main/LICENSE */
 
 #include <turbo/common/benchmark.hpp>
-#include <turbo/config.hpp>
+#include <turbo/plutus/conformance-data.hpp>
 #include <turbo/plutus/uplc.hpp>
 
 using namespace turbo;
 
 suite plutus_uplc_suite = [] {
     "plutus::uplc"_test = [] {
-        const auto example_dir = install_path("./data/plutus/conformance/example");
-        const auto paths = file::files_with_ext_path(example_dir, ".uplc");
+        const auto example_dir = plutus::conformance_data_dir() / "example";
+        const auto paths = file::files_with_ext_path(example_dir.string(), ".uplc");
         benchmark("uplc parse speed", [&] {
             uint64_t total_size = 0;
             for (const auto &path: paths) {
@@ -32,6 +32,6 @@ suite plutus_uplc_suite = [] {
               }
             }
             return total_size;
-        }, file::dir_size_recursive(example_dir, ".uplc"));
+        }, file::dir_size_recursive(example_dir.string(), ".uplc"));
     };
 };

@@ -921,6 +921,7 @@ namespace turbo::txwit {
                 if (!tx.balances.match()) [[unlikely]]
                     throw error(fmt::format("tx {}: consumed != produced: {}", tx.tx_id, tx.balances));
                 if (plutus_ctx) {
+                    plutus_ctx->validate_redeemer_budgets(_st.params().max_tx_ex_units);
                     for (const auto &[rid, rdata]: plutus_ctx->redeemers())
                         tx.signers.emplace(script_signer_t { plutus_ctx->redeemer_script(rid), rid.tag });
                 }

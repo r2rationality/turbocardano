@@ -92,17 +92,17 @@ namespace turbo::cardano {
 
     static plutus_cost_model _make_plutus_v1_default_cost_model()
     {
-        return _make_plutus_default_cost_model(plutus::costs::cost_arg_names_v1(), plutus::costs::default_cost_args_v1(), 166, "v1");
+        return _make_plutus_default_cost_model(plutus::costs::cost_arg_names_v1(), plutus::costs::default_cost_args_a(), 166, "v1");
     }
 
     static plutus_cost_model _make_plutus_v2_default_cost_model()
     {
-        return _make_plutus_default_cost_model(plutus::costs::cost_arg_names_v2(), plutus::costs::default_cost_args_v2(), 175, "v2");
+        return _make_plutus_default_cost_model(plutus::costs::cost_arg_names_v2(), plutus::costs::default_cost_args_b(), 175, "v2");
     }
 
     static plutus_cost_model _make_plutus_v3_default_cost_model()
     {
-        return _make_plutus_default_cost_model(plutus::costs::cost_arg_names_v3(), plutus::costs::default_cost_args_v3(), 251, "v3");
+        return _make_plutus_default_cost_model(plutus::costs::cost_arg_names_v3(), plutus::costs::default_cost_args_c(), 251, "v3");
     }
 
     plutus_cost_models config::_prep_plutus_cost_models(const turbo::config &genesis)

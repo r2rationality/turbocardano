@@ -30,6 +30,10 @@ namespace turbo::plutus {
 
         void check_constant(const constant_type &typ) const
         {
+            if (_protocol_major < 11 && _contains_batch_six_type(typ)) {
+                throw error(fmt::format(
+                    "constant type {} is not available before protocol version 11", typ));
+            }
             if (_protocol_major >= 11) {
                 const auto header_size = _constant_type_header_size(typ);
                 if (header_size > 32) {
@@ -55,10 +59,22 @@ namespace turbo::plutus {
             }
         }
     private:
+        static bool _contains_batch_six_type(const constant_type &typ)
+        {
+            if (typ->typ == type_tag::array || typ->typ == type_tag::value)
+                return true;
+            for (const auto &nested: typ->nested) {
+                if (_contains_batch_six_type(nested))
+                    return true;
+            }
+            return false;
+        }
+
         static uint64_t _constant_type_header_size(const constant_type &typ)
         {
             switch (typ->typ) {
                 case type_tag::list:
+                case type_tag::array:
                     return 2 + _constant_type_header_size(typ->nested.front());
                 case type_tag::pair:
                     return 3 + _constant_type_header_size(typ->nested.front())
