@@ -102,7 +102,7 @@ if (WIN32)
     FetchContent_Declare(
             mimalloc
             GIT_REPOSITORY https://github.com/microsoft/mimalloc.git
-            GIT_TAG "v2.1.9" # https://github.com/ericniebler/range-v3/releases
+            GIT_TAG "v3.3.2" # https://github.com/ericniebler/range-v3/releases
             GIT_SHALLOW TRUE
             GIT_PROGRESS ON
     )
@@ -185,6 +185,11 @@ if (EXISTS ${CMAKE_SOURCE_DIR}/publisher)
 endif()
 message("copying test data")
 file(COPY data DESTINATION .)
+set(PLUTUS_CONFORMANCE_SOURCE
+    "${CMAKE_SOURCE_DIR}/3rdparty/plutus/plutus-conformance/test-cases/uplc/evaluation")
+if(NOT IS_DIRECTORY "${PLUTUS_CONFORMANCE_SOURCE}")
+    message(FATAL_ERROR "Plutus conformance data is unavailable; initialize the 3rdparty/plutus submodule")
+endif()
 
 if(CMAKE_BUILD_TYPE STREQUAL Fuzzer)
     file(GLOB_RECURSE FUZZ_SRCS lib/turbo/*.fuzz.cpp)
