@@ -258,6 +258,176 @@ namespace turbo::plutus::costs {
         } };
     };
 
+    namespace {
+        struct compiled_arg_sizes {
+            compiled_arg_sizes(const op_model &model, const builtin_tag tag, const value_args &args,
+                    const bool text_costed_by_byte_length):
+                _model { model }, _tag { tag }, _args { args },
+                _text_costed_by_byte_length { text_costed_by_byte_length }
+            {
+            }
+
+            size_t size() const noexcept
+            {
+                return _args.size();
+            }
+
+            uint64_t at(const size_t idx) const
+            {
+                if (idx >= _args.size()) [[unlikely]]
+                    throw std::out_of_range("compiled argument size index is out of range");
+                const auto mask = static_cast<uint8_t>(1U << idx);
+                if (_computed & mask) [[likely]]
+                    return _cache[idx];
+                _cache[idx] = _compute(idx);
+                _computed |= mask;
+                return _cache[idx];
+            }
+        private:
+            uint64_t _compute(const size_t idx) const
+            {
+                const auto &arg = _args[idx];
+                if (_text_costed_by_byte_length
+                        && (_tag == builtin_tag::append_string || _tag == builtin_tag::equals_string
+                            || _tag == builtin_tag::encode_utf8))
+                    return arg.as_str()->size() / 4;
+                switch (_model.compiled_size) {
+                    case compiled_size_kind::default_size:
+                        return _mem_usage(arg);
+                    case compiled_size_kind::num_bytes_as_num_words:
+                        return _num_bytes_as_num_words(arg.as_int());
+                    case compiled_size_kind::literal_in_x: {
+                        if (idx != 0)
+                            return _mem_usage(arg);
+                        const auto &literal = *arg.as_int();
+                        if (literal == 0)
+                            return 0;
+                        const cpp_int magnitude = literal < 0 ? -literal : literal;
+                        if (magnitude >= max_cost)
+                            return max_cost;
+                        return magnitude.convert_to<uint64_t>();
+                    }
+                    case compiled_size_kind::value_max_depth: {
+                        if (idx != _model.compiled_size_index)
+                            return _mem_usage(arg);
+                        const auto &v = arg.as_asset_value();
+                        return saturated_add(_tree_depth(v->size()), _tree_depth(v.max_inner_size()));
+                    }
+                    case compiled_size_kind::data_node_count:
+                        return idx == 0 ? _data_node_count(arg.as_data()) : _mem_usage(arg);
+                }
+                throw error("unsupported compiled argument size model");
+            }
+
+            const op_model &_model;
+            builtin_tag _tag;
+            value_args _args;
+            bool _text_costed_by_byte_length;
+            mutable uint8_t _computed = 0;
+            mutable std::array<uint64_t, arg_sizes::max_size> _cache;
+        };
+
+        inline uint64_t evaluate_compiled_cost(const compiled_cost &model, const compiled_arg_sizes &sizes,
+                const value_args &args)
+        {
+            const auto &p = model.args;
+            switch (model.kind) {
+                case compiled_cost_kind::constant:
+                    return p[0];
+                case compiled_cost_kind::linear_in_x:
+                    return saturated_add(p[0], saturated_mul(p[1], sizes.at(0)));
+                case compiled_cost_kind::linear_in_y:
+                    return saturated_add(p[0], saturated_mul(p[1], sizes.at(1)));
+                case compiled_cost_kind::linear_in_z:
+                    return saturated_add(p[0], saturated_mul(p[1], sizes.at(2)));
+                case compiled_cost_kind::linear_in_u:
+                    return saturated_add(p[0], saturated_mul(p[1], sizes.at(3)));
+                case compiled_cost_kind::linear_in_x_and_y:
+                    return saturated_add(p[0], saturated_add(
+                        saturated_mul(p[1], sizes.at(0)), saturated_mul(p[2], sizes.at(1))));
+                case compiled_cost_kind::linear_in_y_and_z:
+                    return saturated_add(p[0], saturated_add(
+                        saturated_mul(p[1], sizes.at(1)), saturated_mul(p[2], sizes.at(2))));
+                case compiled_cost_kind::linear_in_max_yz:
+                    return saturated_add(p[0], saturated_mul(p[1], std::max(sizes.at(1), sizes.at(2))));
+                case compiled_cost_kind::with_interaction_in_x_and_y:
+                    return saturated_add(p[0], saturated_add(saturated_mul(p[2], sizes.at(0)),
+                        saturated_add(saturated_mul(p[1], sizes.at(1)),
+                            saturated_mul(p[3], saturated_mul(sizes.at(0), sizes.at(1))))));
+                case compiled_cost_kind::quadratic_in_x: {
+                    const auto x = sizes.at(0);
+                    return saturated_add(p[0], saturated_add(
+                        saturated_mul(p[1], x), saturated_mul(p[2], saturated_mul(x, x))));
+                }
+                case compiled_cost_kind::quadratic_in_y: {
+                    const auto y = sizes.at(1);
+                    return saturated_add(p[0], saturated_add(
+                        saturated_mul(p[1], y), saturated_mul(p[2], saturated_mul(y, y))));
+                }
+                case compiled_cost_kind::quadratic_in_z: {
+                    const auto z = sizes.at(2);
+                    return saturated_add(p[0], saturated_add(
+                        saturated_mul(p[1], z), saturated_mul(p[2], saturated_mul(z, z))));
+                }
+                case compiled_cost_kind::literal_in_y_or_linear_in_z: {
+                    const auto &literal = args[1].as_int();
+                    if (*literal != 0)
+                        return _num_bytes_as_num_words(literal);
+                    return saturated_add(p[0], saturated_mul(p[1], sizes.at(2)));
+                }
+                case compiled_cost_kind::added_sizes:
+                    return saturated_add(p[0], saturated_mul(p[1],
+                        saturated_add(sizes.at(0), sizes.at(1))));
+                case compiled_cost_kind::subtracted_sizes: {
+                    const auto x = sizes.at(0);
+                    const auto y = sizes.at(1);
+                    const auto difference = x > y ? x - y : 0;
+                    return saturated_add(p[0], saturated_mul(p[1], std::max(p[2], difference)));
+                }
+                case compiled_cost_kind::max_size:
+                    return saturated_add(p[0], saturated_mul(p[1], std::max(sizes.at(0), sizes.at(1))));
+                case compiled_cost_kind::min_size:
+                    return saturated_add(p[0], saturated_mul(p[1], std::min(sizes.at(0), sizes.at(1))));
+                case compiled_cost_kind::multiplied_sizes:
+                    return saturated_add(p[0], saturated_mul(p[1],
+                        saturated_mul(sizes.at(0), sizes.at(1))));
+                case compiled_cost_kind::linear_on_diagonal: {
+                    const auto x = sizes.at(0);
+                    return x == sizes.at(1) ? saturated_add(p[0], saturated_mul(p[1], x)) : p[2];
+                }
+                case compiled_cost_kind::exp_mod: {
+                    const auto exponent_modulus = saturated_mul(sizes.at(1), sizes.at(2));
+                    const auto cost0 = saturated_add(p[0], saturated_add(
+                        saturated_mul(p[1], exponent_modulus),
+                        saturated_mul(p[2], saturated_mul(exponent_modulus, sizes.at(2)))));
+                    return sizes.at(0) <= sizes.at(2) ? cost0 : saturated_add(cost0, cost0 / 2);
+                }
+                case compiled_cost_kind::generic:
+                    break;
+            }
+            throw error("generic cost model cannot be evaluated as a compiled model");
+        }
+    }
+
+    cardano::ex_units cost_builtin(const op_model &model, const builtin_tag tag, const value_args &args,
+            const bool text_costed_by_byte_length)
+    {
+        if (model.compiled_cpu.kind == compiled_cost_kind::constant
+                && model.compiled_mem.kind == compiled_cost_kind::constant) [[likely]]
+            return { model.compiled_mem.args[0], model.compiled_cpu.args[0] };
+        if (model.compiled_cpu.kind == compiled_cost_kind::generic
+                || model.compiled_mem.kind == compiled_cost_kind::generic) [[unlikely]] {
+            const auto sizes = sizes_for(model, tag, args, text_costed_by_byte_length);
+            const auto cpu = model.cpu->cost(sizes, args);
+            const auto mem = model.mem->cost(sizes, args);
+            return { mem, cpu };
+        }
+        compiled_arg_sizes compiled_sizes { model, tag, args, text_costed_by_byte_length };
+        const auto cpu = evaluate_compiled_cost(model.compiled_cpu, compiled_sizes, args);
+        const auto mem = evaluate_compiled_cost(model.compiled_mem, compiled_sizes, args);
+        return { mem, cpu };
+    }
+
     // the names of the classes match the names in the builtinCostModel config JSON
     struct constant_cost: cost_fun {
         constant_cost(const arg_map &args)
@@ -776,6 +946,81 @@ namespace turbo::plutus::costs {
         return cost_fun_from_args(args);
     }
 
+    static compiled_cost compiled_cost_from_args(const arg_map &args)
+    {
+        const auto value = [&](const std::string_view name) {
+            return std::stoull(args.at(std::string { name }));
+        };
+        const auto linear = [&](const compiled_cost_kind kind) {
+            return compiled_cost { kind, { value("arguments-intercept"), value("arguments-slope") } };
+        };
+        const auto &type = args.at("type");
+        if (type == "constant_cost")
+            return { compiled_cost_kind::constant, { value("arguments") } };
+        if (type == "linear_cost" || type == "linear_in_x")
+            return linear(compiled_cost_kind::linear_in_x);
+        if (type == "linear_in_y" || type == "linear_in_y2")
+            return linear(compiled_cost_kind::linear_in_y);
+        if (type == "linear_in_z")
+            return linear(compiled_cost_kind::linear_in_z);
+        if (type == "linear_in_u")
+            return linear(compiled_cost_kind::linear_in_u);
+        if (type == "linear_in_x_and_y")
+            return { compiled_cost_kind::linear_in_x_and_y, {
+                value("arguments-intercept"), value("arguments-slope1"), value("arguments-slope2")
+            } };
+        if (type == "linear_in_y_and_z")
+            return { compiled_cost_kind::linear_in_y_and_z, {
+                value("arguments-intercept"), value("arguments-slope1"), value("arguments-slope2")
+            } };
+        if (type == "linear_in_max_yz")
+            return linear(compiled_cost_kind::linear_in_max_yz);
+        if (type == "with_interaction_in_x_and_y")
+            return { compiled_cost_kind::with_interaction_in_x_and_y, {
+                value("arguments-c00"), value("arguments-c01"),
+                value("arguments-c10"), value("arguments-c11")
+            } };
+        if (type == "quadratic_in_x")
+            return { compiled_cost_kind::quadratic_in_x, {
+                value("arguments-c0"), value("arguments-c1"), value("arguments-c2")
+            } };
+        if (type == "quadratic_in_y")
+            return { compiled_cost_kind::quadratic_in_y, {
+                value("arguments-c0"), value("arguments-c1"), value("arguments-c2")
+            } };
+        if (type == "quadratic_in_z")
+            return { compiled_cost_kind::quadratic_in_z, {
+                value("arguments-c0"), value("arguments-c1"), value("arguments-c2")
+            } };
+        if (type == "literal_in_y_or_linear_in_z")
+            return linear(compiled_cost_kind::literal_in_y_or_linear_in_z);
+        if (type == "added_sizes")
+            return linear(compiled_cost_kind::added_sizes);
+        if (type == "subtracted_sizes")
+            return { compiled_cost_kind::subtracted_sizes, {
+                value("arguments-intercept"), value("arguments-slope"), value("arguments-minimum")
+            } };
+        if (type == "max_size")
+            return linear(compiled_cost_kind::max_size);
+        if (type == "min_size")
+            return linear(compiled_cost_kind::min_size);
+        if (type == "multiplied_sizes")
+            return linear(compiled_cost_kind::multiplied_sizes);
+        if (type == "linear_on_diagonal")
+            return { compiled_cost_kind::linear_on_diagonal, {
+                value("arguments-intercept"), value("arguments-slope"), value("arguments-constant")
+            } };
+        if (type == "exp_mod_cost")
+            return { compiled_cost_kind::exp_mod, {
+                value("arguments-coefficient00"), value("arguments-coefficient11"),
+                value("arguments-coefficient12")
+            } };
+        // Nested and signed-polynomial models retain the generic implementation. They are less
+        // common, and keeping the fallback makes this representation independent of protocol
+        // cost-model evolution.
+        return {};
+    }
+
     static cardano::ex_units ex_units_from_args(const arg_map &args)
     {
         cardano::ex_units c {};
@@ -829,7 +1074,13 @@ namespace turbo::plutus::costs {
             }
         }
         static auto default_sizer = std::make_shared<default_size_fun>();
-        return { cost_fun_from_args(cpu_args), cost_fun_from_args(mem_args), default_sizer };
+        op_model model {};
+        model.cpu = cost_fun_from_args(cpu_args);
+        model.mem = cost_fun_from_args(mem_args);
+        model.size = default_sizer;
+        model.compiled_cpu = compiled_cost_from_args(cpu_args);
+        model.compiled_mem = compiled_cost_from_args(mem_args);
+        return model;
     }
 
     static arg_map cost_args_from_json(const std::string &prefix, const json::object &o)
@@ -988,26 +1239,33 @@ namespace turbo::plutus::costs {
                         case builtin_tag::drop_list: {
                             static auto custom_fun = std::make_shared<literal_in_x_size_fun>();
                             op->size = custom_fun;
+                            op->compiled_size = compiled_size_kind::literal_in_x;
                             break;
                         }
                         case builtin_tag::replicate_byte: {
                             static auto custom_fun = std::make_shared<num_bytes_as_num_words_fun>();
                             op->size = custom_fun;
+                            op->compiled_size = compiled_size_kind::num_bytes_as_num_words;
                             break;
                         }
                         case builtin_tag::insert_coin: {
                             static auto custom_fun = std::make_shared<value_max_depth_size_fun>(3);
                             op->size = custom_fun;
+                            op->compiled_size = compiled_size_kind::value_max_depth;
+                            op->compiled_size_index = 3;
                             break;
                         }
                         case builtin_tag::lookup_coin: {
                             static auto custom_fun = std::make_shared<value_max_depth_size_fun>(2);
                             op->size = custom_fun;
+                            op->compiled_size = compiled_size_kind::value_max_depth;
+                            op->compiled_size_index = 2;
                             break;
                         }
                         case builtin_tag::un_value_data: {
                             static auto custom_fun = std::make_shared<data_node_count_size_fun>();
                             op->size = custom_fun;
+                            op->compiled_size = compiled_size_kind::data_node_count;
                             break;
                         }
                         default:

@@ -83,6 +83,46 @@ suite plutus_costs_suite = [] {
             uses_both.mem->cost(sizes, empty);
             expect_equal(2, calls);
         };
+        "compiled builtin costs match the reference models"_test = [] {
+            allocator alloc {};
+            const auto &model = defaults().for_script(cardano::script_type::plutus_v3, builtin_semantics::e);
+            const auto check = [&](const builtin_tag tag, const value_args &args,
+                    const bool text_costed_by_byte_length=false) {
+                const auto &op = model.builtin_fun.at(tag);
+                const auto sizes = sizes_for(op, tag, args, text_costed_by_byte_length);
+                const auto cpu = op.cpu->cost(sizes, args);
+                const auto mem = op.mem->cost(sizes, args);
+                const cardano::ex_units expected { mem, cpu };
+                expect_equal(expected, cost_builtin(op, tag, args, text_costed_by_byte_length));
+            };
+
+            const value_list two_ints { alloc, {
+                value { alloc, cpp_int { 1 } }, value { alloc, cpp_int { 2 } }
+            } };
+            const value_list three_ints { alloc, {
+                value { alloc, cpp_int { 1 } }, value { alloc, cpp_int { 2 } },
+                value { alloc, cpp_int { 3 } }
+            } };
+            const value_list two_units { alloc, {
+                value::unit(alloc), value::unit(alloc)
+            } };
+            const value_list text { alloc, {
+                value { alloc, std::string_view { "\xC3\xA9\xC3\xA9" } }
+            } };
+
+            expect(model.builtin_fun.at(builtin_tag::choose_unit).compiled_cpu.kind
+                == compiled_cost_kind::constant);
+            expect(model.builtin_fun.at(builtin_tag::divide_integer).compiled_cpu.kind
+                == compiled_cost_kind::generic);
+            check(builtin_tag::choose_unit, two_units); // constant / constant
+            check(builtin_tag::add_integer, two_ints); // max_size / max_size
+            check(builtin_tag::append_byte_string, two_ints); // added_sizes / added_sizes
+            check(builtin_tag::integer_to_byte_string, three_ints); // quadratic / linear
+            check(builtin_tag::exp_mod_integer, three_ints); // exp_mod / linear
+            check(builtin_tag::divide_integer, two_ints); // nested generic fallback
+            check(builtin_tag::replicate_byte, two_ints); // custom integer sizing
+            check(builtin_tag::encode_utf8, text, true); // semantics D/E text sizing
+        };
         "semantics variant models"_test = [] {
             cardano::plutus_cost_models no_overrides {};
             const auto models = parse(no_overrides);

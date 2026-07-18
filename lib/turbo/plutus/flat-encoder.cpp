@@ -100,6 +100,17 @@ namespace turbo::plutus::flat {
             encode(a.arg);
         }
 
+        void encode(const t_builtin_spine &s)
+        {
+            for (size_t i = 0; i < s.args.size(); ++i)
+                encode(term_tag::apply);
+            for (size_t i = 0; i < s.forces; ++i)
+                encode(term_tag::force);
+            encode(s.b);
+            for (const auto &arg: s.args)
+                encode(arg);
+        }
+
         void encode_type(const bint_type &)
         {
             encode(type_tag::integer);

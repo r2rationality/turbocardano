@@ -55,6 +55,44 @@ suite turbo_plutus_flat_suite = [] {
                 })) << fmt::format("{}", raw_cbor);
             }
         };
+        "literal builtin applications use a compact spine"_test = [] {
+            allocator source_alloc {};
+            const auto one = term { source_alloc,
+                plutus::constant { source_alloc, bint_type { source_alloc, int64_t { 1 } } } };
+            const auto two = term { source_alloc,
+                plutus::constant { source_alloc, bint_type { source_alloc, int64_t { 2 } } } };
+            auto expr = term { source_alloc, t_builtin { builtin_tag::add_integer } };
+            expr = term { source_alloc, apply { std::move(expr), one } };
+            expr = term { source_alloc, apply { std::move(expr), two } };
+            const auto bytes = encode(version { 1, 0, 0 }, expr);
+
+            allocator decode_alloc {};
+            const script decoded { decode_alloc, buffer { bytes }, false };
+            const auto decoded_expr = decoded.program();
+            expect(decoded_expr.visit([](const auto &v) {
+                return std::is_same_v<std::decay_t<decltype(v)>, t_builtin_spine>;
+            }));
+            expect_equal(expr, decoded_expr);
+            expect_equal(bytes, encode(decoded.version(), decoded_expr));
+            expect_equal(fmt::format("{}", expr), fmt::format("{}", decoded_expr));
+
+            const auto unit = term { source_alloc,
+                plutus::constant { source_alloc, std::monostate {} } };
+            auto forced_expr = term { source_alloc, t_builtin { builtin_tag::choose_unit } };
+            forced_expr = term { source_alloc, force { std::move(forced_expr) } };
+            forced_expr = term { source_alloc, apply { std::move(forced_expr), unit } };
+            forced_expr = term { source_alloc, apply { std::move(forced_expr), unit } };
+            const auto forced_bytes = encode(version { 1, 0, 0 }, forced_expr);
+            const script forced_decoded { decode_alloc, buffer { forced_bytes }, false };
+            expect(forced_decoded.program().visit([](const auto &v) {
+                using T = std::decay_t<decltype(v)>;
+                if constexpr (std::is_same_v<T, t_builtin_spine>)
+                    return v.b.tag == builtin_tag::choose_unit && v.forces == 1 && v.args.size() == 2;
+                return false;
+            }));
+            expect_equal(forced_expr, forced_decoded.program());
+            expect_equal(forced_bytes, encode(forced_decoded.version(), forced_decoded.program()));
+        };
         "constr and case require UPLC 1.1"_test = [] {
             allocator source_alloc {};
             const term unit { source_alloc, plutus::constant { source_alloc, std::monostate {} } };

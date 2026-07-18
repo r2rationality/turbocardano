@@ -9,6 +9,8 @@
 #include <turbo/plutus/builtins.hpp>
 #include <turbo/plutus/conformance-data.hpp>
 #include <turbo/plutus/costs.hpp>
+#include <turbo/plutus/flat-encoder.hpp>
+#include <turbo/plutus/flat.hpp>
 #include <turbo/plutus/machine.hpp>
 #include <turbo/plutus/uplc.hpp>
 
@@ -288,6 +290,17 @@ suite plutus_machine_bench_suite = [] {
             const auto lookup_depth_8 = make_lookup_batch(term_alloc, primitive_batch_size, 8, 7);
             const auto builtin_partial = make_partial_builtin_batch(term_alloc, primitive_batch_size);
             const auto builtin_complete = make_complete_builtin_batch(term_alloc, primitive_batch_size);
+            const auto builtin_partial_bytes = flat::encode(version { 1, 0, 0 }, builtin_partial);
+            const auto builtin_complete_bytes = flat::encode(version { 1, 0, 0 }, builtin_complete);
+            allocator spine_term_alloc {};
+            const flat::script builtin_partial_script {
+                spine_term_alloc, buffer { builtin_partial_bytes }, false
+            };
+            const flat::script builtin_complete_script {
+                spine_term_alloc, buffer { builtin_complete_bytes }, false
+            };
+            const auto builtin_partial_spine = builtin_partial_script.program();
+            const auto builtin_complete_spine = builtin_complete_script.program();
             const auto choose_unit_partial = make_choose_unit_batch(term_alloc, primitive_batch_size, 1);
             const auto choose_unit_complete = make_choose_unit_batch(term_alloc, primitive_batch_size, 2);
             const auto if_then_else_partial = make_if_then_else_batch(term_alloc, primitive_batch_size, 2);
@@ -324,6 +337,8 @@ suite plutus_machine_bench_suite = [] {
             run_machine_benchmark(bench, "variable lookup: 8 hops in depth-8 env", lookup_depth_8, primitive_batch_size);
             run_machine_benchmark(bench, "builtin application: partial add", builtin_partial, primitive_batch_size);
             run_machine_benchmark(bench, "builtin application: complete add", builtin_complete, primitive_batch_size);
+            run_machine_benchmark(bench, "builtin spine IR: partial add", builtin_partial_spine, primitive_batch_size);
+            run_machine_benchmark(bench, "builtin spine IR: complete add", builtin_complete_spine, primitive_batch_size);
             run_machine_benchmark(bench, "builtin application: partial chooseUnit (1/2 args)", choose_unit_partial, primitive_batch_size);
             run_machine_benchmark(bench, "builtin application: complete chooseUnit", choose_unit_complete, primitive_batch_size);
             run_machine_benchmark(bench, "builtin application: partial ifThenElse (2/3 args)", if_then_else_partial, primitive_batch_size);
@@ -341,6 +356,34 @@ suite plutus_machine_bench_suite = [] {
             run_machine_benchmark(bench, "lambda accumulation control: 4 args", lambda_control_4_args, primitive_batch_size);
             run_machine_benchmark(bench, "lambda accumulation control: 5 args", lambda_control_5_args, primitive_batch_size);
             run_machine_benchmark(bench, "constructor case", cases, primitive_batch_size);
+        };
+        "Flat builtin spine one-shot pipeline"_test = [] {
+            allocator source_alloc {};
+            const auto expr = make_complete_builtin_batch(source_alloc, primitive_batch_size);
+            const auto bytes = flat::encode(version { 1, 0, 0 }, expr);
+
+            ankerl::nanobench::Bench bench {};
+            bench.title("Flat builtin spine one-shot pipeline")
+                .output(&std::cerr)
+                .unit("builtin application")
+                .performanceCounters(true)
+                .relative(false)
+                .warmup(10)
+                .epochs(15)
+                .minEpochTime(std::chrono::milliseconds { 20 })
+                .batch(primitive_batch_size);
+
+            bench.run("Flat decode", [&] {
+                allocator alloc {};
+                const flat::script decoded { alloc, buffer { bytes }, false };
+                ankerl::nanobench::doNotOptimizeAway(decoded.program());
+            });
+            bench.run("Flat decode + evaluate", [&] {
+                allocator alloc {};
+                const flat::script decoded { alloc, buffer { bytes }, false };
+                machine m { alloc };
+                m.evaluate_no_res(decoded.program());
+            });
         };
         "immutable list storage"_test = [] {
             static constexpr size_t list_extent = 64;
@@ -516,6 +559,16 @@ suite plutus_machine_bench_suite = [] {
                 auto sizes = costs::sizes_for(op, add_tag, add_args, false);
                 ankerl::nanobench::doNotOptimizeAway(op.cpu->cost(sizes, add_args));
                 ankerl::nanobench::doNotOptimizeAway(op.mem->cost(sizes, add_args));
+            });
+            run_component_benchmark(bench, "costing: compiled chooseUnit path", [&] {
+                const auto &op = cost_model.builtin_fun.at(choose_tag);
+                ankerl::nanobench::doNotOptimizeAway(
+                    costs::cost_builtin(op, choose_tag, choose_args, false));
+            });
+            run_component_benchmark(bench, "costing: compiled addInteger path", [&] {
+                const auto &op = cost_model.builtin_fun.at(add_tag);
+                ankerl::nanobench::doNotOptimizeAway(
+                    costs::cost_builtin(op, add_tag, add_args, false));
             });
             run_component_benchmark(bench, "semantics: map lookup", [&] {
                 const auto &info = semantics.at(choose_tag);

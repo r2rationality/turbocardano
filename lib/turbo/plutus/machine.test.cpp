@@ -7,6 +7,7 @@
 #include <turbo/common/test.hpp>
 #include <turbo/plutus/conformance-data.hpp>
 #include <turbo/plutus/flat-encoder.hpp>
+#include <turbo/plutus/flat.hpp>
 #include <turbo/plutus/machine.hpp>
 #include <turbo/plutus/uplc.hpp>
 
@@ -174,6 +175,70 @@ suite plutus_machine_suite = [] {
             expect_equal(term { alloc,
                 plutus::constant { alloc, bint_type { alloc, int64_t { 42 } } } }, m.evaluate(expr).expr);
         };
+        "Flat builtin spines preserve evaluation, costing, and custom semantics"_test = [] {
+            allocator source_alloc {};
+            const uplc::script source {
+                source_alloc,
+                uint8_vector { std::string_view {
+                    "(program 1.0.0 [[(builtin addInteger) (con integer 1)] (con integer 2)])"
+                } }
+            };
+            const auto bytes = flat::encode(source.version(), source.program());
+            allocator decode_alloc {};
+            const flat::script decoded { decode_alloc, buffer { bytes }, false };
+
+            allocator generic_eval_alloc {};
+            machine generic { generic_eval_alloc };
+            const auto generic_result = generic.evaluate(source.program());
+            allocator spine_eval_alloc {};
+            machine spine { spine_eval_alloc };
+            const auto spine_result = spine.evaluate(decoded.program());
+            expect_equal(generic_result.expr, spine_result.expr);
+            expect_equal(generic_result.cost, spine_result.cost);
+
+            allocator partial_source_alloc {};
+            const uplc::script partial_source {
+                partial_source_alloc,
+                uint8_vector { std::string_view {
+                    "(program 1.0.0 [(builtin addInteger) (con integer 1)])"
+                } }
+            };
+            const auto partial_bytes = flat::encode(
+                partial_source.version(), partial_source.program());
+            allocator partial_decode_alloc {};
+            const flat::script partial_decoded {
+                partial_decode_alloc, buffer { partial_bytes }, false
+            };
+            allocator partial_generic_eval_alloc {};
+            machine partial_generic { partial_generic_eval_alloc };
+            const auto partial_generic_result = partial_generic.evaluate(partial_source.program());
+            allocator partial_spine_eval_alloc {};
+            machine partial_spine { partial_spine_eval_alloc };
+            const auto partial_spine_result = partial_spine.evaluate(partial_decoded.program());
+            expect_equal(partial_generic_result.expr, partial_spine_result.expr);
+            expect_equal(partial_generic_result.cost, partial_spine_result.cost);
+
+            allocator budget_eval_alloc {};
+            machine exact_budget { budget_eval_alloc, cardano::script_type::plutus_v3,
+                spine_result.cost };
+            expect(nothrow([&] { exact_budget.evaluate(decoded.program()); }));
+            allocator low_budget_eval_alloc {};
+            machine low_budget { low_budget_eval_alloc, cardano::script_type::plutus_v3,
+                cardano::ex_units { spine_result.cost.mem, spine_result.cost.steps - 1 } };
+            expect(throws([&] { low_budget.evaluate(decoded.program()); }));
+
+            auto semantics = builtins::semantics_v2();
+            semantics.at(builtin_tag::add_integer).func = builtin_two_arg {
+                [](allocator &result_alloc, const value &, const value &) {
+                    return value { result_alloc, int64_t { 42 } };
+                }
+            };
+            allocator custom_eval_alloc {};
+            machine custom { custom_eval_alloc,
+                costs::defaults().for_script(cardano::script_type::plutus_v3, builtin_semantics::c),
+                semantics };
+            expect_equal("(con integer 42)", fmt::format("{}", custom.evaluate(decoded.program()).expr));
+        };
         "discharge updates variable indices"_test = [] {
             const std::string_view uplc { "(program 1.0.0 [(lam v0 (lam v1 v1)) (con bool True)])" };
             allocator alloc {};
@@ -206,6 +271,39 @@ suite plutus_machine_suite = [] {
             expect(throws([&] { run_script(alloc, factorial, cardano::ex_units { 50025, 9352174 }); }));
             // succeeds with a high-enough budget
             expect(nothrow([&] { run_script(alloc, factorial, cardano::ex_units { 50026, 9352174 }); }));
+        };
+        "batched fixed-step accounting"_test = [] {
+            allocator alloc {};
+            auto model = costs::defaults().for_script(cardano::script_type::plutus_v3, builtin_semantics::e);
+            model.startup_op = { 1, 2 };
+            model.force_op = { 3, 5 };
+            model.delay_op = { 7, 11 };
+            model.constant_op = { 13, 17 };
+
+            term expr { alloc, plutus::constant { alloc, std::monostate {} } };
+            // 101 force/delay pairs plus the constant cross the 200-step checkpoint
+            // and leave three steps to be charged at normal evaluation completion.
+            for (size_t i = 0; i < 101; ++i) {
+                auto delayed = term { alloc, t_delay { std::move(expr) } };
+                expr = term { alloc, force { std::move(delayed) } };
+            }
+
+            machine unbudgeted { alloc, model, cardano::script_type::plutus_v3, {},
+                conformance_protocol_major };
+            const auto [res, cost] = unbudgeted.evaluate(expr);
+            expect_equal(cardano::ex_units { 1024, 1635 }, cost);
+
+            machine exact { alloc, model, cardano::script_type::plutus_v3,
+                cardano::ex_units { 1024, 1635 }, conformance_protocol_major };
+            expect(nothrow([&] { exact.evaluate(expr); }));
+
+            machine low_cpu { alloc, model, cardano::script_type::plutus_v3,
+                cardano::ex_units { 1024, 1634 }, conformance_protocol_major };
+            expect(throws([&] { low_cpu.evaluate(expr); }));
+
+            machine low_mem { alloc, model, cardano::script_type::plutus_v3,
+                cardano::ex_units { 1023, 1635 }, conformance_protocol_major };
+            expect(throws([&] { low_mem.evaluate(expr); }));
         };
         "protocol 11 builtin case"_test = [] {
             expect_equal("(con integer 10)", eval_uplc("(program 1.1.0 (case (con unit ()) (con integer 10)))", 11));

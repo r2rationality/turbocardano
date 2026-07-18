@@ -94,6 +94,8 @@ suite plutus_types_suite = [] {
                         return 3;
                     else if constexpr (std::is_same_v<T, plutus::apply>)
                         return 4;
+                    else if constexpr (std::is_same_v<T, t_builtin_spine>)
+                        return 4;
                     else if constexpr (std::is_same_v<T, plutus::constant>)
                         return 5;
                     else if constexpr (std::is_same_v<T, failure>)

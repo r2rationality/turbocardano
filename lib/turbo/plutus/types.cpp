@@ -797,10 +797,54 @@ namespace turbo::plutus {
     {
     }
 
+    bool term::_builtin_spine_equal(const term &o) const
+    {
+        const auto &storage = *static_cast<const term_builtin_spine_storage *>(
+            _builtin_spine_payload(_storage));
+        const t_builtin_spine spine { t_builtin { storage.tag }, storage.forces, storage.args() };
+        if (o._is_builtin_spine()) {
+            const auto &o_storage = *static_cast<const term_builtin_spine_storage *>(
+                _builtin_spine_payload(o._storage));
+            return spine == t_builtin_spine {
+                t_builtin { o_storage.tag }, o_storage.forces, o_storage.args()
+            };
+        }
+
+        std::array<const term *, builtin_args::max_size> args {};
+        const term *head = &o;
+        for (size_t arg_idx = spine.args.size(); arg_idx > 0; --arg_idx) {
+            if (head->_tag() != storage_tag::apply || head->_is_builtin_spine())
+                return false;
+            const auto &a = head->_payload_as<turbo::plutus::apply>();
+            args[arg_idx - 1] = &a.arg;
+            head = &a.func;
+        }
+        for (size_t force_idx = 0; force_idx < spine.forces; ++force_idx) {
+            if (head->_tag() != storage_tag::unary)
+                return false;
+            const auto &u = head->_payload_as<term_unary>();
+            if (u.tag != term_tag::force)
+                return false;
+            head = &u.expr;
+        }
+        if (head->_tag() != storage_tag::builtin
+                || static_cast<builtin_tag>(head->_immediate()) != spine.b.tag)
+            return false;
+        for (size_t i = 0; i < spine.args.size(); ++i) {
+            if (!(spine.args[i] == *args[i]))
+                return false;
+        }
+        return true;
+    }
+
     bool term::operator==(const term &o) const
     {
         if (_storage == o._storage)
             return true;
+        if (_is_builtin_spine())
+            return _builtin_spine_equal(o);
+        if (o._is_builtin_spine())
+            return o._builtin_spine_equal(*this);
         if (_tag() != o._tag())
             return false;
         switch (_tag()) {

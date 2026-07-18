@@ -5,7 +5,16 @@
 
 #include <turbo/plutus/builtins.hpp>
 #include <turbo/plutus/machine.hpp>
+#include <array>
 #include <limits>
+
+#if defined(_MSC_VER)
+#define TURBO_PLUTUS_NOINLINE __declspec(noinline)
+#elif defined(__GNUC__) || defined(__clang__)
+#define TURBO_PLUTUS_NOINLINE __attribute__((noinline))
+#else
+#define TURBO_PLUTUS_NOINLINE
+#endif
 
 namespace turbo::plutus {
     struct machine::impl {
@@ -51,12 +60,43 @@ namespace turbo::plutus {
         const bool _direct_semantics;
         const bool _direct_semantics_v2;
 
+        enum class step_kind: uint8_t {
+            constant,
+            variable,
+            lambda,
+            apply,
+            delay,
+            force,
+            builtin,
+            constr,
+            acase,
+            count
+        };
+
+        // Match Plutus Core's production CEK policy: fixed machine steps may
+        // slip by a bounded amount, while startup and builtin costs stay immediate.
+        static constexpr uint8_t _step_slippage = 200;
+        static constexpr size_t _num_step_kinds = static_cast<size_t>(step_kind::count);
+        static constexpr size_t _total_step_idx = _num_step_kinds;
+        std::array<uint8_t, _num_step_kinds + 1> _step_counts {};
+
         value _eval(const term &expr)
         {
+            if (_direct_semantics) [[likely]]
+                return _eval_mode<true>(expr);
+            return _eval_mode<false>(expr);
+        }
+
+        template<bool DirectSemantics>
+        value _eval_mode(const term &expr)
+        {
             _cost = {};
+            _step_counts.fill(0);
             _spend(_cost_model.startup_op);
             const environment empty_env {};
-            return _compute(empty_env, expr);
+            auto result = _compute<DirectSemantics>(empty_env, expr);
+            _spend_accumulated_steps();
+            return result;
         }
 
         void _check_budget() const
@@ -80,6 +120,86 @@ namespace turbo::plutus {
         void _spend(const cardano::ex_units &c)
         {
             _spend(c.mem, c.steps);
+        }
+
+        template<step_kind Kind>
+        const cardano::ex_units &_step_cost() const
+        {
+            if constexpr (Kind == step_kind::constant)
+                return _cost_model.constant_op;
+            else if constexpr (Kind == step_kind::variable)
+                return _cost_model.variable_op;
+            else if constexpr (Kind == step_kind::lambda)
+                return _cost_model.lambda_op;
+            else if constexpr (Kind == step_kind::apply)
+                return _cost_model.apply_op;
+            else if constexpr (Kind == step_kind::delay)
+                return _cost_model.delay_op;
+            else if constexpr (Kind == step_kind::force)
+                return _cost_model.force_op;
+            else if constexpr (Kind == step_kind::builtin)
+                return _cost_model.builtin_op;
+            else if constexpr (Kind == step_kind::constr)
+                return _cost_model.constr_op;
+            else if constexpr (Kind == step_kind::acase)
+                return _cost_model.case_op;
+            else
+                static_assert(Kind != step_kind::count, "the total step counter has no cost");
+        }
+
+        template<step_kind Kind>
+        void _add_accumulated_step_cost(cardano::ex_units &cost) const
+        {
+            constexpr auto idx = static_cast<size_t>(Kind);
+            const auto count = _step_counts[idx];
+            const auto &step_cost = _step_cost<Kind>();
+            cost.mem = costs::saturated_add(cost.mem, costs::saturated_mul(step_cost.mem, count));
+            cost.steps = costs::saturated_add(cost.steps, costs::saturated_mul(step_cost.steps, count));
+        }
+
+        TURBO_PLUTUS_NOINLINE void _spend_accumulated_steps()
+        {
+            if (_step_counts[_total_step_idx] == 0)
+                return;
+            cardano::ex_units cost {};
+            _add_accumulated_step_cost<step_kind::constant>(cost);
+            _add_accumulated_step_cost<step_kind::variable>(cost);
+            _add_accumulated_step_cost<step_kind::lambda>(cost);
+            _add_accumulated_step_cost<step_kind::apply>(cost);
+            _add_accumulated_step_cost<step_kind::delay>(cost);
+            _add_accumulated_step_cost<step_kind::force>(cost);
+            _add_accumulated_step_cost<step_kind::builtin>(cost);
+            _add_accumulated_step_cost<step_kind::constr>(cost);
+            _add_accumulated_step_cost<step_kind::acase>(cost);
+            _step_counts.fill(0);
+            _spend(cost);
+        }
+
+        template<step_kind Kind>
+        void _step()
+        {
+            constexpr auto idx = static_cast<size_t>(Kind);
+            ++_step_counts[idx];
+            auto &total = _step_counts[_total_step_idx];
+            ++total;
+            if (total >= _step_slippage) [[unlikely]]
+                _spend_accumulated_steps();
+        }
+
+        template<step_kind Kind>
+        void _steps(size_t count)
+        {
+            constexpr auto idx = static_cast<size_t>(Kind);
+            while (count > 0) {
+                const auto total = static_cast<size_t>(_step_counts[_total_step_idx]);
+                const auto room = static_cast<size_t>(_step_slippage) - total;
+                const auto take = std::min(count, room);
+                _step_counts[idx] = static_cast<uint8_t>(_step_counts[idx] + take);
+                _step_counts[_total_step_idx] = static_cast<uint8_t>(total + take);
+                count -= take;
+                if (_step_counts[_total_step_idx] >= _step_slippage) [[unlikely]]
+                    _spend_accumulated_steps();
+            }
         }
 
         static const value &_arg(const value_args &args, const size_t idx)
@@ -199,16 +319,13 @@ namespace turbo::plutus {
             const auto &op_model = _cost_model.builtin_fun.at(tag);
             const bool text_costed_by_byte_length =
                 _semantics_variant == builtin_semantics::d || _semantics_variant == builtin_semantics::e;
-            const auto sizes = costs::sizes_for(op_model, tag, args, text_costed_by_byte_length);
-            uint64_t cpu_cost = 0;
-            uint64_t mem_cost = 0;
+            cardano::ex_units cost {};
             try {
-                cpu_cost = op_model.cpu->cost(sizes, args);
-                mem_cost = op_model.mem->cost(sizes, args);
+                cost = costs::cost_builtin(op_model, tag, args, text_costed_by_byte_length);
             } catch (const std::exception &ex) {
                 throw error(fmt::format("failed to cost builtin {} with {} arguments: {}", tag, args.size(), ex.what()));
             }
-            _spend(mem_cost, cpu_cost);
+            _spend(cost.mem, cost.steps);
         }
 
         const value *_lookup_opt(const environment &env, size_t idx) const
@@ -244,6 +361,12 @@ namespace turbo::plutus {
                 } else if constexpr (std::is_same_v<T, apply>) {
                     return term { _alloc, apply { _discharge_term(env, v.func, local_depth, outer_depth),
                         _discharge_term(env, v.arg, local_depth, outer_depth) } };
+                } else if constexpr (std::is_same_v<T, t_builtin_spine>) {
+                    boost::container::static_vector<term, builtin_args::max_size> args {};
+                    for (const auto &arg: v.args)
+                        args.emplace_back(_discharge_term(env, arg, local_depth, outer_depth));
+                    return term::builtin_spine(_alloc, v.b.tag, v.forces,
+                        { args.data(), args.size() });
                 } else if constexpr (std::is_same_v<T, force>) {
                     return term { _alloc, force { _discharge_term(env, v.expr, local_depth, outer_depth) } };
                 } else if constexpr (std::is_same_v<T, t_delay>) {
@@ -297,36 +420,83 @@ namespace turbo::plutus {
             });
         }
 
-        value _apply_builtin(const v_builtin &b, const builtin_descriptor &descriptor)
+        template<size_t Arity, auto Function>
+        value _invoke_direct_builtin(const value_args &args)
         {
-            const size_t num_args = descriptor.num_args;
-            const auto args = b.args.values();
-            if (args.size() != num_args) [[unlikely]]
-                throw error(fmt::format("can't apply builtin {} to {} arguments: {} arguments are required!", b.b.tag, args.size(), num_args));
-            if (b.forces != descriptor.polymorphic_args) [[unlikely]]
-                throw error(fmt::format("can't apply builtin {} with {} forces: {} forces are required!", b.b.tag,
-                    b.forces, descriptor.polymorphic_args));
-            _spend(b.b.tag, args);
-            if (_direct_semantics) [[likely]]
-                return builtins::apply_direct(_alloc, _direct_semantics_v2, b.b.tag, args);
-            const auto &func = _semantics->at(b.b.tag).func;
-            switch (num_args) {
-                case 1: return std::get<builtin_one_arg>(func)(_alloc, args[0]);
-                case 2: return std::get<builtin_two_arg>(func)(_alloc, args[0], args[1]);
-                case 3: return std::get<builtin_three_arg>(func)(_alloc, args[0], args[1], args[2]);
-                case 4: return std::get<builtin_four_arg>(func)(_alloc, args[0], args[1], args[2], args[3]);
-                case 6: return std::get<builtin_six_arg>(func)(_alloc, args[0], args[1], args[2], args[3], args[4], args[5]);
-                default: throw error(fmt::format("unsupported number of arguments: {}!", num_args));
+            if constexpr (Arity == 1) {
+                return Function(_alloc, args[0]);
+            } else if constexpr (Arity == 2) {
+                return Function(_alloc, args[0], args[1]);
+            } else if constexpr (Arity == 3) {
+                return Function(_alloc, args[0], args[1], args[2]);
+            } else if constexpr (Arity == 4) {
+                return Function(_alloc, args[0], args[1], args[2], args[3]);
+            } else if constexpr (Arity == 6) {
+                return Function(_alloc, args[0], args[1], args[2], args[3], args[4], args[5]);
+            } else {
+                static_assert(Arity == 1 || Arity == 2 || Arity == 3 || Arity == 4 || Arity == 6,
+                    "unsupported builtin arity");
             }
         }
 
+        template<builtin_tag Tag, size_t Arity, size_t PolymorphicArgs, auto Function>
+        value _apply_direct_builtin(const value_args args, const size_t forces)
+        {
+            if (args.size() != Arity) [[unlikely]]
+                throw error(fmt::format("can't apply builtin {} to {} arguments: {} arguments are required!",
+                    Tag, args.size(), Arity));
+            if (forces != PolymorphicArgs) [[unlikely]]
+                throw error(fmt::format("can't apply builtin {} with {} forces: {} forces are required!",
+                    Tag, forces, PolymorphicArgs));
+            _spend(Tag, args);
+            if constexpr (Tag == builtin_tag::cons_byte_string) {
+                if (_direct_semantics_v2)
+                    return _invoke_direct_builtin<Arity, builtins::cons_byte_string_v2>(args);
+            }
+            return _invoke_direct_builtin<Arity, Function>(args);
+        }
+
+        template<bool DirectSemantics>
+        value _apply_builtin(const t_builtin &builtin, const value_args args, const size_t forces,
+                const builtin_descriptor &descriptor)
+        {
+            if constexpr (DirectSemantics) {
+                switch (builtin.tag) {
+#define TURBO_PLUTUS_BUILTIN(tag, arity, function, name, polymorphic, batch) \
+                    case builtin_tag::tag: \
+                        return _apply_direct_builtin<builtin_tag::tag, arity, polymorphic, builtins::function>(args, forces);
+#include <turbo/plutus/builtin-registry.inc>
+#undef TURBO_PLUTUS_BUILTIN
+                    default: throw error(fmt::format("not implemented: {}", static_cast<uint64_t>(builtin.tag)));
+                }
+            } else {
+                const size_t num_args = descriptor.num_args;
+                if (args.size() != num_args) [[unlikely]]
+                    throw error(fmt::format("can't apply builtin {} to {} arguments: {} arguments are required!", builtin.tag, args.size(), num_args));
+                if (forces != descriptor.polymorphic_args) [[unlikely]]
+                    throw error(fmt::format("can't apply builtin {} with {} forces: {} forces are required!", builtin.tag,
+                        forces, descriptor.polymorphic_args));
+                _spend(builtin.tag, args);
+                const auto &func = _semantics->at(builtin.tag).func;
+                switch (num_args) {
+                    case 1: return std::get<builtin_one_arg>(func)(_alloc, args[0]);
+                    case 2: return std::get<builtin_two_arg>(func)(_alloc, args[0], args[1]);
+                    case 3: return std::get<builtin_three_arg>(func)(_alloc, args[0], args[1], args[2]);
+                    case 4: return std::get<builtin_four_arg>(func)(_alloc, args[0], args[1], args[2], args[3]);
+                    case 6: return std::get<builtin_six_arg>(func)(_alloc, args[0], args[1], args[2], args[3], args[4], args[5]);
+                    default: throw error(fmt::format("unsupported number of arguments: {}!", num_args));
+                }
+            }
+        }
+
+        template<bool DirectSemantics>
         value _apply(const value &func, const value &arg)
         {
             return func.visit([&arg, this](const auto &f) {
                 using T = std::decay_t<decltype(f)>;
                 if constexpr (std::is_same_v<T, v_lambda>) {
                     const environment new_env { _alloc, f.env, arg };
-                    return _compute(new_env, f.body);
+                    return _compute<DirectSemantics>(new_env, f.body);
                 }
                 if constexpr (std::is_same_v<T, v_builtin>) {
                     v_builtin new_b { f.b, { _alloc, f.args, arg }, f.forces };
@@ -336,7 +506,8 @@ namespace turbo::plutus {
                     if (new_b.args.size() < descriptor.num_args) [[likely]]
                         return value { _alloc, std::move(new_b) };
                     //logger::info("{} {}", new_b.b.tag, new_b.args);
-                    auto res = _apply_builtin(new_b, descriptor);
+                    auto res = _apply_builtin<DirectSemantics>(new_b.b, new_b.args.values(),
+                        new_b.forces, descriptor);
                     //logger::info("{} => {}", new_b.b.tag, res);
                     return res;
                 }
@@ -345,12 +516,13 @@ namespace turbo::plutus {
             });
         }
 
+        template<bool DirectSemantics>
         value _force(const value &val)
         {
             return val.visit([this](const auto &v) {
                 using T = std::decay_t<decltype(v)>;
                 if constexpr (std::is_same_v<T, v_delay>)
-                    return _compute(v.env, v.expr);
+                    return _compute<DirectSemantics>(v.env, v.expr);
                 if constexpr (std::is_same_v<T, v_builtin>) {
                     const auto polymorphic_args = builtins::descriptor(v.b.tag).polymorphic_args;
                     if (v.forces < polymorphic_args) {
@@ -366,67 +538,100 @@ namespace turbo::plutus {
             });
         }
 
+        template<bool DirectSemantics>
         value _compute(const environment &env, const variable &e)
         {
-            _spend(_cost_model.variable_op);
+            _step<step_kind::variable>();
             return _lookup(env, e.idx);
         }
 
+        template<bool DirectSemantics>
         value _compute(const environment &, const constant &e)
         {
-            _spend(_cost_model.constant_op);
+            _step<step_kind::constant>();
             return { _alloc, e };
         }
 
+        template<bool DirectSemantics>
         value _compute(const environment &env, const t_lambda &e)
         {
-            _spend(_cost_model.lambda_op);
+            _step<step_kind::lambda>();
             return { _alloc, v_lambda { env, e.expr } };
         }
 
+        template<bool DirectSemantics>
         value _compute(const environment &env, const t_delay &e)
         {
-            _spend(_cost_model.delay_op);
+            _step<step_kind::delay>();
             return { _alloc, v_delay { env, e.expr } };
         }
 
+        template<bool DirectSemantics>
         value _compute(const environment &, const t_builtin &e)
         {
-            _spend(_cost_model.builtin_op);
+            _step<step_kind::builtin>();
             return { _alloc, v_builtin { e, {} } };
         }
 
+        template<bool DirectSemantics>
+        value _compute(const environment &env, const t_builtin_spine &e)
+        {
+            _steps<step_kind::apply>(e.args.size());
+            _steps<step_kind::force>(e.forces);
+            _step<step_kind::builtin>();
+
+            const auto &descriptor = builtins::descriptor(e.b.tag);
+            boost::container::static_vector<value, builtin_args::max_size> args {};
+            for (const auto &arg: e.args)
+                args.emplace_back(_compute<DirectSemantics>(env, arg));
+            const value_args arg_view { args.data(), args.size() };
+            if (e.forces != descriptor.polymorphic_args) [[unlikely]]
+                throw error(fmt::format(
+                    "an application of an polymorphic builtin with an incorrect number of forces: {}", e.b.tag));
+            if (args.size() < descriptor.num_args) {
+                return value { _alloc, v_builtin {
+                    e.b, builtin_args { _alloc, arg_view }, e.forces
+                } };
+            }
+            return _apply_builtin<DirectSemantics>(e.b, arg_view, e.forces, descriptor);
+        }
+
+        template<bool DirectSemantics>
         value _compute(const environment &env, const force &e)
         {
-            _spend(_cost_model.force_op);
-            return _force(_compute(env, e.expr));
+            _step<step_kind::force>();
+            return _force<DirectSemantics>(_compute<DirectSemantics>(env, e.expr));
         }
 
+        template<bool DirectSemantics>
         value _compute(const environment &env, const apply &e)
         {
-            _spend(_cost_model.apply_op);
-            const auto fun = _compute(env, e.func);
-            const auto arg = _compute(env, e.arg);
-            return _apply(fun, arg);
+            _step<step_kind::apply>();
+            const auto fun = _compute<DirectSemantics>(env, e.func);
+            const auto arg = _compute<DirectSemantics>(env, e.arg);
+            return _apply<DirectSemantics>(fun, arg);
         }
 
+        template<bool DirectSemantics>
         value _compute(const environment &env, const t_constr &e)
         {
-            _spend(_cost_model.constr_op);
+            _step<step_kind::constr>();
             value_list::value_type v_args { _alloc };
             v_args.reserve(e.args->size());
             for (const auto &arg: *e.args)
-                v_args.emplace_back(_compute(env, arg));
+                v_args.emplace_back(_compute<DirectSemantics>(env, arg));
             return value { _alloc, v_constr { e.tag, { _alloc, std::move(v_args) } } };
         }
 
+        template<bool DirectSemantics>
         value _case_branch(const environment &env, const t_case &e, const size_t idx)
         {
             if (idx >= e.cases->size()) [[unlikely]]
                 throw error(fmt::format("case branch index {} is out of bounds for {} branches", idx, e.cases->size()));
-            return _compute(env, *std::next(e.cases->begin(), idx));
+            return _compute<DirectSemantics>(env, *std::next(e.cases->begin(), idx));
         }
 
+        template<bool DirectSemantics>
         value _case_branch_const(const environment &env, const t_case &e, const constant &c)
         {
             if (_protocol_major < machine::builtin_case_protocol_major) [[unlikely]] {
@@ -439,70 +644,73 @@ namespace turbo::plutus {
                 using T = std::decay_t<decltype(v)>;
                 if constexpr (std::is_same_v<T, std::monostate>) {
                     if (num_branches == 1) [[likely]]
-                        return _case_branch(env, e, 0);
+                        return _case_branch<DirectSemantics>(env, e, 0);
                     throw error(fmt::format("casing on unit requires exactly one branch but got {}", num_branches));
                 } else if constexpr (std::is_same_v<T, bool>) {
                     if (!v && (num_branches == 1 || num_branches == 2))
-                        return _case_branch(env, e, 0);
+                        return _case_branch<DirectSemantics>(env, e, 0);
                     if (v && num_branches == 2)
-                        return _case_branch(env, e, 1);
+                        return _case_branch<DirectSemantics>(env, e, 1);
                     throw error(fmt::format("builtin bool value {} has no matching case branch", v));
                 } else if constexpr (std::is_same_v<T, bint_type>) {
                     if (*v >= 0 && *v < num_branches)
-                        return _case_branch(env, e, static_cast<size_t>(*v));
+                        return _case_branch<DirectSemantics>(env, e, static_cast<size_t>(*v));
                     throw error(fmt::format("builtin integer value {} has no matching case branch", *v));
                 } else if constexpr (std::is_same_v<T, constant_list>) {
                     if (num_branches != 1 && num_branches != 2) [[unlikely]]
                         throw error(fmt::format("casing on list requires exactly one or two branches but got {}", num_branches));
                     if (v.empty()) {
                         if (num_branches == 2)
-                            return _case_branch(env, e, 1);
+                            return _case_branch<DirectSemantics>(env, e, 1);
                         throw error("expected a non-empty list when casing with one branch");
                     }
-                    auto res = _case_branch(env, e, 0);
-                    res = _apply(res, value { _alloc, v.front() });
+                    auto res = _case_branch<DirectSemantics>(env, e, 0);
+                    res = _apply<DirectSemantics>(res, value { _alloc, v.front() });
                     const auto tail_val = value { _alloc, constant { _alloc, v.drop(_alloc, 1) } };
-                    return _apply(res, tail_val);
+                    return _apply<DirectSemantics>(res, tail_val);
                 } else if constexpr (std::is_same_v<T, constant_pair>) {
                     if (num_branches != 1) [[unlikely]]
                         throw error(fmt::format("casing on pair requires exactly one branch but got {}", num_branches));
-                    auto res = _case_branch(env, e, 0);
-                    res = _apply(res, value { _alloc, v->first });
-                    return _apply(res, value { _alloc, v->second });
+                    auto res = _case_branch<DirectSemantics>(env, e, 0);
+                    res = _apply<DirectSemantics>(res, value { _alloc, v->first });
+                    return _apply<DirectSemantics>(res, value { _alloc, v->second });
                 } else {
                     throw error(fmt::format("builtin constant type {} is not supported in case", typeid(T).name()));
                 }
             }, *c);
         }
 
+        template<bool DirectSemantics>
         value _compute(const environment &env, const t_case &e)
         {
-            _spend(_cost_model.case_op);
-            const auto v_arg = _compute(env, e.arg);
+            _step<step_kind::acase>();
+            const auto v_arg = _compute<DirectSemantics>(env, e.arg);
             return v_arg.visit([&](const auto &v) -> value {
                 using T = std::decay_t<decltype(v)>;
                 if constexpr (std::is_same_v<T, v_constr>) {
-                    auto res = _case_branch(env, e, v.tag);
+                    auto res = _case_branch<DirectSemantics>(env, e, v.tag);
                     for (const auto &arg: *v.args)
-                        res = _apply(res, arg);
+                        res = _apply<DirectSemantics>(res, arg);
                     return res;
                 } else if constexpr (std::is_same_v<T, constant>) {
-                    return _case_branch_const(env, e, v);
+                    return _case_branch_const<DirectSemantics>(env, e, v);
                 } else {
                     throw error(fmt::format("case requires a constructor or builtin constant but got {}", typeid(T).name()));
                 }
             });
         }
 
+        template<bool DirectSemantics>
         value _compute(const environment &, const failure &)
         {
             throw error("the plutus script reported an error!");
         }
 
+        template<bool DirectSemantics>
         value _compute(const environment &env, const term &t)
         {
             return t.visit([&env, this](const auto &e) {
-                return _compute(env, e);
+                return _compute<DirectSemantics>(env, e);
             });
         }
     };
@@ -539,3 +747,5 @@ namespace turbo::plutus {
         _impl->evaluate_no_res(expr);
     }
 }
+
+#undef TURBO_PLUTUS_NOINLINE

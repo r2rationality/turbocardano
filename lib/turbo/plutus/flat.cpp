@@ -408,11 +408,54 @@ namespace turbo::plutus::flat {
             return { std::move(body) };
         }
 
-        apply _decode_apply()
+        term _decode_apply()
         {
-            auto fun = _decode_term();
-            auto arg = _decode_term();
-            return { std::move(fun), std::move(arg) };
+            // Flat uses prefix encoding, so a left-associated application spine
+            // appears as consecutive apply tags followed by its head and args.
+            size_t num_applies = 1;
+            auto head_tag = static_cast<term_tag>(_decode_fixed_uint<4>());
+            while (head_tag == term_tag::apply) {
+                ++num_applies;
+                head_tag = static_cast<term_tag>(_decode_fixed_uint<4>());
+            }
+
+            size_t num_forces = 0;
+            while (head_tag == term_tag::force) {
+                ++num_forces;
+                head_tag = static_cast<term_tag>(_decode_fixed_uint<4>());
+            }
+
+            if (head_tag == term_tag::builtin) {
+                const auto builtin = _decode_builtin();
+                const auto &descriptor = builtins::descriptor(builtin.tag);
+                if (num_forces == descriptor.polymorphic_args && descriptor.num_args > 0
+                        && descriptor.num_args <= builtin_args::max_size) [[likely]] {
+                    const auto num_fused_args = std::min(
+                        num_applies, static_cast<size_t>(descriptor.num_args));
+                    boost::container::static_vector<term, builtin_args::max_size> args {};
+                    for (size_t i = 0; i < num_fused_args; ++i)
+                        args.emplace_back(_decode_term());
+                    auto fun = term::builtin_spine(_alloc, builtin.tag,
+                        static_cast<uint8_t>(num_forces), { args.data(), args.size() });
+                    for (size_t i = num_fused_args; i < num_applies; ++i)
+                        fun = term { _alloc, apply { std::move(fun), _decode_term() } };
+                    return fun;
+                }
+
+                auto fun = term { _alloc, t_builtin { builtin.tag } };
+                for (size_t i = 0; i < num_forces; ++i)
+                    fun = term { _alloc, force { std::move(fun) } };
+                for (size_t i = 0; i < num_applies; ++i)
+                    fun = term { _alloc, apply { std::move(fun), _decode_term() } };
+                return fun;
+            }
+
+            auto fun = _decode_term(head_tag);
+            for (size_t i = 0; i < num_forces; ++i)
+                fun = term { _alloc, force { std::move(fun) } };
+            for (size_t i = 0; i < num_applies; ++i)
+                fun = term { _alloc, apply { std::move(fun), _decode_term() } };
+            return fun;
         }
 
         force _decode_force()
@@ -447,14 +490,13 @@ namespace turbo::plutus::flat {
             return { arg, { _alloc, std::move(cases) } };
         }
 
-        term _decode_term()
+        term _decode_term(const term_tag typ)
         {
-            const auto typ = static_cast<term_tag>(_decode_fixed_uint<4>());
             switch (typ) {
                 case term_tag::variable: return { _alloc, _decode_variable() };
                 case term_tag::delay: return { _alloc, _decode_delay() };
                 case term_tag::lambda: return { _alloc, _decode_lambda() };
-                case term_tag::apply: return { _alloc, _decode_apply() };
+                case term_tag::apply: return _decode_apply();
                 case term_tag::constant: return { _alloc, _decode_constant() };
                 case term_tag::force: return { _alloc, _decode_force() };
                 case term_tag::error: return { _alloc, _decode_error() };
@@ -467,6 +509,11 @@ namespace turbo::plutus::flat {
                     return { _alloc, _decode_case() };
                 default: throw error(fmt::format("unexpected term: {}", static_cast<int>(typ)));
             }
+        }
+
+        term _decode_term()
+        {
+            return _decode_term(static_cast<term_tag>(_decode_fixed_uint<4>()));
         }
 
         plutus::version _decode_version()

@@ -134,10 +134,51 @@ namespace turbo::plutus::costs {
         arg_sizes size(const value_args &args) const override;
     };
 
+    enum class compiled_cost_kind: uint8_t {
+        generic,
+        constant,
+        linear_in_x,
+        linear_in_y,
+        linear_in_z,
+        linear_in_u,
+        linear_in_x_and_y,
+        linear_in_y_and_z,
+        linear_in_max_yz,
+        with_interaction_in_x_and_y,
+        quadratic_in_x,
+        quadratic_in_y,
+        quadratic_in_z,
+        literal_in_y_or_linear_in_z,
+        added_sizes,
+        subtracted_sizes,
+        max_size,
+        min_size,
+        multiplied_sizes,
+        linear_on_diagonal,
+        exp_mod
+    };
+
+    struct compiled_cost {
+        compiled_cost_kind kind = compiled_cost_kind::generic;
+        std::array<uint64_t, 4> args {};
+    };
+
+    enum class compiled_size_kind: uint8_t {
+        default_size,
+        num_bytes_as_num_words,
+        literal_in_x,
+        value_max_depth,
+        data_node_count
+    };
+
     struct op_model {
         cost_fun_ptr cpu {};
         cost_fun_ptr mem {};
         size_fun_ptr size {};
+        compiled_cost compiled_cpu {};
+        compiled_cost compiled_mem {};
+        compiled_size_kind compiled_size = compiled_size_kind::default_size;
+        uint8_t compiled_size_index = 0;
 
         bool operator==(const op_model &o) const
         {
@@ -168,6 +209,8 @@ namespace turbo::plutus::costs {
     };
 
     extern arg_sizes sizes_for(const op_model &, builtin_tag, const value_args &, bool text_costed_by_byte_length);
+    extern cardano::ex_units cost_builtin(const op_model &, builtin_tag, const value_args &,
+        bool text_costed_by_byte_length);
 
     struct parsed_model {
         cardano::ex_units startup_op;

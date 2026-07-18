@@ -8,6 +8,7 @@
 #include <deque>
 #include <iterator>
 #include <limits>
+#include <memory>
 #include <memory_resource>
 #include <span>
 #include <stdexcept>
@@ -458,6 +459,7 @@ namespace turbo::plutus {
     struct t_lambda;
     struct constant;
     struct t_builtin;
+    struct t_builtin_spine;
     struct t_constr;
     struct t_case;
     struct term_unary;
@@ -480,8 +482,11 @@ namespace turbo::plutus {
         term(allocator &, t_lambda &&);
         term(allocator &, const constant &);
         term(allocator &, t_builtin &&);
+        term(allocator &, t_builtin_spine &&);
         term(allocator &, t_constr &&);
         term(allocator &, t_case &&);
+
+        static term builtin_spine(allocator &, builtin_tag, uint8_t forces, std::span<const term> args);
 
         term &operator=(const term &o)
         {
@@ -496,6 +501,8 @@ namespace turbo::plutus {
     private:
         // Three low pointer bits select the storage form. Small leaves are
         // encoded directly; structural nodes point at their exact arena payload.
+        // A fourth bit distinguishes the 16-byte-aligned builtin-spine payload
+        // from an ordinary apply node without increasing the term handle size.
         enum class storage_tag: uintptr_t {
             variable,
             unary,
@@ -508,7 +515,12 @@ namespace turbo::plutus {
         };
 
         static constexpr uintptr_t _tag_mask = 0x7;
+        static constexpr uintptr_t _builtin_spine_mask = 0x8;
         static constexpr uintptr_t _max_immediate = std::numeric_limits<uintptr_t>::max() >> 3;
+
+        explicit term(const uintptr_t storage): _storage { storage }
+        {
+        }
 
         static uintptr_t _encode(const void *ptr, storage_tag tag) noexcept
         {
@@ -540,6 +552,18 @@ namespace turbo::plutus {
         {
             return *static_cast<const T *>(_payload());
         }
+
+        bool _is_builtin_spine() const noexcept
+        {
+            return _tag() == storage_tag::apply && (_storage & _builtin_spine_mask);
+        }
+
+        static const void *_builtin_spine_payload(const uintptr_t storage) noexcept
+        {
+            return reinterpret_cast<const void *>(storage & ~(_tag_mask | _builtin_spine_mask));
+        }
+
+        bool _builtin_spine_equal(const term &) const;
 
         uintptr_t _storage;
     };
@@ -640,7 +664,7 @@ namespace turbo::plutus {
         bool operator==(const force &o) const;
     };
 
-    struct apply {
+    struct alignas(16) apply {
         term func;
         term arg;
 
@@ -1454,6 +1478,34 @@ namespace turbo::plutus {
         size_t polymorphic_args() const;
     };
 
+    struct t_builtin_spine {
+        t_builtin b;
+        uint8_t forces;
+        std::span<const term> args;
+
+        bool operator==(const t_builtin_spine &o) const
+        {
+            if (!(b == o.b) || forces != o.forces || args.size() != o.args.size())
+                return false;
+            for (size_t i = 0; i < args.size(); ++i) {
+                if (!(args[i] == o.args[i]))
+                    return false;
+            }
+            return true;
+        }
+    };
+
+    struct alignas(16) term_builtin_spine_storage {
+        builtin_tag tag;
+        uint8_t forces;
+        uint8_t num_args;
+
+        std::span<const term> args() const noexcept
+        {
+            return { reinterpret_cast<const term *>(this + 1), num_args };
+        }
+    };
+
     struct t_constr {
         uint64_t tag;
         term_list args;
@@ -1475,13 +1527,16 @@ namespace turbo::plutus {
         term expr;
     };
 
-    struct term_value: std::variant<variable, t_delay, force, t_lambda, apply, constant, failure, t_builtin, t_constr, t_case> {
-        using std::variant<variable, t_delay, force, t_lambda, apply, constant, failure, t_builtin, t_constr, t_case>::variant;
+    struct term_value: std::variant<variable, t_delay, force, t_lambda, apply, constant, failure, t_builtin, t_builtin_spine, t_constr, t_case> {
+        using std::variant<variable, t_delay, force, t_lambda, apply, constant, failure, t_builtin, t_builtin_spine, t_constr, t_case>::variant;
     };
 
     static_assert(sizeof(term) == sizeof(uintptr_t));
     static_assert(alignof(term_unary) >= 8);
-    static_assert(alignof(apply) >= 8);
+    static_assert(alignof(apply) >= 16);
+    static_assert(alignof(term_builtin_spine_storage) >= 16);
+    static_assert(sizeof(term_builtin_spine_storage) % alignof(term) == 0);
+    static_assert(std::is_trivially_destructible_v<term>);
     static_assert(alignof(constant::value_type) >= 8);
     static_assert(alignof(t_constr) >= 8);
     static_assert(alignof(t_case) >= 8);
@@ -1538,6 +1593,28 @@ namespace turbo::plutus {
     {
     }
 
+    inline term term::builtin_spine(allocator &alloc, const builtin_tag tag, const uint8_t forces,
+            const std::span<const term> args)
+    {
+        if (args.empty() || args.size() > 6) [[unlikely]]
+            throw error(fmt::format("a builtin spine requires between one and six arguments but got {}", args.size()));
+        const auto bytes = sizeof(term_builtin_spine_storage) + args.size() * sizeof(term);
+        auto *storage = static_cast<term_builtin_spine_storage *>(
+            alloc.resource()->allocate(bytes, alignof(term_builtin_spine_storage)));
+        std::construct_at(storage, term_builtin_spine_storage {
+            tag, forces, static_cast<uint8_t>(args.size())
+        });
+        auto *storage_args = reinterpret_cast<term *>(storage + 1);
+        for (size_t i = 0; i < args.size(); ++i)
+            std::construct_at(storage_args + i, args[i]);
+        return term { _encode(storage, storage_tag::apply) | _builtin_spine_mask };
+    }
+
+    inline term::term(allocator &alloc, t_builtin_spine &&v):
+        _storage { builtin_spine(alloc, v.b.tag, v.forces, v.args)._storage }
+    {
+    }
+
     template<typename Visitor>
     decltype(auto) term::visit(Visitor &&visitor) const
     {
@@ -1554,6 +1631,11 @@ namespace turbo::plutus {
                 }
             }
             case storage_tag::apply:
+                if (_is_builtin_spine()) {
+                    const auto &v = *static_cast<const term_builtin_spine_storage *>(
+                        _builtin_spine_payload(_storage));
+                    return visitor(t_builtin_spine { t_builtin { v.tag }, v.forces, v.args() });
+                }
                 return visitor(_payload_as<turbo::plutus::apply>());
             case storage_tag::constant:
                 return visitor(constant { static_cast<const constant::value_type *>(_payload()) });
@@ -1727,6 +1809,10 @@ namespace turbo::plutus {
         static constexpr size_t max_size = 6;
 
         builtin_args() =default;
+        builtin_args(allocator &alloc, const value_args args):
+            _ptr { args.empty() ? allocator::ptr_type<storage> {} : alloc.make<storage>(args) }
+        {
+        }
         builtin_args(allocator &alloc, const builtin_args &args, const value &arg):
             _ptr { alloc.make<storage>(args.values(), arg) }
         {
@@ -1771,6 +1857,14 @@ namespace turbo::plutus {
         }
     private:
         struct storage: boost::container::static_vector<value, builtin_args::max_size> {
+            explicit storage(const value_args args)
+            {
+                if (args.size() > builtin_args::max_size) [[unlikely]]
+                    throw std::length_error("at most six builtin arguments are supported");
+                for (const auto &arg: args)
+                    this->emplace_back(arg);
+            }
+
             storage(const value_args args, const value &arg)
             {
                 if (args.size() >= builtin_args::max_size) [[unlikely]]
@@ -2241,6 +2335,20 @@ namespace fmt {
                 out_it = fmt::format_to(out_it, "(lam v{} ", depth);
                 out_it = format_term(out_it, v.expr, depth + 1);
                 return fmt::format_to(out_it, ")");
+            } else if constexpr (std::is_same_v<val_type, t_builtin_spine>) {
+                for (size_t i = 0; i < v.args.size(); ++i)
+                    out_it = fmt::format_to(out_it, "[");
+                for (size_t i = 0; i < v.forces; ++i)
+                    out_it = fmt::format_to(out_it, "(force ");
+                out_it = fmt::format_to(out_it, "{}", v.b);
+                for (size_t i = 0; i < v.forces; ++i)
+                    out_it = fmt::format_to(out_it, ")");
+                for (const auto &arg: v.args) {
+                    out_it = fmt::format_to(out_it, " ");
+                    out_it = format_term(out_it, arg, depth);
+                    out_it = fmt::format_to(out_it, "]");
+                }
+                return out_it;
             } else if constexpr (std::is_same_v<val_type, apply>) {
                 out_it = fmt::format_to(out_it, "[");
                 out_it = format_term(out_it, v.func, depth);
