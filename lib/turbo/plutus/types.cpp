@@ -35,52 +35,19 @@ namespace turbo::plutus {
         throw error(fmt::format("unknown builtin: {}", name));
     }
 
-    static const builtin_info &_builtin_info(const builtin_tag tag)
-    {
-        const auto &info_map = builtins::semantics_v1();
-        if (const auto it = info_map.find(tag); it != info_map.end()) [[likely]] {
-            switch (it->second.num_args) {
-                case 1:
-                    if (!std::holds_alternative<builtin_one_arg>(it->second.func))
-                        throw error("internal error: invalid plutus builtin configuration!");
-                    break;
-                case 2:
-                    if (!std::holds_alternative<builtin_two_arg>(it->second.func))
-                        throw error("internal error: invalid plutus builtin configuration!");
-                    break;
-                case 3:
-                    if (!std::holds_alternative<builtin_three_arg>(it->second.func))
-                        throw error("internal error: invalid plutus builtin configuration!");
-                    break;
-                case 4:
-                    if (!std::holds_alternative<builtin_four_arg>(it->second.func))
-                        throw error("internal error: invalid plutus builtin configuration!");
-                    break;
-                case 6:
-                    if (!std::holds_alternative<builtin_six_arg>(it->second.func))
-                        throw error("internal error: invalid plutus builtin configuration!");
-                    break;
-                default:
-                    throw error(fmt::format("internal error: invalid plutus builtin configuration: num_args: {}!", it->second.num_args));
-            }
-            return it->second;
-        }
-        throw error(fmt::format("not implemented: {}", tag));
-    }
-
     size_t t_builtin::num_args() const
     {
-        return _builtin_info(tag).num_args;
+        return builtins::descriptor(tag).num_args;
     }
 
     std::string_view t_builtin::name() const
     {
-        return _builtin_info(tag).name;
+        return builtins::descriptor(tag).name;
     }
 
     size_t t_builtin::polymorphic_args() const
     {
-        return _builtin_info(tag).polymorphic_args;
+        return builtins::descriptor(tag).polymorphic_args;
     }
 
     t_builtin t_builtin::from_name(const std::string_view name)

@@ -145,6 +145,28 @@ namespace turbo::plutus::costs {
         }
     };
 
+    struct builtin_model_table {
+        const op_model &at(const builtin_tag tag) const
+        {
+            const auto &model = _models[static_cast<size_t>(tag)];
+            if (!model.cpu)
+                throw std::out_of_range("builtin has no cost model");
+            return model;
+        }
+
+        std::pair<op_model *, bool> try_emplace(const builtin_tag tag, op_model &&model)
+        {
+            auto &slot = _models[static_cast<size_t>(tag)];
+            if (slot.cpu)
+                return { &slot, false };
+            slot = std::move(model);
+            return { &slot, true };
+        }
+
+    private:
+        std::array<op_model, builtin_tag_count> _models {};
+    };
+
     extern arg_sizes sizes_for(const op_model &, builtin_tag, const value_args &, bool text_costed_by_byte_length);
 
     struct parsed_model {
@@ -158,7 +180,7 @@ namespace turbo::plutus::costs {
         cardano::ex_units force_op;
         cardano::ex_units lambda_op;
         cardano::ex_units variable_op;
-        std::unordered_map<builtin_tag, op_model> builtin_fun {};
+        builtin_model_table builtin_fun {};
     };
 
     struct parsed_models {

@@ -154,6 +154,26 @@ suite plutus_machine_suite = [] {
     using plutus::allocator;
     using boost::ext::ut::v2_1_0::nothrow;
     "plutus::machine"_test = [] {
+        "custom builtin semantics use the generic fallback"_test = [] {
+            allocator alloc {};
+            auto semantics = builtins::semantics_v2();
+            semantics.at(builtin_tag::add_integer).func = builtin_two_arg {
+                [](allocator &result_alloc, const value &, const value &) {
+                    return value { result_alloc, int64_t { 42 } };
+                }
+            };
+            auto fun = term { alloc, t_builtin { builtin_tag::add_integer } };
+            auto partial = term { alloc,
+                apply { std::move(fun), term { alloc,
+                    plutus::constant { alloc, bint_type { alloc, int64_t { 1 } } } } } };
+            const auto expr = term { alloc,
+                apply { std::move(partial), term { alloc,
+                    plutus::constant { alloc, bint_type { alloc, int64_t { 2 } } } } } };
+            machine m { alloc, costs::defaults().for_script(cardano::script_type::plutus_v3, builtin_semantics::c),
+                semantics };
+            expect_equal(term { alloc,
+                plutus::constant { alloc, bint_type { alloc, int64_t { 42 } } } }, m.evaluate(expr).expr);
+        };
         "discharge updates variable indices"_test = [] {
             const std::string_view uplc { "(program 1.0.0 [(lam v0 (lam v1 v1)) (con bool True)])" };
             allocator alloc {};

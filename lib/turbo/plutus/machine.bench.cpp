@@ -521,6 +521,10 @@ suite plutus_machine_bench_suite = [] {
                 const auto &info = semantics.at(choose_tag);
                 ankerl::nanobench::doNotOptimizeAway(info.num_args);
             });
+            run_component_benchmark(bench, "semantics: indexed descriptor lookup", [&] {
+                const auto &info = builtins::descriptor(choose_tag);
+                ankerl::nanobench::doNotOptimizeAway(info.num_args);
+            });
             run_component_benchmark(bench, "semantics: direct chooseUnit body", [&] {
                 auto res = builtins::choose_unit(arg_alloc, choose_args->at(0), choose_args->at(1));
                 ankerl::nanobench::doNotOptimizeAway(res);
@@ -535,6 +539,10 @@ suite plutus_machine_bench_suite = [] {
                 auto res = fun(arg_alloc, choose_args->at(0), choose_args->at(1));
                 ankerl::nanobench::doNotOptimizeAway(res);
             });
+            run_component_benchmark(bench, "semantics: direct dispatch + chooseUnit", [&] {
+                auto res = builtins::apply_direct(arg_alloc, true, choose_tag, choose_args);
+                ankerl::nanobench::doNotOptimizeAway(res);
+            });
             bench.batch(primitive_batch_size).run("semantics: direct addInteger body", [&] {
                 allocator result_alloc {};
                 for (size_t i = 0; i < primitive_batch_size; ++i) {
@@ -546,6 +554,13 @@ suite plutus_machine_bench_suite = [] {
                 allocator result_alloc {};
                 for (size_t i = 0; i < primitive_batch_size; ++i) {
                     auto res = add_fun(result_alloc, add_args->at(0), add_args->at(1));
+                    ankerl::nanobench::doNotOptimizeAway(res);
+                }
+            });
+            bench.batch(primitive_batch_size).run("semantics: direct dispatch + addInteger", [&] {
+                allocator result_alloc {};
+                for (size_t i = 0; i < primitive_batch_size; ++i) {
+                    auto res = builtins::apply_direct(result_alloc, true, add_tag, add_args);
                     ankerl::nanobench::doNotOptimizeAway(res);
                 }
             });

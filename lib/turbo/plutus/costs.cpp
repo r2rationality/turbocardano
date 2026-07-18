@@ -981,33 +981,33 @@ namespace turbo::plutus::costs {
                         default: throw error(fmt::format("unsupported tag: {}", tag));
                     }
                 } else if constexpr (std::is_same_v<T, builtin_tag>) {
-                    const auto [it, created] = m.builtin_fun.try_emplace(tag, op_model_from_args(args));
+                    const auto [op, created] = m.builtin_fun.try_emplace(tag, op_model_from_args(args));
                     if (!created) [[unlikely]]
                         throw error("internal error: duplicate tag in the parsed cost model!");
                     switch (tag) {
                         case builtin_tag::drop_list: {
                             static auto custom_fun = std::make_shared<literal_in_x_size_fun>();
-                            it->second.size = custom_fun;
+                            op->size = custom_fun;
                             break;
                         }
                         case builtin_tag::replicate_byte: {
                             static auto custom_fun = std::make_shared<num_bytes_as_num_words_fun>();
-                            it->second.size = custom_fun;
+                            op->size = custom_fun;
                             break;
                         }
                         case builtin_tag::insert_coin: {
                             static auto custom_fun = std::make_shared<value_max_depth_size_fun>(3);
-                            it->second.size = custom_fun;
+                            op->size = custom_fun;
                             break;
                         }
                         case builtin_tag::lookup_coin: {
                             static auto custom_fun = std::make_shared<value_max_depth_size_fun>(2);
-                            it->second.size = custom_fun;
+                            op->size = custom_fun;
                             break;
                         }
                         case builtin_tag::un_value_data: {
                             static auto custom_fun = std::make_shared<data_node_count_size_fun>();
-                            it->second.size = custom_fun;
+                            op->size = custom_fun;
                             break;
                         }
                         default:

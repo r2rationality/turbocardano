@@ -36,6 +36,13 @@ namespace turbo::plutus {
         size_t polymorphic_args = 0;
         size_t batch = 1;
     };
+
+    struct builtin_descriptor {
+        uint8_t num_args = 0;
+        uint8_t polymorphic_args = 0;
+        uint8_t batch = 1;
+        std::string_view name {};
+    };
     using builtin_map = std::unordered_map<builtin_tag, builtin_info>;
 
     namespace builtins {
@@ -144,6 +151,12 @@ namespace turbo::plutus {
 
         extern const builtin_map &semantics_v1();
         extern const builtin_map &semantics_v2();
+        extern const std::array<builtin_descriptor, builtin_tag_count> descriptors;
+        inline const builtin_descriptor &descriptor(const builtin_tag tag) noexcept
+        {
+            return descriptors[static_cast<size_t>(tag)];
+        }
+        extern value apply_direct(allocator &, bool use_v2_semantics, builtin_tag, const value_args &);
         extern builtin_semantics semantics_variant(cardano::script_type, uint64_t protocol_major);
         extern const builtin_map &semantics_for(cardano::script_type, uint64_t protocol_major);
         extern bool available(builtin_tag, cardano::script_type, uint64_t protocol_major);

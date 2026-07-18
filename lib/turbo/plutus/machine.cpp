@@ -9,11 +9,15 @@
 
 namespace turbo::plutus {
     struct machine::impl {
-        impl(allocator &alloc, const costs::parsed_model &model, const builtin_map &semantics,
+        impl(allocator &alloc, const costs::parsed_model &model, const builtin_map *semantics,
                 const optional_budget &budget, const uint64_t protocol_major,
                 const builtin_semantics semantics_variant):
             _alloc { alloc }, _cost_model { model }, _budget { budget }, _semantics { semantics },
-            _protocol_major { protocol_major }, _semantics_variant { semantics_variant }
+            _protocol_major { protocol_major }, _semantics_variant { semantics_variant },
+            _direct_semantics { !semantics || semantics == &builtins::semantics_v1()
+                || semantics == &builtins::semantics_v2() },
+            _direct_semantics_v2 { semantics ? semantics == &builtins::semantics_v2()
+                : semantics_variant == builtin_semantics::c || semantics_variant == builtin_semantics::e }
         {
         }
 
@@ -41,9 +45,11 @@ namespace turbo::plutus {
         const costs::parsed_model &_cost_model;
         optional_budget _budget;
         cardano::ex_units _cost {};
-        const builtin_map &_semantics;
+        const builtin_map *_semantics;
         uint64_t _protocol_major;
         builtin_semantics _semantics_variant;
+        const bool _direct_semantics;
+        const bool _direct_semantics_v2;
 
         value _eval(const term &expr)
         {
@@ -291,21 +297,19 @@ namespace turbo::plutus {
             });
         }
 
-        builtin_any _get_builtin_func(const builtin_tag b)
+        value _apply_builtin(const v_builtin &b, const builtin_descriptor &descriptor)
         {
-            return _semantics.at(b).func;
-        }
-
-        value _apply_builtin(const v_builtin &b)
-        {
-            const auto num_args = b.b.num_args();
+            const size_t num_args = descriptor.num_args;
             const auto args = b.args.values();
             if (args.size() != num_args) [[unlikely]]
                 throw error(fmt::format("can't apply builtin {} to {} arguments: {} arguments are required!", b.b.tag, args.size(), num_args));
-            if (b.forces != b.b.polymorphic_args()) [[unlikely]]
-                throw error(fmt::format("can't apply builtin {} with {} forces: {} forces are required!", b.b.tag, b.forces, b.b.polymorphic_args()));
+            if (b.forces != descriptor.polymorphic_args) [[unlikely]]
+                throw error(fmt::format("can't apply builtin {} with {} forces: {} forces are required!", b.b.tag,
+                    b.forces, descriptor.polymorphic_args));
             _spend(b.b.tag, args);
-            const auto func = _get_builtin_func(b.b.tag);
+            if (_direct_semantics) [[likely]]
+                return builtins::apply_direct(_alloc, _direct_semantics_v2, b.b.tag, args);
+            const auto &func = _semantics->at(b.b.tag).func;
             switch (num_args) {
                 case 1: return std::get<builtin_one_arg>(func)(_alloc, args[0]);
                 case 2: return std::get<builtin_two_arg>(func)(_alloc, args[0], args[1]);
@@ -326,12 +330,13 @@ namespace turbo::plutus {
                 }
                 if constexpr (std::is_same_v<T, v_builtin>) {
                     v_builtin new_b { f.b, { _alloc, f.args, arg }, f.forces };
-                    if (new_b.b.polymorphic_args() != new_b.forces)
+                    const auto &descriptor = builtins::descriptor(new_b.b.tag);
+                    if (descriptor.polymorphic_args != new_b.forces)
                         throw error(fmt::format("an application of an polymorphic builtin with an incorrect number of forces: {}", new_b.b.tag));
-                    if (new_b.args.size() < new_b.b.num_args()) [[likely]]
+                    if (new_b.args.size() < descriptor.num_args) [[likely]]
                         return value { _alloc, std::move(new_b) };
                     //logger::info("{} {}", new_b.b.tag, new_b.args);
-                    auto res = _apply_builtin(new_b);
+                    auto res = _apply_builtin(new_b, descriptor);
                     //logger::info("{} => {}", new_b.b.tag, res);
                     return res;
                 }
@@ -347,12 +352,14 @@ namespace turbo::plutus {
                 if constexpr (std::is_same_v<T, v_delay>)
                     return _compute(v.env, v.expr);
                 if constexpr (std::is_same_v<T, v_builtin>) {
-                    if (v.forces < v.b.polymorphic_args()) {
+                    const auto polymorphic_args = builtins::descriptor(v.b.tag).polymorphic_args;
+                    if (v.forces < polymorphic_args) {
                         auto new_b = v;
                         ++new_b.forces;
                         return value { _alloc, std::move(new_b) };
                     }
-                    throw error(fmt::format("an unexpected force of a builtin: {} polymorphic_args: {} num_forces: {}", v.b.tag, v.b.polymorphic_args(), v.forces));
+                    throw error(fmt::format("an unexpected force of a builtin: {} polymorphic_args: {} num_forces: {}",
+                        v.b.tag, polymorphic_args, v.forces));
                 }
                 throw error(fmt::format("unsupported value for force: {}", typeid(T).name()));
                 return value { _alloc, constant { _alloc, std::monostate {} } };
@@ -508,15 +515,15 @@ namespace turbo::plutus {
 
     machine::machine(allocator &alloc, const costs::parsed_model &model, const cardano::script_type typ,
             const optional_budget &budget, const uint64_t protocol_major):
-        _impl { std::make_unique<impl>(alloc, model, builtins::semantics_for(typ, protocol_major), budget,
-            protocol_major, builtins::semantics_variant(typ, protocol_major)) }
+        _impl { std::make_unique<impl>(alloc, model, nullptr, budget, protocol_major,
+            builtins::semantics_variant(typ, protocol_major)) }
     {
     }
 
     machine::machine(allocator &alloc, const costs::parsed_model &model, const builtin_map &semantics,
             const optional_budget &budget, const uint64_t protocol_major,
             const builtin_semantics semantics_variant):
-        _impl { std::make_unique<impl>(alloc, model, semantics, budget, protocol_major, semantics_variant) }
+        _impl { std::make_unique<impl>(alloc, model, &semantics, budget, protocol_major, semantics_variant) }
     {
     }
 

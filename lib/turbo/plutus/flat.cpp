@@ -374,7 +374,7 @@ namespace turbo::plutus::flat {
         t_builtin _decode_builtin()
         {
             const auto tag = static_cast<builtin_tag>(_decode_fixed_uint<7>());
-            if (builtins::semantics_v2().contains(tag)) [[likely]] {
+            if (static_cast<size_t>(tag) < builtin_tag_count) [[likely]] {
                 t_builtin builtin { tag };
                 if (_validation)
                     _validation->check_builtin(builtin);

@@ -189,6 +189,8 @@ namespace turbo::plutus {
         un_value_data = 99,
         scale_value = 100
     };
+
+    static constexpr size_t builtin_tag_count = static_cast<size_t>(builtin_tag::scale_value) + 1;
 }
 
 namespace fmt {
@@ -309,13 +311,16 @@ namespace turbo::plutus {
         template<typename T, typename... Args>
         ptr_type<T> make_foreign(Args&&... a);
 
+        template<typename T>
+        void register_destructor(const ptr_type<T> &ptr);
+
         std::pmr::memory_resource *resource()
         {
             return _mr.get();
         }
     private:
         struct any_ptr {
-            void *ptr = nullptr;
+            const void *ptr = nullptr;
             void(*dtr)(const void*);
         };
 
@@ -831,12 +836,14 @@ namespace turbo::plutus {
         {
         }
 
-        bint_type(allocator &alloc): _ptr { alloc.make_foreign<value_type>() }
+        bint_type(allocator &alloc): _ptr { alloc.make<value_type>() }
         {
+            _register_destructor_if_needed(alloc);
         }
 
-        bint_type(allocator &alloc, const auto &v): _ptr { alloc.make_foreign<value_type>(v) }
+        bint_type(allocator &alloc, const auto &v): _ptr { alloc.make<value_type>(v) }
         {
+            _register_destructor_if_needed(alloc);
         }
 
         bint_type &operator=(const bint_type &o)
@@ -860,6 +867,14 @@ namespace turbo::plutus {
             return *_ptr;
         }
     private:
+        void _register_destructor_if_needed(allocator &alloc) const
+        {
+            // Runtime integers are immutable after construction. An inline backend can
+            // therefore never acquire external limb storage later in its lifetime.
+            if (_ptr->backend().capacity() > bint_backend_parent_type::internal_limb_count) [[unlikely]]
+                alloc.register_destructor(_ptr);
+        }
+
         allocator::ptr_type<value_type> _ptr;
     };
 
@@ -1907,16 +1922,22 @@ namespace turbo::plutus {
     template<typename T, typename... Args>
     allocator::ptr_type<T> allocator::make_foreign(Args &&...a)
     {
-        T *p = new (_mr->allocate(sizeof(T), alignof(T))) T { std::forward<Args>(a)... };
+        auto ptr = make<T>(std::forward<Args>(a)...);
+        register_destructor(ptr);
+        return ptr;
+    }
+
+    template<typename T>
+    void allocator::register_destructor(const ptr_type<T> &ptr)
+    {
         try {
-            _ptrs.emplace_back(p, [](const void* x) { static_cast<const T*>(x)->~T(); });
+            _ptrs.emplace_back(ptr.get(), [](const void* x) { static_cast<const T*>(x)->~T(); });
         } catch (...) {
             // Call the destructor to release the memory allocated with alternative allocators.
             // There is no need to deallocate in _mr since all its buffers will be released at the end of its lifetime.
-            p->~T();
+            ptr.get()->~T();
             throw;
         }
-        return p;
     }
 #if defined(__GNUC__) && !defined(__clang__)
 #       pragma GCC diagnostic pop

@@ -20,6 +20,23 @@ suite plutus_builtins_suite = [] {
     using plutus::allocator;
     using plutus::data;
     "plutus::builtins"_test = [] {
+        "direct registry"_test = [] {
+            const auto &generic = semantics_v1();
+            for (size_t i = 0; i < builtin_tag_count; ++i) {
+                const auto tag = static_cast<builtin_tag>(i);
+                const auto &direct = descriptor(tag);
+                const auto &fallback = generic.at(tag);
+                expect_equal(fallback.num_args, static_cast<size_t>(direct.num_args));
+                expect_equal(fallback.polymorphic_args, static_cast<size_t>(direct.polymorphic_args));
+                expect_equal(fallback.batch, static_cast<size_t>(direct.batch));
+                expect_equal(std::string_view { fallback.name }, direct.name);
+            }
+
+            allocator alloc {};
+            const value_list args { alloc, { value { alloc, 2 }, value { alloc, 3 } } };
+            expect_equal(value { alloc, 5 },
+                apply_direct(alloc, false, builtin_tag::add_integer, args));
+        };
         "v1"_test = [] {
             allocator alloc {};
             using namespace std::literals::string_view_literals;

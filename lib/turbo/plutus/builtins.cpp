@@ -1190,6 +1190,51 @@ namespace turbo::plutus::builtins {
         return make_asset_value(alloc, std::move(map));
     }
 
+    const std::array<builtin_descriptor, builtin_tag_count> descriptors = [] {
+        std::array<builtin_descriptor, builtin_tag_count> descriptors {};
+#define TURBO_PLUTUS_BUILTIN(tag, arity, function, name, polymorphic, batch) \
+        descriptors[static_cast<size_t>(builtin_tag::tag)] = { arity, polymorphic, batch, name };
+#include <turbo/plutus/builtin-registry.inc>
+#undef TURBO_PLUTUS_BUILTIN
+        return descriptors;
+    }();
+
+    namespace {
+        template<auto Function, size_t Arity>
+        inline value invoke_direct(allocator &alloc, const value_args &args)
+        {
+            if constexpr (Arity == 1) {
+                return Function(alloc, args[0]);
+            } else if constexpr (Arity == 2) {
+                return Function(alloc, args[0], args[1]);
+            } else if constexpr (Arity == 3) {
+                return Function(alloc, args[0], args[1], args[2]);
+            } else if constexpr (Arity == 4) {
+                return Function(alloc, args[0], args[1], args[2], args[3]);
+            } else if constexpr (Arity == 6) {
+                return Function(alloc, args[0], args[1], args[2], args[3], args[4], args[5]);
+            } else {
+                static_assert(Arity == 1 || Arity == 2 || Arity == 3 || Arity == 4 || Arity == 6,
+                    "unsupported builtin arity");
+            }
+        }
+    }
+
+    value apply_direct(allocator &alloc, const bool use_v2_semantics, const builtin_tag tag,
+            const value_args &args)
+    {
+        if (tag == builtin_tag::cons_byte_string && use_v2_semantics) {
+            return invoke_direct<cons_byte_string_v2, 2>(alloc, args);
+        }
+        switch (tag) {
+#define TURBO_PLUTUS_BUILTIN(tag, arity, function, name, polymorphic, batch) \
+            case builtin_tag::tag: return invoke_direct<function, arity>(alloc, args);
+#include <turbo/plutus/builtin-registry.inc>
+#undef TURBO_PLUTUS_BUILTIN
+            default: throw error(fmt::format("not implemented: {}", static_cast<uint64_t>(tag)));
+        }
+    }
+
     static void init_builtin_map(builtin_map &m)
     {
         m.try_emplace(builtin_tag::add_integer, 2, add_integer, "addInteger");
@@ -1376,7 +1421,7 @@ namespace turbo::plutus::builtins {
     {
         if (!_ledger_language_available(typ, protocol_major))
             return false;
-        const auto batch = semantics_v1().at(tag).batch;
+        const auto batch = descriptor(tag).batch;
         using cardano::script_type;
         switch (typ) {
             case script_type::plutus_v1:
