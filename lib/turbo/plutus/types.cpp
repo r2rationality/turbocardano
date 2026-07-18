@@ -90,7 +90,7 @@ namespace turbo::plutus {
 
     bool t_delay::operator==(const t_delay &o) const
     {
-        return *expr == *o.expr;
+        return expr == o.expr;
     }
 
     bool t_case::operator==(const t_case &o) const
@@ -105,17 +105,17 @@ namespace turbo::plutus {
 
     bool force::operator==(const force &o) const
     {
-        return *expr == *o.expr;
+        return expr == o.expr;
     }
 
     bool t_lambda::operator==(const t_lambda &o) const
     {
-        return *expr == *o.expr && var_idx == o.var_idx;
+        return expr == o.expr;
     }
 
     bool apply::operator==(const apply &o) const
     {
-        return *func == *o.func && *arg == *o.arg;
+        return func == o.func && arg == o.arg;
     }
 
     constant_pair::constant_pair(allocator &alloc, const constant &fst, const constant &snd): constant_pair { alloc, constant { fst }, constant { snd } }
@@ -211,12 +211,12 @@ namespace turbo::plutus {
     }
 
     constant_list::constant_list(allocator &alloc, const constant_type &t):
-        constant_list { alloc, value_type { t, { alloc } } }
+        constant_list { alloc, t, list_type { alloc } }
     {
     }
 
     constant_list::constant_list(allocator &alloc, const constant_type &t, list_type &&l):
-        constant_list { alloc, value_type { t, std::move(l) } }
+        _storage { _encode(alloc.make<constant_list_flat>(t, std::move(l)).get(), storage_tag::flat) }
     {
     }
 
@@ -226,23 +226,201 @@ namespace turbo::plutus {
     }
 
     constant_list::constant_list(allocator &alloc, const constant_type &t, std::initializer_list<constant> il):
-        constant_list { alloc, value_type { t, { alloc, il } } }
+        constant_list { alloc, t, list_type { alloc, il } }
     {
     }
 
-    const constant_list::value_type *constant_list::operator->() const
+    const constant_type &constant_list::typ() const
     {
-        return _ptr.get();
+        switch (_tag(_storage)) {
+            case storage_tag::flat: return _payload_as<constant_list_flat>(_storage).typ;
+            case storage_tag::slice: return _payload_as<constant_list_slice>(_storage).root->typ;
+            case storage_tag::cons: return _payload_as<constant_list_cons>(_storage).typ;
+        }
+        throw error("invalid constant list storage tag");
     }
 
-    const constant_list::value_type &constant_list::operator*() const
+    size_t constant_list::size() const
     {
-        return *_ptr;
+        switch (_tag(_storage)) {
+            case storage_tag::flat: return _payload_as<constant_list_flat>(_storage).vals.size();
+            case storage_tag::slice: return _payload_as<constant_list_slice>(_storage).size;
+            case storage_tag::cons: return _payload_as<constant_list_cons>(_storage).size;
+        }
+        throw error("invalid constant list storage tag");
+    }
+
+    bool constant_list::empty() const
+    {
+        return size() == 0;
+    }
+
+    const constant &constant_list::front() const
+    {
+        return at(0);
+    }
+
+    const constant &constant_list::back() const
+    {
+        return at(size() - 1);
+    }
+
+    const constant &constant_list::at(size_t pos) const
+    {
+        if (pos >= size()) [[unlikely]]
+            throw std::out_of_range("constant list index out of range");
+        auto storage = _storage;
+        while (_tag(storage) == storage_tag::cons) {
+            const auto &cell = _payload_as<constant_list_cons>(storage);
+            if (!pos)
+                return cell.head;
+            --pos;
+            storage = cell.tail;
+        }
+        if (_tag(storage) == storage_tag::flat)
+            return _payload_as<constant_list_flat>(storage).vals.at(pos);
+        const auto &slice = _payload_as<constant_list_slice>(storage);
+        return slice.root->vals.at(slice.offset + pos);
+    }
+
+    std::span<const constant> constant_list::_next_segment(uintptr_t &storage)
+    {
+        switch (_tag(storage)) {
+            case storage_tag::cons: {
+                const auto &cell = _payload_as<constant_list_cons>(storage);
+                storage = cell.tail;
+                return { &cell.head, 1 };
+            }
+            case storage_tag::flat: {
+                const auto &flat = _payload_as<constant_list_flat>(storage);
+                storage = 0;
+                return { flat.vals.data(), flat.vals.size() };
+            }
+            case storage_tag::slice: {
+                const auto &slice = _payload_as<constant_list_slice>(storage);
+                storage = 0;
+                if (!slice.size)
+                    return {};
+                return { slice.root->vals.data() + slice.offset, slice.size };
+            }
+        }
+        throw error("invalid constant list storage tag");
+    }
+
+    constant_list::const_iterator::const_iterator(const constant_list &vals, const bool at_end):
+        _storage { vals._storage },
+        _remaining { at_end ? 0 : vals.size() }
+    {
+    }
+
+    constant_list::const_iterator::reference constant_list::const_iterator::operator*() const
+    {
+        if (constant_list::_tag(_storage) == constant_list::storage_tag::cons)
+            return constant_list::_payload_as<constant_list_cons>(_storage).head;
+        if (constant_list::_tag(_storage) == constant_list::storage_tag::flat)
+            return constant_list::_payload_as<constant_list_flat>(_storage).vals.at(_tail_pos);
+        const auto &slice = constant_list::_payload_as<constant_list_slice>(_storage);
+        return slice.root->vals.at(slice.offset + _tail_pos);
+    }
+
+    constant_list::const_iterator::pointer constant_list::const_iterator::operator->() const
+    {
+        return &operator*();
+    }
+
+    constant_list::const_iterator &constant_list::const_iterator::operator++()
+    {
+        if (constant_list::_tag(_storage) == constant_list::storage_tag::cons) {
+            _storage = constant_list::_payload_as<constant_list_cons>(_storage).tail;
+            _tail_pos = 0;
+        } else {
+            ++_tail_pos;
+        }
+        --_remaining;
+        return *this;
+    }
+
+    constant_list::const_iterator constant_list::const_iterator::operator++(int)
+    {
+        auto prev = *this;
+        ++*this;
+        return prev;
+    }
+
+    bool constant_list::const_iterator::operator==(const const_iterator &o) const
+    {
+        if (!_remaining || !o._remaining)
+            return _remaining == o._remaining;
+        return _storage == o._storage && _tail_pos == o._tail_pos && _remaining == o._remaining;
+    }
+
+    constant_list::const_iterator constant_list::begin() const
+    {
+        return { *this, false };
+    }
+
+    constant_list::const_iterator constant_list::end() const
+    {
+        return { *this, true };
     }
 
     bool constant_list::operator==(const constant_list &o) const
     {
-        return _ptr->typ == o._ptr->typ && _ptr->vals == o._ptr->vals;
+        return _storage == o._storage
+            || (typ() == o.typ() && size() == o.size() && std::equal(begin(), end(), o.begin(), o.end()));
+    }
+
+    constant_list constant_list::prepend(allocator &alloc, const constant &val) const
+    {
+        const auto cell = alloc.make<constant_list_cons>(val, _storage, typ(), size() + 1);
+        return constant_list { _encode(cell.get(), storage_tag::cons) };
+    }
+
+    constant_list constant_list::drop(allocator &alloc, const size_t count) const
+    {
+        auto storage = _storage;
+        auto remaining = std::min(count, size());
+        while (remaining && _tag(storage) == storage_tag::cons) {
+            storage = _payload_as<constant_list_cons>(storage).tail;
+            --remaining;
+        }
+        if (!remaining)
+            return constant_list { storage };
+
+        const constant_list_flat *root = nullptr;
+        size_t offset = 0;
+        size_t new_size = 0;
+        if (_tag(storage) == storage_tag::flat) {
+            root = &_payload_as<constant_list_flat>(storage);
+            offset = remaining;
+            new_size = root->vals.size() - remaining;
+        } else {
+            const auto &slice = _payload_as<constant_list_slice>(storage);
+            root = slice.root;
+            offset = slice.offset + remaining;
+            new_size = slice.size - remaining;
+        }
+        const auto slice = alloc.make<constant_list_slice>(root, offset, new_size);
+        return constant_list { _encode(slice.get(), storage_tag::slice) };
+    }
+
+    void constant_list::copy_to(list_type &out) const
+    {
+        out.reserve(out.size() + size());
+        auto storage = _storage;
+        while (_tag(storage) == storage_tag::cons) {
+            const auto &cell = _payload_as<constant_list_cons>(storage);
+            out.emplace_back(cell.head);
+            storage = cell.tail;
+        }
+        if (_tag(storage) == storage_tag::flat) {
+            const auto &flat = _payload_as<constant_list_flat>(storage);
+            out.insert(out.end(), flat.vals.begin(), flat.vals.end());
+            return;
+        }
+        const auto &slice = _payload_as<constant_list_slice>(storage);
+        out.insert(out.end(), std::next(slice.root->vals.begin(), slice.offset),
+            std::next(slice.root->vals.begin(), slice.offset + slice.size));
     }
 
     constant_type constant_type::from_val(allocator &alloc, const constant &c)
@@ -268,9 +446,9 @@ namespace turbo::plutus {
             } else if constexpr (std::is_same_v<T, bls12_381_ml_result>) {
                 return constant_type { alloc, type_tag::bls12_381_ml_result };
             } else if constexpr (std::is_same_v<T, constant_list>) {
-                return constant_type { alloc, type_tag::list, { alloc, { v->typ } } };
+                return constant_type { alloc, type_tag::list, { alloc, { v.typ() } } };
             } else if constexpr (std::is_same_v<T, constant_array>) {
-                return constant_type { alloc, type_tag::array, { alloc, { v->typ } } };
+                return constant_type { alloc, type_tag::array, { alloc, { v.typ() } } };
             } else if constexpr (std::is_same_v<T, asset_value>) {
                 return constant_type { alloc, type_tag::value };
             } else if constexpr (std::is_same_v<T, constant_pair>) {
@@ -645,28 +823,59 @@ namespace turbo::plutus {
         return res;
     }
 
+    term::term(allocator &alloc, value_type &&v):
+        _storage { std::visit([&](auto &&payload) {
+            return term { alloc, std::move(payload) }._storage;
+        }, std::move(v)) }
+    {
+    }
+
     bool term::operator==(const term &o) const
     {
-        return *_ptr == *o._ptr;
+        if (_storage == o._storage)
+            return true;
+        if (_tag() != o._tag())
+            return false;
+        switch (_tag()) {
+            case storage_tag::variable:
+            case storage_tag::failure:
+            case storage_tag::builtin:
+                return false;
+            case storage_tag::unary: {
+                const auto &v = _payload_as<term_unary>();
+                const auto &ov = o._payload_as<term_unary>();
+                return v.tag == ov.tag && v.expr == ov.expr;
+            }
+            case storage_tag::apply:
+                return _payload_as<turbo::plutus::apply>() == o._payload_as<turbo::plutus::apply>();
+            case storage_tag::constant:
+                return constant { static_cast<const constant::value_type *>(_payload()) }
+                    == constant { static_cast<const constant::value_type *>(o._payload()) };
+            case storage_tag::constr:
+                return _payload_as<t_constr>() == o._payload_as<t_constr>();
+            case storage_tag::acase:
+                return _payload_as<t_case>() == o._payload_as<t_case>();
+        }
+        return false;
     }
 
-    value::value(const value &v): _ptr { v._ptr }
+    value::value(const value &v): _storage { v._storage }
     {
     }
 
-    value::value(allocator &alloc, const blst_p1 &b): value { alloc, value_type { constant { alloc, bls12_381_g1_element { alloc, b } } } }
+    value::value(allocator &alloc, const blst_p1 &b): value { alloc, constant { alloc, bls12_381_g1_element { alloc, b } } }
     {
     }
 
-    value::value(allocator &alloc, const blst_p2 &b): value { alloc, value_type { constant { alloc, bls12_381_g2_element { alloc, b } } } }
+    value::value(allocator &alloc, const blst_p2 &b): value { alloc, constant { alloc, bls12_381_g2_element { alloc, b } } }
     {
     }
 
-    value::value(allocator &alloc, const blst_fp12 &b): value { alloc, value_type { constant { alloc, bls12_381_ml_result { alloc, b } } } }
+    value::value(allocator &alloc, const blst_fp12 &b): value { alloc, constant { alloc, bls12_381_ml_result { alloc, b } } }
     {
     }
 
-    value::value(allocator &alloc, data &&d): value { alloc, value_type { constant { alloc, std::move(d) } } }
+    value::value(allocator &alloc, data &&d): value { alloc, constant { alloc, std::move(d) } }
     {
     }
 
@@ -702,38 +911,56 @@ namespace turbo::plutus {
     {
     }
 
-    value::value(allocator &alloc, value_type &&v): _ptr { alloc.make<value_type>(std::move(v)) }
+    value::value(allocator &alloc, value_type &&v):
+        _storage { std::visit([&](auto &&payload) {
+            return value { alloc, std::move(payload) }._storage;
+        }, std::move(v)) }
     {
     }
 
-    value::value(allocator &alloc, const constant &v): value { alloc, value_type { v } }
+    value::value(allocator &, const constant &v):
+        _storage { _encode(v._ptr.get(), storage_tag::constant) }
+    {
+    }
+
+    value::value(allocator &alloc, v_delay &&v):
+        _storage { _encode(alloc.make<v_delay>(std::move(v)).get(), storage_tag::delay) }
+    {
+    }
+
+    value::value(allocator &alloc, v_lambda &&v):
+        _storage { _encode(alloc.make<v_lambda>(std::move(v)).get(), storage_tag::lambda) }
+    {
+    }
+
+    value::value(allocator &alloc, v_builtin &&v):
+        _storage { _encode(alloc.make<v_builtin>(std::move(v)).get(), storage_tag::builtin) }
+    {
+    }
+
+    value::value(allocator &alloc, v_constr &&v):
+        _storage { _encode(alloc.make<v_constr>(std::move(v)).get(), storage_tag::constr) }
     {
     }
 
     value &value::operator=(const value &o)
     {
-        _ptr = o._ptr;
+        _storage = o._storage;
         return *this;
     }
 
-    const value::value_type &value::operator*() const
+    constant value::as_const() const
     {
-        return *_ptr;
-    }
-
-    const value::value_type *value::operator->() const
-    {
-        return _ptr.get();
-    }
-
-    const constant &value::as_const() const
-    {
-        return variant::get_nice<constant>(*_ptr);
+        if (_tag() != storage_tag::constant) [[unlikely]]
+            throw error(fmt::format("expected a constant runtime value but got tag {}", static_cast<size_t>(_tag())));
+        return constant { static_cast<const constant::value_type *>(_payload()) };
     }
 
     const v_constr &value::as_constr() const
     {
-        return variant::get_nice<v_constr>(*_ptr);
+        if (_tag() != storage_tag::constr) [[unlikely]]
+            throw error(fmt::format("expected a constructor runtime value but got tag {}", static_cast<size_t>(_tag())));
+        return _payload_as<v_constr>();
     }
 
     void value::as_unit() const
@@ -805,7 +1032,7 @@ namespace turbo::plutus {
 
     value value::boolean(allocator &alloc, const bool b)
     {
-        return { alloc, value_type { constant { alloc, b } } };
+        return { alloc, constant { alloc, b } };
     }
 
     value value::unit(allocator &alloc)
@@ -849,7 +1076,18 @@ namespace turbo::plutus {
 
     bool value::operator==(const value &o) const
     {
-        return _ptr && o._ptr && *_ptr == *o._ptr;
+        if (_storage == o._storage)
+            return true;
+        if (_tag() != o._tag())
+            return false;
+        switch (_tag()) {
+            case storage_tag::constant: return as_const() == o.as_const();
+            case storage_tag::delay: return _payload_as<v_delay>() == o._payload_as<v_delay>();
+            case storage_tag::lambda: return _payload_as<v_lambda>() == o._payload_as<v_lambda>();
+            case storage_tag::builtin: return _payload_as<v_builtin>() == o._payload_as<v_builtin>();
+            case storage_tag::constr: return _payload_as<v_constr>() == o._payload_as<v_constr>();
+        }
+        return false;
     }
 
     bool v_builtin::operator==(const v_builtin &o) const
@@ -864,12 +1102,12 @@ namespace turbo::plutus {
 
     bool v_delay::operator==(const v_delay &o) const
     {
-        return env == o.env && *expr == *o.expr;
+        return env == o.env && expr == o.expr;
     }
 
     bool v_lambda::operator==(const v_lambda &o) const
     {
-        return env == o.env && var_idx == o.var_idx && *body == *o.body;
+        return env == o.env && body == o.body;
     }
 
     value_list::value_list(allocator &alloc): _ptr { alloc.make<value_type>(alloc) }

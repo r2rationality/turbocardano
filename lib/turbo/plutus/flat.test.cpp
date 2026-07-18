@@ -111,7 +111,7 @@ suite turbo_plutus_flat_suite = [] {
             expect(nothrow([&] {
                 allocator decode_alloc {};
                 script s { decode_alloc, buffer { value_bytes }, cardano::script_type::plutus_v3, 11, false };
-                expect_equal(*value_expr, *s.program());
+                expect_equal(value_expr, s.program());
             }));
         };
         "scripts"_test = [] {

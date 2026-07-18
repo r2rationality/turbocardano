@@ -490,7 +490,12 @@ namespace turbo::plutus::uplc {
             return { _alloc, std::move(fst), std::move(snd) };
         }
 
-        constant_list::value_type _decode_sequence_value(constant_type &&seq_typ, const std::string_view kind)
+        struct decoded_sequence {
+            constant_type typ;
+            constant_list::list_type vals;
+        };
+
+        decoded_sequence _decode_sequence_value(constant_type &&seq_typ, const std::string_view kind)
         {
             if (seq_typ->nested.size() != 1) [[unlikely]]
                 throw error(fmt::format("the nested type list for an {} must have just one element but has {}",
@@ -512,7 +517,8 @@ namespace turbo::plutus::uplc {
 
         constant_list _decode_list_value(constant_type &&list_typ)
         {
-            return { _alloc, _decode_sequence_value(std::move(list_typ), "list") };
+            auto seq = _decode_sequence_value(std::move(list_typ), "list");
+            return { _alloc, seq.typ, std::move(seq.vals) };
         }
 
         constant_array _decode_array_value(constant_type &&array_typ)
@@ -636,13 +642,12 @@ namespace turbo::plutus::uplc {
         term _decode_lambda() {
             auto name = _eat_name();
             _eat_space_must();
-            const auto var_idx = _vars.size();
             _vars.emplace_back(name);
             const auto body = _decode_term();
             if (_vars.empty() || _vars.back() != name) [[unlikely]]
                 throw error(fmt::format("internal error: expected variable {} is missing!", name));
             _vars.pop_back();
-            return { _alloc, t_lambda { var_idx, body } };
+            return { _alloc, t_lambda { body } };
         }
 
         term _decode_force()
@@ -734,7 +739,7 @@ namespace turbo::plutus::uplc {
             // free name; evaluation will then report the free-variable error.
             if (it == _vars.rend()) [[unlikely]]
                 return { _alloc, variable { _vars.size() } };
-            return { _alloc, variable { numeric_cast<size_t>(it.base() - 1 - _vars.begin()) } };
+            return { _alloc, variable { numeric_cast<size_t>(std::distance(_vars.rbegin(), it)) } };
         }
 
         term _decode_term()

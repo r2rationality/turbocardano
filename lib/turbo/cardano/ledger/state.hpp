@@ -289,23 +289,6 @@ namespace turbo::cardano::ledger {
 
 namespace fmt {
     template<>
-    struct formatter<turbo::cardano::ledger::reward_type>: formatter<uint64_t> {
-        template<typename FormatContext>
-        auto format(const auto &v, FormatContext &ctx) const -> decltype(ctx.out()) {
-            switch (v) {
-                case turbo::cardano::ledger::reward_type::leader:
-                    return fmt::format_to(ctx.out(), "reward_type::leader");
-
-                case turbo::cardano::ledger::reward_type::member:
-                    return fmt::format_to(ctx.out(), "reward_type::member");
-
-                default:
-                    return fmt::format_to(ctx.out(), "reward_type::unsupported");
-            }
-        }
-    };
-
-    template<>
     struct formatter<turbo::cardano::ledger::reward_update>: formatter<uint64_t> {
         template<typename FormatContext>
         auto format(const auto &v, FormatContext &ctx) const -> decltype(ctx.out()) {

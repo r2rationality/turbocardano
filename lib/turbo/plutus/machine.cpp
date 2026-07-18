@@ -25,7 +25,7 @@ namespace turbo::plutus {
         result evaluate(const term &expr)
         {
             const auto res_v = _eval(expr);
-            return { _discharge(*res_v), _cost };
+            return { _discharge(res_v), _cost };
         }
 
         term apply_args(const term &expr, const term_list &args)
@@ -205,84 +205,90 @@ namespace turbo::plutus {
             _spend(mem_cost, cpu_cost);
         }
 
-        std::optional<value> _lookup_opt(const environment &env, const size_t var_idx) const
+        const value *_lookup_opt(const environment &env, size_t idx) const
         {
-            for (const auto *node = env.get(); node != nullptr; node = node->parent.get()) {
-                if (node->var_idx == var_idx)
-                    return node->val;
+            auto node = env.get();
+            while (node && idx > 0) {
+                node = node->parent.get();
+                --idx;
             }
-            return {};
+            return node ? &node->val : nullptr;
         }
 
-        value _lookup(const environment &env, const size_t var_idx) const
+        value _lookup(const environment &env, const size_t idx) const
         {
-            if (auto ptr_opt = _lookup_opt(env, var_idx); ptr_opt)
-                return std::move(*ptr_opt);
-            throw error(fmt::format("reference to a free variable: v{}", var_idx));
+            if (const auto *val = _lookup_opt(env, idx); val)
+                return *val;
+            throw error(fmt::format("reference to a free variable: v{}", idx));
         }
 
-        term _discharge_term(const environment &env, const term &t, const int64_t level, const int64_t var_idx_diff) const
+        term _discharge_term(const environment &env, const term &t, const size_t local_depth,
+                const size_t outer_depth) const
         {
-            return std::visit<term>([&](const auto &v) {
+            return t.visit([&](const auto &v) -> term {
                 using T = std::decay_t<decltype(v)>;
                 if constexpr (std::is_same_v<T, variable>) {
-                    if (const auto ptr_opt = _lookup_opt(env, v.idx); ptr_opt)
-                        return _discharge(**ptr_opt, level, var_idx_diff);
-                    return term { _alloc, variable { numeric_cast<size_t>(static_cast<int64_t>(v.idx) + var_idx_diff) } };
+                    if (v.idx < local_depth)
+                        return t;
+                    if (const auto *val = _lookup_opt(env, v.idx - local_depth); val)
+                        return _discharge(*val, outer_depth + local_depth);
+                    return term { _alloc, variable { v.idx - env.size() + outer_depth } };
                 } else if constexpr (std::is_same_v<T, t_lambda>) {
-                    return term { _alloc, t_lambda { numeric_cast<size_t>(level), _discharge_term(env, v.expr, level + 1, level - static_cast<int64_t>(v.var_idx)) } };
+                    return term { _alloc, t_lambda { _discharge_term(env, v.expr, local_depth + 1, outer_depth) } };
                 } else if constexpr (std::is_same_v<T, apply>) {
-                    return term { _alloc, apply { _discharge_term(env, v.func, level, var_idx_diff), _discharge_term(env, v.arg, level, var_idx_diff) } };
+                    return term { _alloc, apply { _discharge_term(env, v.func, local_depth, outer_depth),
+                        _discharge_term(env, v.arg, local_depth, outer_depth) } };
                 } else if constexpr (std::is_same_v<T, force>) {
-                    return term { _alloc, force { _discharge_term(env, v.expr, level, var_idx_diff) } };
+                    return term { _alloc, force { _discharge_term(env, v.expr, local_depth, outer_depth) } };
                 } else if constexpr (std::is_same_v<T, t_delay>) {
-                    return term { _alloc, t_delay { _discharge_term(env, v.expr, level, var_idx_diff) } };
+                    return term { _alloc, t_delay { _discharge_term(env, v.expr, local_depth, outer_depth) } };
                 } else if constexpr (std::is_same_v<T, t_case>) {
                     term_list::value_type l { _alloc };
                     l.reserve(v.cases->size());
                     for (auto &c: *v.cases)
-                        l.emplace_back(_discharge_term(env, c, level, var_idx_diff));
-                    return term { _alloc, t_case { _discharge_term(env, v.arg, level, var_idx_diff), term_list { _alloc, std::move(l) } } };
+                        l.emplace_back(_discharge_term(env, c, local_depth, outer_depth));
+                    return term { _alloc, t_case { _discharge_term(env, v.arg, local_depth, outer_depth),
+                        term_list { _alloc, std::move(l) } } };
                 } else if constexpr (std::is_same_v<T, t_constr>) {
                     term_list::value_type l { _alloc };
                     l.reserve(v.args->size());
                     for (auto &a: *v.args)
-                        l.emplace_back(_discharge_term(env, a, level, var_idx_diff));
+                        l.emplace_back(_discharge_term(env, a, local_depth, outer_depth));
                     return term { _alloc, t_constr { v.tag, term_list { _alloc, std::move(l) } } };
                 } else {
                     return t;
                 }
-            }, *t);
+            });
         }
 
-        term _discharge(const value::value_type &val, const int64_t level=0, const int64_t &var_idx_diff=0) const
+        term _discharge(const value &val, const size_t outer_depth=0) const
         {
-            return std::visit<term>([&](const auto &v) {
+            return val.visit([&](const auto &v) -> term {
                 using T = std::decay_t<decltype(v)>;
                 if constexpr (std::is_same_v<T, constant>) {
                     return term { _alloc, v };
                 } else if constexpr (std::is_same_v<T, v_delay>) {
-                    return _discharge_term(v.env, { _alloc, t_delay { v.expr } }, level, var_idx_diff);
+                    return term { _alloc, t_delay { _discharge_term(v.env, v.expr, 0, outer_depth) } };
                 } else if constexpr (std::is_same_v<T, v_lambda>) {
-                    return _discharge_term(v.env, { _alloc, t_lambda { v.var_idx, v.body } }, level, var_idx_diff);
+                    return term { _alloc, t_lambda { _discharge_term(v.env, v.body, 1, outer_depth) } };
                 } else if constexpr (std::is_same_v<T, v_builtin>) {
                     auto t = term { _alloc, v.b };
                     for (size_t i = 0; i < v.forces; ++i)
                         t = term { _alloc, force { std::move(t) } };
                     for (const auto &arg: v.args.values())
-                        t = term { _alloc, apply { std::move(t), _discharge(*arg, level, var_idx_diff) } };
+                        t = term { _alloc, apply { std::move(t), _discharge(arg, outer_depth) } };
                     return t;
                 } else if constexpr (std::is_same_v<T, v_constr>) {
                     term_list::value_type args { _alloc };
                     args.reserve(v.args->size());
                     for (const auto &arg: *v.args)
-                        args.emplace_back(_discharge(*arg, level, var_idx_diff));
+                        args.emplace_back(_discharge(arg, outer_depth));
                     t_constr pc { v.tag, term_list { _alloc, std::move(args) } };
                     return term { _alloc, std::move(pc) };
                 } else {
                     throw error(fmt::format("an unsupported value type to discharge: {}", typeid(v).name()));
                 }
-            }, val);
+            });
         }
 
         builtin_any _get_builtin_func(const builtin_tag b)
@@ -310,12 +316,12 @@ namespace turbo::plutus {
             }
         }
 
-        value _apply(const value::value_type &func, const value &arg)
+        value _apply(const value &func, const value &arg)
         {
-            return std::visit([&arg, this](const auto &f) {
+            return func.visit([&arg, this](const auto &f) {
                 using T = std::decay_t<decltype(f)>;
                 if constexpr (std::is_same_v<T, v_lambda>) {
-                    const environment new_env { _alloc, f.env, f.var_idx, arg };
+                    const environment new_env { _alloc, f.env, arg };
                     return _compute(new_env, f.body);
                 }
                 if constexpr (std::is_same_v<T, v_builtin>) {
@@ -331,12 +337,12 @@ namespace turbo::plutus {
                 }
                 throw error(fmt::format("only lambdas and builtins can be applied but got: {}", typeid(T).name()));
                 return value { _alloc, constant { _alloc, std::monostate {} } };
-            }, func);
+            });
         }
 
         value _force(const value &val)
         {
-            return std::visit([this](const auto &v) {
+            return val.visit([this](const auto &v) {
                 using T = std::decay_t<decltype(v)>;
                 if constexpr (std::is_same_v<T, v_delay>)
                     return _compute(v.env, v.expr);
@@ -350,7 +356,7 @@ namespace turbo::plutus {
                 }
                 throw error(fmt::format("unsupported value for force: {}", typeid(T).name()));
                 return value { _alloc, constant { _alloc, std::monostate {} } };
-            }, *val);
+            });
         }
 
         value _compute(const environment &env, const variable &e)
@@ -368,7 +374,7 @@ namespace turbo::plutus {
         value _compute(const environment &env, const t_lambda &e)
         {
             _spend(_cost_model.lambda_op);
-            return { _alloc, v_lambda { env, e.var_idx, e.expr } };
+            return { _alloc, v_lambda { env, e.expr } };
         }
 
         value _compute(const environment &env, const t_delay &e)
@@ -394,7 +400,7 @@ namespace turbo::plutus {
             _spend(_cost_model.apply_op);
             const auto fun = _compute(env, e.func);
             const auto arg = _compute(env, e.arg);
-            return _apply(*fun, arg);
+            return _apply(fun, arg);
         }
 
         value _compute(const environment &env, const t_constr &e)
@@ -441,24 +447,21 @@ namespace turbo::plutus {
                 } else if constexpr (std::is_same_v<T, constant_list>) {
                     if (num_branches != 1 && num_branches != 2) [[unlikely]]
                         throw error(fmt::format("casing on list requires exactly one or two branches but got {}", num_branches));
-                    if (v->vals.empty()) {
+                    if (v.empty()) {
                         if (num_branches == 2)
                             return _case_branch(env, e, 1);
                         throw error("expected a non-empty list when casing with one branch");
                     }
                     auto res = _case_branch(env, e, 0);
-                    res = _apply(*res, value { _alloc, v->vals.front() });
-                    constant_list::list_type tail { _alloc };
-                    tail.reserve(v->vals.size() - 1);
-                    std::copy(std::next(v->vals.begin()), v->vals.end(), std::back_inserter(tail));
-                    const auto tail_val = value::make_list(_alloc, constant_type { v->typ }, std::move(tail));
-                    return _apply(*res, tail_val);
+                    res = _apply(res, value { _alloc, v.front() });
+                    const auto tail_val = value { _alloc, constant { _alloc, v.drop(_alloc, 1) } };
+                    return _apply(res, tail_val);
                 } else if constexpr (std::is_same_v<T, constant_pair>) {
                     if (num_branches != 1) [[unlikely]]
                         throw error(fmt::format("casing on pair requires exactly one branch but got {}", num_branches));
                     auto res = _case_branch(env, e, 0);
-                    res = _apply(*res, value { _alloc, v->first });
-                    return _apply(*res, value { _alloc, v->second });
+                    res = _apply(res, value { _alloc, v->first });
+                    return _apply(res, value { _alloc, v->second });
                 } else {
                     throw error(fmt::format("builtin constant type {} is not supported in case", typeid(T).name()));
                 }
@@ -469,19 +472,19 @@ namespace turbo::plutus {
         {
             _spend(_cost_model.case_op);
             const auto v_arg = _compute(env, e.arg);
-            return std::visit<value>([&](const auto &v) -> value {
+            return v_arg.visit([&](const auto &v) -> value {
                 using T = std::decay_t<decltype(v)>;
                 if constexpr (std::is_same_v<T, v_constr>) {
                     auto res = _case_branch(env, e, v.tag);
                     for (const auto &arg: *v.args)
-                        res = _apply(*res, arg);
+                        res = _apply(res, arg);
                     return res;
                 } else if constexpr (std::is_same_v<T, constant>) {
                     return _case_branch_const(env, e, v);
                 } else {
                     throw error(fmt::format("case requires a constructor or builtin constant but got {}", typeid(T).name()));
                 }
-            }, *v_arg);
+            });
         }
 
         value _compute(const environment &, const failure &)
@@ -491,9 +494,9 @@ namespace turbo::plutus {
 
         value _compute(const environment &env, const term &t)
         {
-            return std::visit([&env, this](const auto &e) {
+            return t.visit([&env, this](const auto &e) {
                 return _compute(env, e);
-            }, *t);
+            });
         }
     };
 

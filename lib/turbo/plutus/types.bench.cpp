@@ -63,7 +63,7 @@ suite plutus_types_suite = [] {
         bench_simple<plutus::apply>(t1, t2);
         bench_simple<failure>();
         bench_simple<t_delay>(t1);
-        bench_simple<t_lambda>(size_t { 0 }, t1);
+        bench_simple<t_lambda>(t1);
         bench_nested<plutus::data>(i1);
         auto db1 = data::bstr(base, *b1);
         auto di1 = data::bint(base, i1);

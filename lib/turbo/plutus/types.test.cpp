@@ -68,5 +68,91 @@ suite plutus_types_suite = [] {
             expect_equal(builtin_args::max_size, six.size());
             expect(throws([&] { builtin_args { alloc, six, unit }; }));
         };
+        "terms use a pointer-sized tagged handle"_test = [] {
+            allocator alloc {};
+            const term unit { alloc, plutus::constant { alloc, std::monostate {} } };
+            const term variable_val { alloc, variable { 3 } };
+            const term delay_val { alloc, t_delay { unit } };
+            const term force_val { alloc, force { unit } };
+            const term lambda_val { alloc, t_lambda { unit } };
+            const term apply_val { alloc, plutus::apply { unit, unit } };
+            const term failure_val { alloc, failure {} };
+            const term builtin_val { alloc, t_builtin { builtin_tag::add_integer } };
+            const term constr_val { alloc, t_constr { 0, term_list { alloc, term_list::value_type { alloc } } } };
+            const term case_val { alloc, t_case { unit, term_list { alloc, term_list::value_type { alloc } } } };
+
+            const auto tag = [](const term &v) {
+                return v.visit([](const auto &payload) {
+                    using T = std::decay_t<decltype(payload)>;
+                    if constexpr (std::is_same_v<T, variable>)
+                        return 0;
+                    else if constexpr (std::is_same_v<T, t_delay>)
+                        return 1;
+                    else if constexpr (std::is_same_v<T, force>)
+                        return 2;
+                    else if constexpr (std::is_same_v<T, t_lambda>)
+                        return 3;
+                    else if constexpr (std::is_same_v<T, plutus::apply>)
+                        return 4;
+                    else if constexpr (std::is_same_v<T, plutus::constant>)
+                        return 5;
+                    else if constexpr (std::is_same_v<T, failure>)
+                        return 6;
+                    else if constexpr (std::is_same_v<T, t_builtin>)
+                        return 7;
+                    else if constexpr (std::is_same_v<T, t_constr>)
+                        return 8;
+                    else if constexpr (std::is_same_v<T, t_case>)
+                        return 9;
+                });
+            };
+
+            expect_equal(sizeof(void *), sizeof(term));
+            expect_equal(0, tag(variable_val));
+            expect_equal(1, tag(delay_val));
+            expect_equal(2, tag(force_val));
+            expect_equal(3, tag(lambda_val));
+            expect_equal(4, tag(apply_val));
+            expect_equal(5, tag(unit));
+            expect_equal(6, tag(failure_val));
+            expect_equal(7, tag(builtin_val));
+            expect_equal(8, tag(constr_val));
+            expect_equal(9, tag(case_val));
+        };
+        "runtime values use a pointer-sized tagged handle"_test = [] {
+            allocator alloc {};
+            const term expr { alloc, plutus::constant { alloc, std::monostate {} } };
+            const environment env {};
+            const value constant_val = value::unit(alloc);
+            const value delay_val { alloc, v_delay { env, expr } };
+            const value lambda_val { alloc, v_lambda { env, expr } };
+            const value builtin_val { alloc, v_builtin { t_builtin { builtin_tag::add_integer }, {} } };
+            const value constr_val { alloc, v_constr { 0, value_list { alloc } } };
+
+            const auto tag = [](const value &v) {
+                return v.visit([](const auto &payload) {
+                    using T = std::decay_t<decltype(payload)>;
+                    if constexpr (std::is_same_v<T, plutus::constant>)
+                        return 0;
+                    else if constexpr (std::is_same_v<T, v_delay>)
+                        return 1;
+                    else if constexpr (std::is_same_v<T, v_lambda>)
+                        return 2;
+                    else if constexpr (std::is_same_v<T, v_builtin>)
+                        return 3;
+                    else if constexpr (std::is_same_v<T, v_constr>)
+                        return 4;
+                });
+            };
+
+            expect_equal(sizeof(void *), sizeof(value));
+            expect_equal(0, tag(constant_val));
+            expect_equal(1, tag(delay_val));
+            expect_equal(2, tag(lambda_val));
+            expect_equal(3, tag(builtin_val));
+            expect_equal(4, tag(constr_val));
+            constant_val.as_unit();
+            expect(throws([&] { delay_val.as_const(); }));
+        };
     };
 };

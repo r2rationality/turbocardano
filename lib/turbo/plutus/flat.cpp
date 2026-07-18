@@ -10,6 +10,8 @@
 #include <turbo/plutus/flat.hpp>
 #include <turbo/plutus/script-validation.hpp>
 #include <turbo/util.hpp>
+#include <array>
+#include <bit>
 
 namespace turbo::plutus::flat {
     struct script::impl {
@@ -58,29 +60,40 @@ namespace turbo::plutus::flat {
             throw error(fmt::format("script size of {} bytes exceeds the maximum allowed size of {}", buf.size(), max_script_size));
         }
 
+        template<size_t NUM_BITS>
+        uint8_t _decode_fixed_uint()
+        {
+            static_assert(NUM_BITS > 0 && NUM_BITS <= 8);
+            uint8_t val {};
+            size_t remaining = NUM_BITS;
+            while (remaining) {
+                if (_byte_next >= _byte_end) [[unlikely]]
+                    throw error(fmt::format("out of data at byte {}", _byte_pos()));
+                const auto available = static_cast<size_t>(std::bit_width(static_cast<unsigned int>(_next_bit_mask)));
+                const auto take = remaining < available ? remaining : available;
+                const auto shift = available - take;
+                const auto mask = static_cast<uint16_t>((uint16_t { 1 } << take) - 1);
+                val = static_cast<uint8_t>((val << take) | ((*_byte_next >> shift) & mask));
+                remaining -= take;
+                if (take == available) {
+                    _next_bit_mask = 0x80;
+                    ++_byte_next;
+                } else {
+                    _next_bit_mask >>= take;
+                }
+            }
+            return val;
+        }
+
         bool _next_bit()
         {
             if (_byte_next >= _byte_end) [[unlikely]]
                 throw error(fmt::format("out of data at byte {}", _byte_pos()));
-            // return a 0 or 1 so that the result can be used in a multiplication
-            const bool res = (*_byte_next & _next_bit_mask) > 0;
+            const bool val = (*_byte_next & _next_bit_mask) != 0;
             _next_bit_mask >>= 1;
             if (!_next_bit_mask) {
                 _next_bit_mask = 0x80;
                 ++_byte_next;
-            }
-            return res;
-        }
-
-        template<size_t NUM_BITS>
-        uint8_t _decode_fixed_uint()
-        {
-            static_assert(NUM_BITS <= 8);
-            uint8_t next_bit_mask = 1ULL << (NUM_BITS - 1);
-            uint8_t val {};
-            while (next_bit_mask) {
-                val |= next_bit_mask * _next_bit();
-                next_bit_mask >>= 1;
             }
             return val;
         }
@@ -92,16 +105,7 @@ namespace turbo::plutus::flat {
                     throw error(fmt::format("out of data at byte {}", _byte_pos()));
                 return *_byte_next++;
             }
-            uint8_t res = 0;
-            res += _next_bit() * 0x80;
-            res += _next_bit() * 0x40;
-            res += _next_bit() * 0x20;
-            res += _next_bit() * 0x10;
-            res += _next_bit() * 0x08;
-            res += _next_bit() * 0x04;
-            res += _next_bit() * 0x02;
-            res += _next_bit() * 0x01;
-            return res;
+            return _decode_fixed_uint<8>();
         }
 
         ptrdiff_t _byte_pos() const
@@ -109,11 +113,30 @@ namespace turbo::plutus::flat {
             return _byte_next - _bytes_raw.data();
         }
 
-        const cpp_int &_decode_varlen_uint()
+        cpp_int _decode_varlen_uint()
         {
+            std::array<uint8_t, 10> prefix;
+            uint64_t small = 0;
+            bool small_fits = true;
+            for (size_t idx = 0; idx < prefix.size(); ++idx) {
+                const auto b = _next_byte();
+                prefix[idx] = b;
+                const auto payload = static_cast<uint8_t>(b & 0x7F);
+                if (idx < 9 || payload <= 1)
+                    small |= static_cast<uint64_t>(payload) << (idx * 7);
+                else
+                    small_fits = false;
+                if (!(b & 0x80)) {
+                    if (small_fits)
+                        return cpp_int { small };
+                    cpp_int v {};
+                    boost::multiprecision::import_bits(v, prefix.data(), prefix.data() + idx + 1, 7, false);
+                    return v;
+                }
+            }
+
             thread_local uint8_vector bytes {};
-            thread_local cpp_int v {};
-            bytes.clear();
+            bytes.assign(prefix.begin(), prefix.end());
             for (;;) {
                 const auto b = _next_byte();
                 bytes.emplace_back(b);
@@ -122,13 +145,29 @@ namespace turbo::plutus::flat {
                 if (bytes.size() >= max_varint_bytes) [[unlikely]]
                     throw error(fmt::format("a variable length uint that has more than {} bytes at byte: {}", max_varint_bytes, _byte_pos()));
             }
+            cpp_int v {};
             boost::multiprecision::import_bits(v, bytes.data(), bytes.data() + bytes.size(), 7, false);
             return v;
         }
 
+        uint64_t _decode_varlen_uint64(const std::string_view kind)
+        {
+            uint64_t val = 0;
+            for (size_t idx = 0; idx < 10; ++idx) {
+                const auto b = _next_byte();
+                const auto payload = static_cast<uint8_t>(b & 0x7F);
+                if (idx == 9 && payload > 1) [[unlikely]]
+                    throw error(fmt::format("{} does not fit into a 64-bit integer at byte: {}", kind, _byte_pos()));
+                val |= static_cast<uint64_t>(payload) << (idx * 7);
+                if (!(b & 0x80))
+                    return val;
+            }
+            throw error(fmt::format("{} does not fit into a 64-bit integer at byte: {}", kind, _byte_pos()));
+        }
+
         bint_type _decode_integer()
         {
-            const auto &u = _decode_varlen_uint();
+            const auto u = _decode_varlen_uint();
             cpp_int i = u >> 1;
             if (u & 1) {
                 i = -(i + 1);
@@ -141,7 +180,8 @@ namespace turbo::plutus::flat {
             return _next_bit();
         }
 
-        void _decode_list(const std::function<void()> &observer)
+        template<typename Observer>
+        void _decode_list(Observer &&observer)
         {
             for (;;) {
                 if (!_next_bit())
@@ -165,7 +205,7 @@ namespace turbo::plutus::flat {
             _consume_padding();
             bytes.clear();
             for (;;) {
-                const size_t chunk_size = _decode_fixed_uint<8>();
+                const size_t chunk_size = _next_byte();
                 if (!chunk_size)
                     break;
                 const size_t data_idx = bytes.size();
@@ -345,10 +385,13 @@ namespace turbo::plutus::flat {
 
         variable _decode_variable()
         {
-            // De Bruijn indices are 1-based!
-            const auto rel_idx = static_cast<size_t>(_decode_varlen_uint());
+            // Bound De Bruijn indices are 1-based on the wire. Zero represents
+            // the single free-variable position immediately outside the term.
+            const auto rel_idx = static_cast<size_t>(_decode_varlen_uint64("variable index"));
+            if (rel_idx == 0)
+                return { _num_vars };
             if (rel_idx <= _num_vars) [[likely]]
-                return { _num_vars - rel_idx };
+                return { rel_idx - 1 };
             throw turbo::error(fmt::format("De Bruijn index is out of range: {} num_vars: {}", rel_idx, _num_vars));
         }
 
@@ -359,10 +402,10 @@ namespace turbo::plutus::flat {
 
         t_lambda _decode_lambda()
         {
-            const auto var_idx = _num_vars++;
+            ++_num_vars;
             auto body = _decode_term();
             --_num_vars;
-            return { var_idx, std::move(body) };
+            return { std::move(body) };
         }
 
         apply _decode_apply()
@@ -384,10 +427,7 @@ namespace turbo::plutus::flat {
 
         t_constr _decode_constr()
         {
-            const auto tag_bi = _decode_varlen_uint();
-            if (tag_bi && boost::multiprecision::msb(tag_bi) >= 64) [[unlikely]]
-                throw error(fmt::format("constr tag must fit into a 64-vit integer but got: {}", tag_bi));
-            const auto tag = static_cast<uint64_t>(tag_bi);
+            const auto tag = _decode_varlen_uint64("constructor tag");
             term_list::value_type args { _alloc };
             while (_next_bit()) {
                 args.emplace_back(_decode_term());
@@ -431,9 +471,9 @@ namespace turbo::plutus::flat {
 
         plutus::version _decode_version()
         {
-            const auto major = static_cast<uint64_t>(_decode_varlen_uint());
-            const auto minor = static_cast<uint64_t>(_decode_varlen_uint());
-            const auto patch = static_cast<uint64_t>(_decode_varlen_uint());
+            const auto major = _decode_varlen_uint64("version major");
+            const auto minor = _decode_varlen_uint64("version minor");
+            const auto patch = _decode_varlen_uint64("version patch");
             plutus::version ver { major, minor, patch };
             if (_validation)
                 _validation->check_version(ver);

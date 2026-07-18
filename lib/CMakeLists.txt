@@ -17,8 +17,35 @@ list(FILTER LIB_SRCS EXCLUDE REGEX "\\.test\\.cpp$")
 list(FILTER LIB_SRCS EXCLUDE REGEX "\\.bench\\.cpp$")
 list(FILTER LIB_SRCS EXCLUDE REGEX "\\.fuzz\\.cpp$")
 add_library(lib OBJECT ${LIB_SRCS})
-file(GLOB_RECURSE LIB_HDRS turbo/*.hpp)
-target_precompile_headers(lib PUBLIC ${LIB_HDRS})
+# Keep the PCH stable: project headers change frequently and would turn a
+# local header edit into a full rebuild. Consumers may explicitly reuse this
+# PCH, but it is not propagated as part of lib's public interface.
+target_precompile_headers(lib PRIVATE
+    <algorithm>
+    <array>
+    <atomic>
+    <chrono>
+    <concepts>
+    <cstdint>
+    <filesystem>
+    <functional>
+    <map>
+    <memory>
+    <mutex>
+    <optional>
+    <span>
+    <string>
+    <string_view>
+    <unordered_map>
+    <utility>
+    <variant>
+    <vector>
+    <boost/container/flat_map.hpp>
+    <boost/container/flat_set.hpp>
+    <boost/json.hpp>
+    <fmt/format.h>
+    <spdlog/spdlog.h>
+)
 target_include_directories(lib PUBLIC .)
 target_include_directories(lib PUBLIC ${BOTAN_INCLUDE_DIRS})
 target_link_libraries(lib PUBLIC Boost::json Boost::coroutine Boost::url Boost::thread

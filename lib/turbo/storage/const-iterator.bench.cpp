@@ -5,7 +5,7 @@
 
 #include "const-iterator.hpp"
 #include <turbo/chunk-registry.hpp>
-#include <turbo/common/test.hpp>
+#include <turbo/common/benchmark.hpp>
 
 namespace {
     using namespace turbo;

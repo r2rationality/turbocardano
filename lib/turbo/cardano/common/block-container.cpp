@@ -4,7 +4,13 @@
  * License: https://github.com/r2rationality/turbocardano/blob/main/LICENSE */
 
 #include <turbo/cardano.hpp>
+#include <turbo/cardano/alonzo/block.hpp>
+#include <turbo/cardano/babbage/block.hpp>
+#include <turbo/cardano/byron/block.hpp>
 #include <turbo/cardano/common/mocks.hpp>
+#include <turbo/cardano/conway/block.hpp>
+#include <turbo/cardano/mary/block.hpp>
+#include <turbo/cardano/shelley/block.hpp>
 
 namespace turbo::cardano {
     using block_storage_type = std::variant<

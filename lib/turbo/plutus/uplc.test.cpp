@@ -18,6 +18,11 @@ suite plutus_uplc_suite = [] {
             const script s { alloc, uint8_vector { std::string_view { "(program 1.0.0 (lam j_1-0 j_1-0))" } } };
             expect_equal("(lam v0 v0)", fmt::format("{}", s.program()));
         };
+        "generated names preserve nested bindings"_test = [] {
+            plutus::allocator alloc {};
+            const script s { alloc, uint8_vector { std::string_view { "(program 1.0.0 (lam outer (lam inner outer)))" } } };
+            expect_equal("(lam v0 (lam v1 v0))", fmt::format("{}", s.program()));
+        };
         "open term"_test = [] {
             plutus::allocator alloc {};
             const script s { alloc, uint8_vector { std::string_view { "(program 1.0.0 x)" } } };

@@ -6,6 +6,7 @@
 #include <turbo/cardano/byron/block.hpp>
 #include <turbo/common/file.hpp>
 #include <turbo/common/test.hpp>
+#include <turbo/plutus/context.hpp>
 
 namespace {
     using namespace std::literals::string_view_literals;

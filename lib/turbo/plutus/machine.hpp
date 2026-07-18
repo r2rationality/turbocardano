@@ -20,7 +20,7 @@ namespace turbo::plutus {
 
             bool operator==(const result& o) const
             {
-                return *expr == *o.expr && cost == o.cost;
+                return expr == o.expr && cost == o.cost;
             }
         };
 

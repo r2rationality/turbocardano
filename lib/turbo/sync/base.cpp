@@ -19,7 +19,7 @@ namespace turbo::sync {
     }
 
     struct syncer::impl {
-        impl(syncer &parent, chunk_registry &cr, peer_selection &ps)
+        impl(syncer &parent, chunk_registry &cr, cardano::network::peer_selection &ps)
             : _parent { parent }, _cr { cr }, _ps { ps }
         {
             _cr.register_processor(_proc);
@@ -35,7 +35,7 @@ namespace turbo::sync {
             logger::info("attempting to sync with {} with the tip {}; validation mode: {}", peer.id(), peer.tip(), mode);
             const auto start_tip = _cr.tip();
             static constexpr size_t max_retries = 3;
-            const auto peer_tip = point::from_point3(peer.tip());
+            const auto peer_tip = cardano::point::from_point3(peer.tip());
             progress_point target{peer_tip};
             // explicitly set the max slot to ensure that the progress is computed correctly
             if (!max_slot)
@@ -102,7 +102,7 @@ namespace turbo::sync {
             return _cr;
         }
 
-        peer_selection &peer_list() noexcept
+        cardano::network::peer_selection &peer_list() noexcept
         {
             return _ps;
         }
@@ -114,7 +114,7 @@ namespace turbo::sync {
     private:
         syncer &_parent;
         chunk_registry &_cr;
-        peer_selection &_ps;
+        cardano::network::peer_selection &_ps;
         chunk_processor _proc {
             .on_progress = [this](const auto name, const auto rel_pos, const auto rel_target) {
                 _parent.on_progress(name, rel_pos, rel_target);
@@ -122,7 +122,7 @@ namespace turbo::sync {
         };
     };
 
-    syncer::syncer(chunk_registry &cr, peer_selection &ps)
+    syncer::syncer(chunk_registry &cr, cardano::network::peer_selection &ps)
         : _impl { std::make_unique<impl>(*this, cr, ps) }
     {
     }
@@ -141,7 +141,7 @@ namespace turbo::sync {
         return _impl->local_chain();
     }
 
-    peer_selection &syncer::peer_list() noexcept
+    cardano::network::peer_selection &syncer::peer_list() noexcept
     {
         return _impl->peer_list();
     }

@@ -11,6 +11,7 @@
 #include <turbo/math/rational.hpp>
 
 namespace {
+    using namespace std::literals::string_view_literals;
     using namespace turbo;
     using namespace turbo::cardano;
 }

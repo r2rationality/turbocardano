@@ -3,6 +3,7 @@
  * License: https://github.com/r2rationality/turbocardano/blob/main/LICENSE */
 
 #include "const-iterator.hpp"
+#include <turbo/cardano.hpp>
 #include <turbo/chunk-registry.hpp>
 
 namespace turbo::storage {

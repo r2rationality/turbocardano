@@ -276,14 +276,32 @@ suite plutus_builtins_suite = [] {
             };
             "mk_cons"_test = [&] {
                 {
-                    expect(mk_cons(alloc, { alloc, 22 }, value::make_list(alloc, constant_type { alloc, type_tag::integer })).as_list()->vals.size() == 1_u);
+                    expect(mk_cons(alloc, { alloc, 22 }, value::make_list(alloc, constant_type { alloc, type_tag::integer })).as_list().size() == 1_u);
                 }
                 {
                     constant_list cl { alloc, constant_type { alloc, type_tag::integer }, { { constant { alloc, bint_type(alloc, 0) } } } };
                     const auto res = mk_cons(alloc, value { alloc, 22 }, value { alloc, constant { alloc, std::move(cl) } }).as_list();
-                    expect(res->vals.size() == 2_u);
-                    expect(res->vals.front().as_int() == 22);
-                    expect(res->vals.back().as_int() == 0);
+                    expect(res.size() == 2_u);
+                    expect(res.front().as_int() == 22);
+                    expect(res.back().as_int() == 0);
+                }
+                {
+                    const auto src = value::make_list(alloc, {
+                        constant { alloc, bint_type { alloc, 2 } },
+                        constant { alloc, bint_type { alloc, 3 } }
+                    });
+                    const auto with_one = mk_cons(alloc, { alloc, 1 }, src);
+                    const auto with_zero = mk_cons(alloc, { alloc, 0 }, with_one);
+                    expect_equal(size_t { 2 }, src.as_list().size());
+                    expect_equal(bint_type { alloc, 2 }, src.as_list().front().as_int());
+                    expect_equal(size_t { 4 }, with_zero.as_list().size());
+                    expect_equal(bint_type { alloc, 0 }, with_zero.as_list().front().as_int());
+                    expect_equal(bint_type { alloc, 3 }, with_zero.as_list().back().as_int());
+                    expect(tail_list(alloc, with_one).as_list() == src.as_list());
+                    const auto materialized = list_to_array(alloc, with_zero);
+                    expect_equal(bint_type { alloc, 0 }, index_array(alloc, materialized, { alloc, 0 }).as_int());
+                    expect_equal(bint_type { alloc, 2 }, index_array(alloc, materialized, { alloc, 2 }).as_int());
+                    expect_equal(bint_type { alloc, 3 }, index_array(alloc, materialized, { alloc, 3 }).as_int());
                 }
             };
             "head_list"_test = [&] {
@@ -312,7 +330,7 @@ suite plutus_builtins_suite = [] {
                 }
                 {
                     constant_list cl { alloc, constant_type { alloc, type_tag::integer }, { constant { alloc, bint_type(alloc, 22) } } };
-                    expect(tail_list(alloc, value { alloc, constant { alloc, std::move(cl) } }).as_list()->vals.empty());
+                    expect(tail_list(alloc, value { alloc, constant { alloc, std::move(cl) } }).as_list().empty());
                 }
                 {
                     constant_list::list_type vals { alloc };
@@ -321,9 +339,9 @@ suite plutus_builtins_suite = [] {
                     vals.emplace_back(alloc, bint_type(alloc, 44));
                     constant_list cl{ alloc, constant_type { alloc, type_tag::integer }, std::move(vals) };
                     const auto res = tail_list(alloc, value { alloc, constant { alloc, std::move(cl) } }).as_list();
-                    expect(res->vals.size() == 2_u);
-                    expect(res->vals.front().as_int() == 33);
-                    expect(res->vals.back().as_int() == 44);
+                    expect(res.size() == 2_u);
+                    expect(res.front().as_int() == 33);
+                    expect(res.back().as_int() == 44);
                 }
                 expect(throws([&] { tail_list(alloc, value::make_list(alloc, constant_type { alloc, type_tag::integer })); }));
             };
@@ -594,13 +612,15 @@ suite plutus_builtins_suite = [] {
                     constant { alloc, bint_type { alloc, 2 } },
                     constant { alloc, bint_type { alloc, 3 } }
                 });
-                expect_equal(size_t { 3 }, drop_list(alloc, { alloc, -1 }, src).as_list()->vals.size());
+                expect_equal(size_t { 3 }, drop_list(alloc, { alloc, -1 }, src).as_list().size());
                 const auto dropped = drop_list(alloc, { alloc, 2 }, src);
-                expect_equal(size_t { 1 }, dropped.as_list()->vals.size());
-                expect_equal(bint_type { alloc, 3 }, dropped.as_list()->vals.front().as_int());
+                expect_equal(size_t { 1 }, dropped.as_list().size());
+                expect_equal(bint_type { alloc, 3 }, dropped.as_list().front().as_int());
+                const auto prefixed = mk_cons(alloc, { alloc, 0 }, mk_cons(alloc, { alloc, -1 }, src));
+                expect(drop_list(alloc, { alloc, 2 }, prefixed).as_list() == src.as_list());
                 cpp_int huge_count { 1 };
                 huge_count <<= 100;
-                expect(drop_list(alloc, { alloc, huge_count }, src).as_list()->vals.empty());
+                expect(drop_list(alloc, { alloc, huge_count }, src).as_list().empty());
             };
             "arrays"_test = [&] {
                 const auto src = value::make_list(alloc, {

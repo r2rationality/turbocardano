@@ -266,7 +266,7 @@ namespace turbo::plutus::builtins {
 
     value choose_list(allocator &, const value &a, const value &t1, const value &t2)
     {
-        if (const auto &cl = a.as_list(); !cl->vals.empty())
+        if (const auto &cl = a.as_list(); !cl.empty())
             return t2;
         return t1;
     }
@@ -275,37 +275,31 @@ namespace turbo::plutus::builtins {
     {
         const auto &cx = x.as_const();
         const auto &cl = l.as_const().as_list();
-        if (const auto cx_typ = constant_type::from_val(alloc, cx); cx_typ != cl->typ) [[unlikely]]
-            throw error(fmt::format("mkCons requires both arguments to be of the same type but got {} and {}", cx_typ, cl->typ));
-        constant_list::list_type vals { alloc };
-        vals.reserve(cl->vals.size() + 1);
-        vals.emplace_back(cx);
-        std::copy(cl->vals.begin(), cl->vals.end(), std::back_inserter(vals));
-        return value::make_list(alloc, constant_type::from_val(alloc, cx), std::move(vals));
+        const auto cx_typ = constant_type::from_val(alloc, cx);
+        if (cx_typ != cl.typ()) [[unlikely]]
+            throw error(fmt::format("mkCons requires both arguments to be of the same type but got {} and {}", cx_typ, cl.typ()));
+        return { alloc, constant { alloc, cl.prepend(alloc, cx) } };
     }
 
     value head_list(allocator &alloc, const value &l)
     {
         const auto &cl = l.as_list();
-        if (!cl->vals.empty()) [[likely]]
-            return { alloc, cl->vals.front() };
+        if (!cl.empty()) [[likely]]
+            return { alloc, cl.front() };
         throw error("head_list builtin called with an empty list!");
     }
 
     value tail_list(allocator &alloc, const value &l)
     {
         const auto &cl = l.as_list();
-        if (cl->vals.empty()) [[unlikely]]
+        if (cl.empty()) [[unlikely]]
             throw error("calling tail_list on an empty list!");
-        constant_list::list_type vals { alloc };
-        vals.reserve(cl->vals.size() - 1);
-        std::copy(std::next(cl->vals.begin(), 1), cl->vals.end(), std::back_inserter(vals));
-        return value::make_list(alloc, constant_type { cl->typ }, std::move(vals));
+        return { alloc, constant { alloc, cl.drop(alloc, 1) } };
     }
 
     value null_list(allocator &alloc, const value &l)
     {
-        return value::boolean(alloc, l.as_list()->vals.empty());
+        return value::boolean(alloc, l.as_list().empty());
     }
 
     value trace(allocator &, const value &s, const value &t)
@@ -337,32 +331,34 @@ namespace turbo::plutus::builtins {
     value constr_data(allocator &alloc, const value &c, const value &l)
     {
         data::list_type dl { alloc };
-        const auto &vals = l.as_list()->vals;
+        const auto &vals = l.as_list();
         dl.reserve(vals.size());
-        for (const auto &d: vals)
+        vals.for_each([&](const auto &d) {
             dl.emplace_back(d.as_data());
+        });
         return { alloc, data::constr(alloc, c.as_int(), std::move(dl)) };
     }
 
     value map_data(allocator &alloc, const value &m)
     {
         data::map_type dm { alloc };
-        const auto &vals = m.as_list()->vals;
+        const auto &vals = m.as_list();
         dm.reserve(vals.size());
-        for (const auto &c: vals) {
+        vals.for_each([&](const auto &c) {
             const auto &p = c.as_pair();
             dm.emplace_back(data_pair { alloc, data { p.first.as_data() }, data { p.second.as_data() } });
-        }
+        });
         return { alloc, data::map(alloc, std::move(dm)) };
     }
 
     value list_data(allocator &alloc, const value &l)
     {
         data::list_type dl { alloc };
-        const auto &vals = l.as_list()->vals;
+        const auto &vals = l.as_list();
         dl.reserve(vals.size());
-        for (const auto &d: vals)
+        vals.for_each([&](const auto &d) {
             dl.emplace_back(d.as_data());
+        });
         return { alloc, data::list(alloc, std::move(dl)) };
     }
 
@@ -866,7 +862,7 @@ namespace turbo::plutus::builtins {
         const auto &indices = indices_v.as_list();
         bstr_type::value_type res { alloc };
         res = *b;
-        for (const auto &idx_v: indices->vals) {
+        indices.for_each([&](const auto &idx_v) {
             const auto &idx = idx_v.as_int();
             if (*idx < 0 || *idx >= n_bits) [[unlikely]]
                 throw error(fmt::format("writeBits: the bit position out of range: {}", *idx));
@@ -880,7 +876,7 @@ namespace turbo::plutus::builtins {
                 res[byte_idx] |= mask;
             else
                 res[byte_idx] &= ~mask;
-        }
+        });
         return { alloc, std::move(res) };
     }
 
@@ -965,28 +961,23 @@ namespace turbo::plutus::builtins {
         const auto &count = *count_v.as_int();
         if (count <= 0)
             return list_v;
-        constant_list::list_type vals { alloc };
-        if (count < src->vals.size()) {
-            const auto offset = count.convert_to<size_t>();
-            vals.reserve(src->vals.size() - offset);
-            std::copy(std::next(src->vals.begin(), offset), src->vals.end(), std::back_inserter(vals));
-        }
-        return value::make_list(alloc, constant_type { src->typ }, std::move(vals));
+        if (count >= src.size())
+            return { alloc, constant { alloc, src.drop(alloc, src.size()) } };
+        return { alloc, constant { alloc, src.drop(alloc, count.convert_to<size_t>()) } };
     }
 
     value length_of_array(allocator &alloc, const value &array_v)
     {
-        return { alloc, numeric_cast<int64_t>(array_v.as_array()->vals.size()) };
+        return { alloc, numeric_cast<int64_t>(array_v.as_array().size()) };
     }
 
     value list_to_array(allocator &alloc, const value &list_v)
     {
         const auto &src = list_v.as_list();
         constant_list::list_type vals { alloc };
-        vals.reserve(src->vals.size());
-        std::copy(src->vals.begin(), src->vals.end(), std::back_inserter(vals));
+        src.copy_to(vals);
         return { alloc, constant { alloc, constant_array {
-            alloc, constant_type { src->typ }, std::move(vals)
+            alloc, constant_type { src.typ() }, std::move(vals)
         } } };
     }
 
@@ -994,10 +985,10 @@ namespace turbo::plutus::builtins {
     {
         const auto &src = array_v.as_array();
         const auto &index = *index_v.as_int();
-        if (index < 0 || index >= src->vals.size()) [[unlikely]]
+        if (index < 0 || index >= src.size()) [[unlikely]]
             throw error(fmt::format("array index {} is out of bounds for an array of size {}",
-                index_v.as_int(), src->vals.size()));
-        return { alloc, src->vals.at(index.convert_to<size_t>()) };
+                index_v.as_int(), src.size()));
+        return { alloc, src.at(index.convert_to<size_t>()) };
     }
 
     template<typename Point, typename Generator, typename Multiply, typename Add, typename Extract>
@@ -1006,7 +997,7 @@ namespace turbo::plutus::builtins {
     {
         static const cpp_int lower = -(cpp_int { 1 } << 4095);
         static const cpp_int upper = (cpp_int { 1 } << 4095) - 1;
-        for (const auto &scalar: scalars->vals) {
+        for (const auto &scalar: scalars) {
             const auto &i = *scalar.as_int();
             if (i < lower || i > upper) [[unlikely]]
                 throw error("a multiScalarMul scalar exceeds the 512-byte bound");
@@ -1015,9 +1006,9 @@ namespace turbo::plutus::builtins {
         const blst_scalar zero {};
         Point result {};
         multiply(&result, generator(), reinterpret_cast<const ::byte *>(&zero), sizeof(zero) * 8);
-        auto scalar_it = scalars->vals.begin();
-        auto point_it = points->vals.begin();
-        for (; scalar_it != scalars->vals.end() && point_it != points->vals.end(); ++scalar_it, ++point_it) {
+        auto scalar_it = scalars.begin();
+        auto point_it = points.begin();
+        for (; scalar_it != scalars.end() && point_it != points.end(); ++scalar_it, ++point_it) {
             const auto scalar = bls12_381_make_scalar(scalar_it->as_int());
             Point term {};
             multiply(&term, &extract(*point_it), reinterpret_cast<const ::byte *>(&scalar), sizeof(scalar) * 8);

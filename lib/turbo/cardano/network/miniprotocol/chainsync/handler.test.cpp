@@ -5,6 +5,7 @@
 
 #include "handler.hpp"
 #include <turbo/cardano/network/mock.hpp>
+#include <turbo/chunk-registry.hpp>
 #include <turbo/common/test.hpp>
 #include <turbo/common/variant.hpp>
 #include "messages.hpp"

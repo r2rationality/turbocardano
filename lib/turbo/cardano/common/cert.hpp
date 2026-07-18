@@ -11,12 +11,22 @@ namespace turbo::cardano {
         stake_ident stake_id {};
 
         static stake_reg_cert from_cbor(cbor::zero2::array_reader &);
+
+        static constexpr auto serialize(auto &archive, auto &self)
+        {
+            return archive(self.stake_id);
+        }
     };
 
     struct stake_dereg_cert {
         stake_ident stake_id {};
 
         static stake_dereg_cert from_cbor(cbor::zero2::array_reader &);
+
+        static constexpr auto serialize(auto &archive, auto &self)
+        {
+            return archive(self.stake_id);
+        }
     };
 
     struct stake_deleg_cert {
@@ -24,6 +34,11 @@ namespace turbo::cardano {
         pool_hash pool_id {};
 
         static stake_deleg_cert from_cbor(cbor::zero2::array_reader &);
+
+        static constexpr auto serialize(auto &archive, auto &self)
+        {
+            return archive(self.stake_id, self.pool_id);
+        }
     };
 
     struct pool_reg_cert {
@@ -31,6 +46,11 @@ namespace turbo::cardano {
         pool_params params {};
 
         static pool_reg_cert from_cbor(cbor::zero2::array_reader &);
+
+        static constexpr auto serialize(auto &archive, auto &self)
+        {
+            return archive(self.pool_id, self.params);
+        }
     };
 
     struct pool_retire_cert {
@@ -38,6 +58,11 @@ namespace turbo::cardano {
         cardano::epoch epoch {};
 
         static pool_retire_cert from_cbor(cbor::zero2::array_reader &);
+
+        static constexpr auto serialize(auto &archive, auto &self)
+        {
+            return archive(self.pool_id, self.epoch);
+        }
     };
 
     struct genesis_deleg_cert {
@@ -423,34 +448,64 @@ namespace turbo::cardano {
     struct reg_cert {
         stake_ident stake_id {};
         uint64_t deposit = 0;
+
+        static constexpr auto serialize(auto &archive, auto &self)
+        {
+            return archive(self.stake_id, self.deposit);
+        }
     };
 
     struct unreg_cert {
         stake_ident stake_id {};
         uint64_t deposit = 0;
+
+        static constexpr auto serialize(auto &archive, auto &self)
+        {
+            return archive(self.stake_id, self.deposit);
+        }
     };
 
     struct vote_deleg_cert {
         stake_ident stake_id {};
         drep_t drep {};
+
+        static constexpr auto serialize(auto &archive, auto &self)
+        {
+            return archive(self.stake_id, self.drep);
+        }
     };
 
     struct stake_vote_deleg_cert {
         stake_ident stake_id {};
         pool_hash pool_id {};
         drep_t drep {};
+
+        static constexpr auto serialize(auto &archive, auto &self)
+        {
+            return archive(self.stake_id, self.pool_id, self.drep);
+        }
     };
 
     struct stake_reg_deleg_cert {
         stake_ident stake_id {};
         pool_hash pool_id {};
         uint64_t deposit = 0;
+
+        static constexpr auto serialize(auto &archive, auto &self)
+        {
+            return archive(self.stake_id, self.pool_id, self.deposit);
+        }
     };
 
     struct vote_reg_deleg_cert {
         stake_ident stake_id {};
         drep_t drep {};
         uint64_t deposit = 0;
+
+        static constexpr auto serialize(auto &archive, auto &self)
+        {
+            return archive(self.stake_id, self.drep, self.deposit);
+        }
     };
 
     struct stake_vote_reg_deleg_cert {
@@ -458,11 +513,21 @@ namespace turbo::cardano {
         pool_hash pool_id {};
         drep_t drep {};
         uint64_t deposit = 0;
+
+        static constexpr auto serialize(auto &archive, auto &self)
+        {
+            return archive(self.stake_id, self.pool_id, self.drep, self.deposit);
+        }
     };
 
     struct auth_committee_hot_cert {
         credential_t cold_id {};
         credential_t hot_id {};
+
+        static constexpr auto serialize(auto &archive, auto &self)
+        {
+            return archive(self.cold_id, self.hot_id);
+        }
     };
 
     struct resign_committee_cold_cert {
@@ -493,6 +558,11 @@ namespace turbo::cardano {
     struct unreg_drep_cert {
         credential_t drep_id {};
         uint64_t deposit = 0;
+
+        static constexpr auto serialize(auto &archive, auto &self)
+        {
+            return archive(self.drep_id, self.deposit);
+        }
     };
 
     struct update_drep_cert {

@@ -83,6 +83,8 @@ suite plutus_flat_encoder_suite = [] {
             test_uplc_hex("(program 1.1.0 (constr 1 (con integer 0) (con integer 1)))", "4a010100801a4001480081");
         };
         "terms"_test = [] {
+            test_uplc_code("free variable", buffer { std::string_view { "(program 1.0.0 x)" } });
+            test_uplc_code("free variable under lambda", buffer { std::string_view { "(program 1.0.0 (lam a x))" } });
             for (const auto &path: file::files_with_ext_path(conformance_data_dir().string(), ".uplc")) {
                 const auto exp_path = (path.parent_path() / path.stem()).string() + ".uplc.expected";
                 if (file::read(exp_path).str() != "parse error")

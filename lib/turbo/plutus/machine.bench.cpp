@@ -51,7 +51,7 @@ namespace {
     {
         auto expr = make_unit(alloc);
         for (size_t i = count; i-- > 0;) {
-            auto fun = term { alloc, t_lambda { i, expr } };
+            auto fun = term { alloc, t_lambda { expr } };
             expr = term { alloc, apply { std::move(fun), make_unit(alloc) } };
         }
         return expr;
@@ -77,7 +77,7 @@ namespace {
         auto expr = make_constr(alloc, std::move(lookups));
 
         for (size_t i = environment_depth; i-- > 0;)
-            expr = term { alloc, t_lambda { i, expr } };
+            expr = term { alloc, t_lambda { expr } };
         for (size_t i = 0; i < environment_depth; ++i)
             expr = term { alloc, apply { std::move(expr), make_unit(alloc) } };
         return expr;
@@ -157,7 +157,7 @@ namespace {
         for (size_t i = 0; i < count; ++i) {
             auto expr = make_unit(alloc);
             for (size_t arg_idx = num_args; arg_idx-- > 0;)
-                expr = term { alloc, t_lambda { arg_idx, std::move(expr) } };
+                expr = term { alloc, t_lambda { std::move(expr) } };
             for (size_t arg_idx = 0; arg_idx < num_args; ++arg_idx)
                 expr = term { alloc, apply { std::move(expr), make_unit(alloc) } };
             vals.emplace_back(std::move(expr));
@@ -197,6 +197,45 @@ namespace {
         bench.batch(primitive_batch_size).run(name, [&] {
             for (size_t i = 0; i < primitive_batch_size; ++i)
                 action();
+        });
+    }
+
+    value make_repeated_list(allocator &alloc, const constant_type &typ,
+            const plutus::constant &element, const size_t count)
+    {
+        constant_list::list_type vals { alloc };
+        vals.reserve(count);
+        for (size_t i = 0; i < count; ++i)
+            vals.emplace_back(element);
+        return value::make_list(alloc, typ, std::move(vals));
+    }
+
+    template<typename Action>
+    void run_list_operation_benchmark(ankerl::nanobench::Bench &bench,
+            const std::string &name, Action &&action)
+    {
+        // List updates allocate their result. A fresh arena per measured batch
+        // avoids accumulating allocations across nanobench epochs while
+        // amortizing allocator construction over the batch.
+        bench.batch(primitive_batch_size).run(name, [&] {
+            allocator result_alloc {};
+            for (size_t i = 0; i < primitive_batch_size; ++i) {
+                const auto result = action(result_alloc);
+                ankerl::nanobench::doNotOptimizeAway(result);
+            }
+        });
+    }
+
+    void run_list_traversal_benchmark(ankerl::nanobench::Bench &bench,
+            const std::string &name, const value &list)
+    {
+        const auto &vals = list.as_list();
+        bench.batch(vals.size()).run(name, [&] {
+            uintptr_t checksum = 0;
+            vals.for_each([&](const auto &val) {
+                checksum += reinterpret_cast<uintptr_t>(&val);
+            });
+            ankerl::nanobench::doNotOptimizeAway(checksum);
         });
     }
 }
@@ -245,8 +284,8 @@ suite plutus_machine_bench_suite = [] {
             const auto constants = make_constant_batch(term_alloc, primitive_batch_size);
             const auto lambda_apps = make_lambda_application_chain(term_alloc, primitive_batch_size);
             const auto force_delays = make_force_delay_chain(term_alloc, primitive_batch_size);
-            const auto lookup_tail = make_lookup_batch(term_alloc, primitive_batch_size, 8, 7);
-            const auto lookup_depth_8 = make_lookup_batch(term_alloc, primitive_batch_size, 8, 0);
+            const auto lookup_tail = make_lookup_batch(term_alloc, primitive_batch_size, 8, 0);
+            const auto lookup_depth_8 = make_lookup_batch(term_alloc, primitive_batch_size, 8, 7);
             const auto builtin_partial = make_partial_builtin_batch(term_alloc, primitive_batch_size);
             const auto builtin_complete = make_complete_builtin_batch(term_alloc, primitive_batch_size);
             const auto choose_unit_partial = make_choose_unit_batch(term_alloc, primitive_batch_size, 1);
@@ -302,6 +341,114 @@ suite plutus_machine_bench_suite = [] {
             run_machine_benchmark(bench, "lambda accumulation control: 4 args", lambda_control_4_args, primitive_batch_size);
             run_machine_benchmark(bench, "lambda accumulation control: 5 args", lambda_control_5_args, primitive_batch_size);
             run_machine_benchmark(bench, "constructor case", cases, primitive_batch_size);
+        };
+        "immutable list storage"_test = [] {
+            static constexpr size_t list_extent = 64;
+
+            allocator fixture_alloc {};
+            const constant_type integer_type { fixture_alloc, type_tag::integer };
+            const plutus::constant element_constant { fixture_alloc, bint_type { fixture_alloc, 1 } };
+            const value element { fixture_alloc, element_constant };
+            const value drop_32 { fixture_alloc, int64_t { 32 } };
+
+            const auto list_0 = make_repeated_list(fixture_alloc, integer_type, element_constant, 0);
+            const auto list_1 = make_repeated_list(fixture_alloc, integer_type, element_constant, 1);
+            const auto list_8 = make_repeated_list(fixture_alloc, integer_type, element_constant, 8);
+            const auto list_48 = make_repeated_list(fixture_alloc, integer_type, element_constant, 48);
+            const auto list_64 = make_repeated_list(fixture_alloc, integer_type, element_constant, list_extent);
+
+            auto prefixed_16 = list_48;
+            for (size_t i = 0; i < 16; ++i)
+                prefixed_16 = builtins::mk_cons(fixture_alloc, element, prefixed_16);
+            auto prefixed_64 = list_0;
+            for (size_t i = 0; i < list_extent; ++i)
+                prefixed_64 = builtins::mk_cons(fixture_alloc, element, prefixed_64);
+
+            ankerl::nanobench::Bench updates {};
+            updates.title("Plutus list update operations")
+                .output(&std::cerr)
+                .unit("operation")
+                .performanceCounters(true)
+                .relative(false)
+                .warmup(10)
+                .epochs(15)
+                .minEpochTime(std::chrono::milliseconds { 20 });
+
+            run_list_operation_benchmark(updates, "construct contiguous list: 8 elements", [&](allocator &alloc) {
+                return make_repeated_list(alloc, integer_type, element_constant, 8);
+            });
+            run_list_operation_benchmark(updates, "construct contiguous list: 64 elements", [&](allocator &alloc) {
+                return make_repeated_list(alloc, integer_type, element_constant, list_extent);
+            });
+            run_list_operation_benchmark(updates, "mkCons: empty list", [&](allocator &alloc) {
+                return builtins::mk_cons(alloc, element, list_0);
+            });
+            run_list_operation_benchmark(updates, "mkCons: list length 8", [&](allocator &alloc) {
+                return builtins::mk_cons(alloc, element, list_8);
+            });
+            run_list_operation_benchmark(updates, "mkCons: list length 64", [&](allocator &alloc) {
+                return builtins::mk_cons(alloc, element, list_64);
+            });
+            run_list_operation_benchmark(updates, "tailList: list length 1", [&](allocator &alloc) {
+                return builtins::tail_list(alloc, list_1);
+            });
+            run_list_operation_benchmark(updates, "tailList: list length 8", [&](allocator &alloc) {
+                return builtins::tail_list(alloc, list_8);
+            });
+            run_list_operation_benchmark(updates, "tailList: list length 64", [&](allocator &alloc) {
+                return builtins::tail_list(alloc, list_64);
+            });
+            run_list_operation_benchmark(updates, "tailList: mkCons-built length 64", [&](allocator &alloc) {
+                return builtins::tail_list(alloc, prefixed_64);
+            });
+            run_list_operation_benchmark(updates, "dropList: drop 32 from length 64", [&](allocator &alloc) {
+                return builtins::drop_list(alloc, drop_32, list_64);
+            });
+            run_list_operation_benchmark(updates, "dropList: drop 32 from 16 prepends + tail length 48", [&](allocator &alloc) {
+                return builtins::drop_list(alloc, drop_32, prefixed_16);
+            });
+            run_list_operation_benchmark(updates, "listToArray: contiguous length 64", [&](allocator &alloc) {
+                return builtins::list_to_array(alloc, list_64);
+            });
+            run_list_operation_benchmark(updates, "listToArray: 16 prepends + tail length 48", [&](allocator &alloc) {
+                return builtins::list_to_array(alloc, prefixed_16);
+            });
+
+            updates.batch(list_extent).run("mkCons chain: 64 prepends", [&] {
+                allocator result_alloc {};
+                auto list = list_0;
+                for (size_t i = 0; i < list_extent; ++i)
+                    list = builtins::mk_cons(result_alloc, element, list);
+                ankerl::nanobench::doNotOptimizeAway(list);
+            });
+            updates.batch(list_extent).run("tailList chain: consume length 64", [&] {
+                allocator result_alloc {};
+                auto list = list_64;
+                for (size_t i = 0; i < list_extent; ++i)
+                    list = builtins::tail_list(result_alloc, list);
+                ankerl::nanobench::doNotOptimizeAway(list);
+            });
+            updates.batch(list_extent).run("tailList chain: consume 64 prepends", [&] {
+                allocator result_alloc {};
+                auto list = prefixed_64;
+                for (size_t i = 0; i < list_extent; ++i)
+                    list = builtins::tail_list(result_alloc, list);
+                ankerl::nanobench::doNotOptimizeAway(list);
+            });
+
+            ankerl::nanobench::Bench traversal {};
+            traversal.title("Plutus list traversal")
+                .output(&std::cerr)
+                .unit("element")
+                .performanceCounters(true)
+                .relative(false)
+                .warmup(10)
+                .epochs(15)
+                .minEpochTime(std::chrono::milliseconds { 20 });
+
+            run_list_traversal_benchmark(traversal, "contiguous list: 64 elements", list_64);
+            run_list_traversal_benchmark(traversal, "mkCons-built: 16 prepends + tail length 48", prefixed_16);
+            run_list_traversal_benchmark(traversal, "mkCons-built: 64 prepends", prefixed_64);
         };
         "builtin completion components"_test = [] {
             allocator arg_alloc {};

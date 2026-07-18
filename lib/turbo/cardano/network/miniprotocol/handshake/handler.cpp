@@ -5,6 +5,7 @@
 
 #include "handler.hpp"
 #include <turbo/cbor/zero2.hpp>
+#include <turbo/common/logger.hpp>
 #include "messages.hpp"
 
 namespace turbo::cardano::network::miniprotocol::handshake {
@@ -14,7 +15,7 @@ namespace turbo::cardano::network::miniprotocol::handshake {
         return {
             numeric_cast<uint32_t>(it.read().uint()),
             it.read().boolean(),
-            numeric_cast<bool>(it.read().uint()),
+            it.read().uint() != 0,
             it.read().boolean()
         };
     }

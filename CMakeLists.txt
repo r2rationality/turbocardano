@@ -15,6 +15,9 @@ set(COVERAGE_ARGS "" CACHE STRING "select specific unit tests to run for test co
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_EXTENSIONS NO)
 set(CMAKE_CXX_STANDARD_REQUIRED YES)
+# This project does not use C++ modules. Avoid the extra compiler pass CMake
+# otherwise adds to discover module dependencies for every translation unit.
+set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
 if (CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
     add_compile_options(-Wall)
     add_compile_options(-Wextra)
@@ -153,9 +156,11 @@ endforeach()
 
 file(GLOB_RECURSE TEST_SRCS lib/turbo/*.test.cpp)
 add_executable(tada-test src/run-test.cpp ${TEST_SRCS})
+target_precompile_headers(tada-test REUSE_FROM lib)
 
 file(GLOB_RECURSE BENCH_SRCS lib/turbo/*.bench.cpp)
 add_executable(tada-bench src/run-test.cpp ${BENCH_SRCS})
+target_precompile_headers(tada-bench REUSE_FROM lib)
 
 foreach(EXE tada tada-test tada-bench)
     if (WIN32)

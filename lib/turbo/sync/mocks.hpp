@@ -7,6 +7,7 @@
 #include <random>
 #include <boost/url.hpp>
 #include <turbo/common/error.hpp>
+#include <turbo/common/logger.hpp>
 #include <turbo/cardano/common/block-producer.hpp>
 #include <turbo/cardano/network/common.hpp>
 

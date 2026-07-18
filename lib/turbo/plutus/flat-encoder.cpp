@@ -68,9 +68,9 @@ namespace turbo::plutus::flat {
             encode(term_tag::variable);
             if (v.idx > _num_vars) [[unlikely]]
                 throw error("variable index out of range!");
-            // De Bruijn indices are 1-based!
-            const auto rel_idx = _num_vars - v.idx;
-            var_uint(rel_idx);
+            // Bound De Bruijn indices are 1-based on the wire. Zero represents
+            // the single free-variable position immediately outside the term.
+            var_uint(v.idx < _num_vars ? v.idx + 1 : 0);
         }
 
         void encode(const t_delay &d)
@@ -158,7 +158,7 @@ namespace turbo::plutus::flat {
             put_bit(true);
             encode(type_tag::list);
             put_bit(true);
-            encode_type(l->typ);
+            encode_type(l.typ());
         }
 
         void encode_type(const constant_array &a)
@@ -167,7 +167,7 @@ namespace turbo::plutus::flat {
             put_bit(true);
             encode(type_tag::array);
             put_bit(true);
-            encode_type(a->typ);
+            encode_type(a.typ());
         }
 
         void encode_type(const constant_pair &p)
@@ -255,12 +255,12 @@ namespace turbo::plutus::flat {
         template<typename Sequence>
         void encode_sequence_val(const Sequence &seq)
         {
-            for (const auto &v: seq->vals) {
+            seq.for_each([&](const auto &v) {
                 put_bit(true);
                 std::visit([&](const auto &vv) {
                     encode_val(vv);
                 }, *v);
-            }
+            });
             put_bit(false);
         }
 
@@ -477,9 +477,9 @@ namespace turbo::plutus::flat {
 
         void encode(const term &t)
         {
-            std::visit([&](const auto &v) {
+            t.visit([&](const auto &v) {
                 encode(v);
-            }, *t);
+            });
         }
 
         void put_bit(const bool bit)

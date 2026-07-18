@@ -62,7 +62,7 @@ namespace turbo::plutus::costs {
         return words.convert_to<uint64_t>();
     }
 
-    static uint64_t _mem_usage(const value::value_type &val);
+    static uint64_t _mem_usage(const value &val);
     static uint64_t _mem_usage(const data &d);
 
     static uint64_t _mem_usage(const bint_type &i)
@@ -137,7 +137,7 @@ namespace turbo::plutus::costs {
             } else if constexpr (std::is_same_v<T, bls12_381_ml_result>) {
                 return static_cast<uint64_t>(sizeof(blst_fp12) / 8);
             } else if constexpr (std::is_same_v<T, constant_list> || std::is_same_v<T, constant_array>) {
-                return numeric_cast<uint64_t>(v->vals.size());
+                return numeric_cast<uint64_t>(v.size());
             } else if constexpr (std::is_same_v<T, asset_value>) {
                 return numeric_cast<uint64_t>(v.total_size());
             } else if constexpr (std::is_same_v<T, constant_pair>) {
@@ -148,18 +148,21 @@ namespace turbo::plutus::costs {
         }, *c);
     }
 
-    static uint64_t _mem_usage(const value::value_type &val)
+    static uint64_t _mem_usage(const value &val)
     {
-        if (std::holds_alternative<constant>(val))
-            return _mem_usage(std::get<constant>(val));
-        return 1;
+        return val.visit([](const auto &v) {
+            using T = std::decay_t<decltype(v)>;
+            if constexpr (std::is_same_v<T, constant>)
+                return _mem_usage(v);
+            return uint64_t { 1 };
+        });
     }
 
     arg_sizes default_size_fun::size(const value_args &args) const
     {
         const auto *args_ptr = args.data();
         return { args.size(), [args_ptr](const size_t idx) {
-            return _mem_usage(*args_ptr[idx]);
+            return _mem_usage(args_ptr[idx]);
         } };
     };
 
@@ -169,7 +172,7 @@ namespace turbo::plutus::costs {
         return { args.size(), [args_ptr](const size_t idx) {
             const auto &arg = args_ptr[idx];
             if (idx != 0)
-                return _mem_usage(*arg);
+                return _mem_usage(arg);
             const auto &literal = *arg.as_int();
             if (literal == 0)
                 return uint64_t { 0 };
@@ -197,7 +200,7 @@ namespace turbo::plutus::costs {
         return { args.size(), [args_ptr, index](const size_t idx) {
             const auto &arg = args_ptr[idx];
             if (idx != index)
-                return _mem_usage(*arg);
+                return _mem_usage(arg);
             const auto &v = arg.as_asset_value();
             return saturated_add(_tree_depth(v->size()), _tree_depth(v.max_inner_size()));
         } };
@@ -229,7 +232,7 @@ namespace turbo::plutus::costs {
         const auto *args_ptr = args.data();
         return { args.size(), [args_ptr](const size_t idx) {
             const auto &arg = args_ptr[idx];
-            return idx == 0 ? _data_node_count(arg.as_data()) : _mem_usage(*arg);
+            return idx == 0 ? _data_node_count(arg.as_data()) : _mem_usage(arg);
         } };
     }
 

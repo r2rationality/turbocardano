@@ -620,7 +620,7 @@ namespace turbo::cardano {
         static credential_t from_json(std::string_view);
         void to_cbor(era_encoder &) const;
 
-        bool operator<(const auto &b) const
+        bool operator<(const credential_t &b) const
         {
             // compares the hash and the script in a single operation
             static_assert(sizeof(*this) == 29);
@@ -1992,6 +1992,11 @@ namespace turbo::cardano {
     struct pool_metadata {
         std::string url {};
         hash_32 hash {};
+
+        static constexpr auto serialize(auto &archive, auto &self)
+        {
+            return archive(self.url, self.hash);
+        }
 
         static pool_metadata from_cbor(cbor::zero2::value &v);
         void to_cbor(era_encoder &) const;

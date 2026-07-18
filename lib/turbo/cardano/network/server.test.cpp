@@ -14,6 +14,7 @@
 #include <turbo/common/test.hpp>
 #include "miniprotocol/blockfetch/handler.hpp"
 #include "miniprotocol/chainsync/handler.hpp"
+#include "miniprotocol/handshake/handler.hpp"
 #include "server.hpp"
 
 namespace {

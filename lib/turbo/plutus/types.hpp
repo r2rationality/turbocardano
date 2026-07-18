@@ -6,7 +6,10 @@
 
 #include <boost/container/static_vector.hpp>
 #include <deque>
+#include <iterator>
+#include <limits>
 #include <memory_resource>
+#include <span>
 #include <stdexcept>
 #include <turbo/cbor/encoder.hpp>
 #include <turbo/common/format.hpp>
@@ -442,6 +445,17 @@ namespace turbo::plutus {
         allocator::ptr_type<value_type> _ptr;
     };
 
+    struct variable;
+    struct force;
+    struct apply;
+    struct failure;
+    struct t_delay;
+    struct t_lambda;
+    struct constant;
+    struct t_builtin;
+    struct t_constr;
+    struct t_case;
+    struct term_unary;
     struct term_value;
 
     struct term {
@@ -449,28 +463,80 @@ namespace turbo::plutus {
 
         term() =delete;
 
-        term(const term &o): _ptr { o._ptr }
+        term(const term &o): _storage { o._storage }
         {
         }
-
-        term(allocator &alloc, value_type &&v): _ptr { alloc.make<value_type>(std::move(v)) }
-        {
-        }
+        term(allocator &, value_type &&);
+        term(allocator &, variable &&);
+        term(allocator &, force &&);
+        term(allocator &, apply &&);
+        term(allocator &, failure &&);
+        term(allocator &, t_delay &&);
+        term(allocator &, t_lambda &&);
+        term(allocator &, const constant &);
+        term(allocator &, t_builtin &&);
+        term(allocator &, t_constr &&);
+        term(allocator &, t_case &&);
 
         term &operator=(const term &o)
         {
-            _ptr = o._ptr;
+            _storage = o._storage;
             return *this;
         }
 
         bool operator==(const term &o) const;
 
-        const value_type &operator*() const
-        {
-            return *_ptr;
-        }
+        template<typename Visitor>
+        decltype(auto) visit(Visitor &&visitor) const;
     private:
-        allocator::ptr_type<value_type> _ptr;
+        // Three low pointer bits select the storage form. Small leaves are
+        // encoded directly; structural nodes point at their exact arena payload.
+        enum class storage_tag: uintptr_t {
+            variable,
+            unary,
+            apply,
+            constant,
+            failure,
+            builtin,
+            constr,
+            acase
+        };
+
+        static constexpr uintptr_t _tag_mask = 0x7;
+        static constexpr uintptr_t _max_immediate = std::numeric_limits<uintptr_t>::max() >> 3;
+
+        static uintptr_t _encode(const void *ptr, storage_tag tag) noexcept
+        {
+            return reinterpret_cast<uintptr_t>(ptr) | static_cast<uintptr_t>(tag);
+        }
+
+        static uintptr_t _encode_immediate(const uintptr_t val, storage_tag tag) noexcept
+        {
+            return (val << 3) | static_cast<uintptr_t>(tag);
+        }
+
+        storage_tag _tag() const noexcept
+        {
+            return static_cast<storage_tag>(_storage & _tag_mask);
+        }
+
+        uintptr_t _immediate() const noexcept
+        {
+            return _storage >> 3;
+        }
+
+        const void *_payload() const noexcept
+        {
+            return reinterpret_cast<const void *>(_storage & ~_tag_mask);
+        }
+
+        template<typename T>
+        const T &_payload_as() const noexcept
+        {
+            return *static_cast<const T *>(_payload());
+        }
+
+        uintptr_t _storage;
     };
 
     template<typename T>
@@ -554,6 +620,7 @@ namespace turbo::plutus {
     };
 
     struct variable {
+        // Zero-based De Bruijn index: 0 refers to the nearest enclosing binder.
         size_t idx;
 
         bool operator==(const variable &o) const
@@ -589,7 +656,6 @@ namespace turbo::plutus {
     };
 
     struct t_lambda {
-        size_t var_idx;
         term expr;
 
         bool operator==(const t_lambda &o) const;
@@ -1012,11 +1078,38 @@ namespace turbo::plutus {
          allocator::ptr_type<value_type> _ptr;
     };
 
+    struct constant_list_flat;
+    struct constant_list_slice;
+    struct constant_list_cons;
+
+    // A pointer-sized immutable list handle. Parsed lists use flat storage;
+    // tail/drop create slices, and mkCons creates persistent cons cells.
     struct constant_list {
         using list_type = list_type<constant>;
-        struct value_type {
-            constant_type typ;
-            list_type vals;
+
+        struct const_iterator {
+            using iterator_category = std::forward_iterator_tag;
+            using iterator_concept = std::forward_iterator_tag;
+            using value_type = constant;
+            using difference_type = std::ptrdiff_t;
+            using pointer = const constant *;
+            using reference = const constant &;
+
+            const_iterator() =default;
+            reference operator*() const;
+            pointer operator->() const;
+            const_iterator &operator++();
+            const_iterator operator++(int);
+            bool operator==(const const_iterator &) const;
+
+        private:
+            friend struct constant_list;
+
+            const_iterator(const constant_list &, bool at_end);
+
+            uintptr_t _storage = 0;
+            size_t _tail_pos = 0;
+            size_t _remaining = 0;
         };
 
         static constant_list make_one(allocator &alloc, constant &&);
@@ -1028,26 +1121,69 @@ namespace turbo::plutus {
         constant_list(allocator &alloc, const constant_type &t, std::initializer_list<constant>);
         constant_list(allocator &alloc, const constant_type &t, list_type &&);
 
-        constant_list(allocator &alloc, value_type &&v): _ptr { alloc.make<value_type>(std::move(v)) }
-        {
-        }
-
-        constant_list(const constant_list &o): _ptr { o._ptr }
-        {
-        }
-
-        constant_list &operator=(const constant_list &o)
-        {
-            _ptr = o._ptr;
-            return *this;
-        }
+        constant_list(const constant_list &) =default;
+        constant_list &operator=(const constant_list &) =default;
 
         bool operator==(const constant_list &o) const;
-        const value_type *operator->() const;
-        const value_type &operator*() const;
+        constant_list prepend(allocator &, const constant &) const;
+        constant_list drop(allocator &, size_t) const;
+        const constant_type &typ() const;
+        bool empty() const;
+        size_t size() const;
+        const constant &front() const;
+        const constant &back() const;
+        const constant &at(size_t) const;
+        const constant &operator[](size_t pos) const
+        {
+            return at(pos);
+        }
+        const_iterator begin() const;
+        const_iterator end() const;
+
+        template<typename Observer>
+        void for_each(Observer &&) const;
+
+        void copy_to(list_type &) const;
     private:
-        allocator::ptr_type<value_type> _ptr;
+        enum class storage_tag: uintptr_t {
+            flat,
+            slice,
+            cons
+        };
+
+        static constexpr uintptr_t _tag_mask = 0x3;
+
+        explicit constant_list(uintptr_t storage): _storage { storage }
+        {
+        }
+
+        static uintptr_t _encode(const void *ptr, const storage_tag tag) noexcept
+        {
+            return reinterpret_cast<uintptr_t>(ptr) | static_cast<uintptr_t>(tag);
+        }
+
+        static storage_tag _tag(const uintptr_t storage) noexcept
+        {
+            return static_cast<storage_tag>(storage & _tag_mask);
+        }
+
+        static const void *_payload(const uintptr_t storage) noexcept
+        {
+            return reinterpret_cast<const void *>(storage & ~_tag_mask);
+        }
+
+        template<typename T>
+        static const T &_payload_as(const uintptr_t storage) noexcept
+        {
+            return *static_cast<const T *>(_payload(storage));
+        }
+
+        static std::span<const constant> _next_segment(uintptr_t &);
+
+        uintptr_t _storage;
     };
+
+    static_assert(sizeof(constant_list) == sizeof(uintptr_t));
 
     // Arrays and lists carry the same element type and constant storage, but
     // remain distinct universe types.  Reuse the list storage implementation
@@ -1065,9 +1201,45 @@ namespace turbo::plutus {
             return _storage == o._storage;
         }
 
-        const constant_list::value_type *operator->() const
+        const constant_type &typ() const
         {
-            return _storage.operator->();
+            return _storage.typ();
+        }
+
+        bool empty() const
+        {
+            return _storage.empty();
+        }
+
+        size_t size() const
+        {
+            return _storage.size();
+        }
+
+        const constant &at(const size_t pos) const
+        {
+            return _storage.at(pos);
+        }
+
+        constant_list::const_iterator begin() const
+        {
+            return _storage.begin();
+        }
+
+        constant_list::const_iterator end() const
+        {
+            return _storage.end();
+        }
+
+        template<typename Observer>
+        void for_each(Observer &&observer) const
+        {
+            _storage.for_each(std::forward<Observer>(observer));
+        }
+
+        void copy_to(constant_list::list_type &out) const
+        {
+            _storage.copy_to(out);
         }
     private:
         constant_list _storage;
@@ -1199,12 +1371,50 @@ namespace turbo::plutus {
             return *_ptr;
         }
     private:
+        explicit constant(const value_type *ptr): _ptr { ptr }
+        {
+        }
+
+        friend struct term;
+        friend struct value;
         allocator::ptr_type<value_type> _ptr;
     };
 
+    struct constant_list_flat {
+        constant_type typ;
+        constant_list::list_type vals;
+    };
+
+    struct constant_list_slice {
+        const constant_list_flat *root;
+        size_t offset;
+        size_t size;
+    };
+
+    struct constant_list_cons {
+        constant head;
+        uintptr_t tail;
+        constant_type typ;
+        size_t size;
+    };
+
+    static_assert(alignof(constant_list_flat) >= 4);
+    static_assert(alignof(constant_list_slice) >= 4);
+    static_assert(alignof(constant_list_cons) >= 4);
+
+    template<typename Observer>
+    void constant_list::for_each(Observer &&observer) const
+    {
+        auto storage = _storage;
+        while (storage) {
+            for (const auto &val: _next_segment(storage))
+                observer(val);
+        }
+    }
+
     // this type is needed only for a prettier formatting; see the formatter definitions below
     struct constant_list_values_only {
-        const constant_list::list_type &vals;
+        const constant_list &vals;
     };
 
     struct builtin_one_arg;
@@ -1243,8 +1453,110 @@ namespace turbo::plutus {
         bool operator==(const t_case &o) const;
     };
 
+    struct term_unary {
+        // delay, force, and lambda have the same payload shape and share one
+        // pointer tag; the wire/AST tag preserves their distinct semantics.
+        term_tag tag;
+        term expr;
+    };
+
     struct term_value: std::variant<variable, t_delay, force, t_lambda, apply, constant, failure, t_builtin, t_constr, t_case> {
         using std::variant<variable, t_delay, force, t_lambda, apply, constant, failure, t_builtin, t_constr, t_case>::variant;
+    };
+
+    static_assert(sizeof(term) == sizeof(uintptr_t));
+    static_assert(alignof(term_unary) >= 8);
+    static_assert(alignof(apply) >= 8);
+    static_assert(alignof(constant::value_type) >= 8);
+    static_assert(alignof(t_constr) >= 8);
+    static_assert(alignof(t_case) >= 8);
+
+    inline term::term(allocator &, variable &&v): _storage {}
+    {
+        if (v.idx > _max_immediate) [[unlikely]]
+            throw error(fmt::format("variable index {} exceeds the compact term limit {}", v.idx, _max_immediate));
+        _storage = _encode_immediate(v.idx, storage_tag::variable);
+    }
+
+    inline term::term(allocator &alloc, force &&v):
+        _storage { _encode(alloc.make<term_unary>(term_tag::force, std::move(v.expr)).get(), storage_tag::unary) }
+    {
+    }
+
+    inline term::term(allocator &alloc, apply &&v):
+        _storage { _encode(alloc.make<turbo::plutus::apply>(std::move(v)).get(), storage_tag::apply) }
+    {
+    }
+
+    inline term::term(allocator &, failure &&):
+        _storage { _encode_immediate(0, storage_tag::failure) }
+    {
+    }
+
+    inline term::term(allocator &alloc, t_delay &&v):
+        _storage { _encode(alloc.make<term_unary>(term_tag::delay, std::move(v.expr)).get(), storage_tag::unary) }
+    {
+    }
+
+    inline term::term(allocator &alloc, t_lambda &&v):
+        _storage { _encode(alloc.make<term_unary>(term_tag::lambda, std::move(v.expr)).get(), storage_tag::unary) }
+    {
+    }
+
+    inline term::term(allocator &, const constant &v):
+        _storage { _encode(v._ptr.get(), storage_tag::constant) }
+    {
+    }
+
+    inline term::term(allocator &, t_builtin &&v):
+        _storage { _encode_immediate(static_cast<uintptr_t>(v.tag), storage_tag::builtin) }
+    {
+    }
+
+    inline term::term(allocator &alloc, t_constr &&v):
+        _storage { _encode(alloc.make<t_constr>(std::move(v)).get(), storage_tag::constr) }
+    {
+    }
+
+    inline term::term(allocator &alloc, t_case &&v):
+        _storage { _encode(alloc.make<t_case>(std::move(v)).get(), storage_tag::acase) }
+    {
+    }
+
+    template<typename Visitor>
+    decltype(auto) term::visit(Visitor &&visitor) const
+    {
+        switch (_tag()) {
+            case storage_tag::variable:
+                return visitor(variable { static_cast<size_t>(_immediate()) });
+            case storage_tag::unary: {
+                const auto &v = _payload_as<term_unary>();
+                switch (v.tag) {
+                    case term_tag::delay: return visitor(t_delay { v.expr });
+                    case term_tag::force: return visitor(force { v.expr });
+                    case term_tag::lambda: return visitor(t_lambda { v.expr });
+                    default: throw error(fmt::format("invalid unary term tag: {}", v.tag));
+                }
+            }
+            case storage_tag::apply:
+                return visitor(_payload_as<turbo::plutus::apply>());
+            case storage_tag::constant:
+                return visitor(constant { static_cast<const constant::value_type *>(_payload()) });
+            case storage_tag::failure:
+                return visitor(failure {});
+            case storage_tag::builtin:
+                return visitor(t_builtin { static_cast<builtin_tag>(_immediate()) });
+            case storage_tag::constr:
+                return visitor(_payload_as<t_constr>());
+            case storage_tag::acase:
+                return visitor(_payload_as<t_case>());
+        }
+        throw error("invalid term storage tag");
+    }
+
+    struct term_format_ref {
+        const term &val;
+        size_t depth;
     };
 
     struct v_builtin;
@@ -1254,7 +1566,6 @@ namespace turbo::plutus {
 
     struct value {
         using value_type = std::variant<constant, v_delay, v_lambda, v_builtin, v_constr>;
-        using ptr_type = allocator::ptr_type<value_type>;
 
         static value make_list(allocator &, const constant_type &);
         static value make_list(allocator &, std::initializer_list<constant>);
@@ -1269,6 +1580,10 @@ namespace turbo::plutus {
         value(const value &);
         value(allocator &, value_type &&);
         value(allocator &, const constant &);
+        value(allocator &, v_delay &&);
+        value(allocator &, v_lambda &&);
+        value(allocator &, v_builtin &&);
+        value(allocator &, v_constr &&);
         value(allocator &, const bint_type &);
         value(allocator &, const cpp_int &);
         value(allocator &, int64_t);
@@ -1284,7 +1599,7 @@ namespace turbo::plutus {
 
         value &operator=(const value &);
 
-        const constant &as_const() const;
+        constant as_const() const;
         const v_constr &as_constr() const;
         void as_unit() const;
         bool as_bool() const;
@@ -1300,10 +1615,42 @@ namespace turbo::plutus {
         const constant_array &as_array() const;
         const asset_value &as_asset_value() const;
         bool operator==(const value &o) const;
-        const value_type &operator*() const;
-        const value_type *operator->() const;
+
+        template<typename Visitor>
+        decltype(auto) visit(Visitor &&visitor) const;
     private:
-        ptr_type _ptr;
+        enum class storage_tag: uintptr_t {
+            constant,
+            delay,
+            lambda,
+            builtin,
+            constr
+        };
+
+        static constexpr uintptr_t _tag_mask = 0x7;
+
+        static uintptr_t _encode(const void *ptr, storage_tag tag) noexcept
+        {
+            return reinterpret_cast<uintptr_t>(ptr) | static_cast<uintptr_t>(tag);
+        }
+
+        storage_tag _tag() const noexcept
+        {
+            return static_cast<storage_tag>(_storage & _tag_mask);
+        }
+
+        const void *_payload() const noexcept
+        {
+            return reinterpret_cast<const void *>(_storage & ~_tag_mask);
+        }
+
+        template<typename T>
+        const T &_payload_as() const noexcept
+        {
+            return *static_cast<const T *>(_payload());
+        }
+
+        uintptr_t _storage;
     };
 
     struct value_args {
@@ -1443,13 +1790,13 @@ namespace turbo::plutus {
     struct environment {
         struct node {
             using ptr_type = allocator::ptr_type<node>;
+            // The tail is position 0 (the nearest binding); parents move outward.
             const ptr_type parent;
-            const size_t var_idx;
             const value val;
 
             bool operator==(const node &o) const
             {
-                return var_idx == o.var_idx && val == o.val
+                return val == o.val
                     && ((!parent && !o.parent) || (parent && o.parent && *parent == *o.parent));
             }
         };
@@ -1457,8 +1804,8 @@ namespace turbo::plutus {
         environment() =default;
         ~environment() =default;
 
-        environment(allocator &alloc, const environment &parent, const size_t var_idx, const value &val):
-            _tail { alloc.make<node>(parent._tail, var_idx, val) }
+        environment(allocator &alloc, const environment &parent, const value &val):
+            _tail { alloc.make<node>(parent._tail, val) }
         {
         }
 
@@ -1470,6 +1817,14 @@ namespace turbo::plutus {
         const node *get() const
         {
             return _tail.get();
+        }
+
+        size_t size() const noexcept
+        {
+            size_t size = 0;
+            for (auto node = _tail; node; node = node->parent)
+                ++size;
+            return size;
         }
 
         bool operator==(const environment &o) const
@@ -1504,11 +1859,30 @@ namespace turbo::plutus {
 
     struct v_lambda {
         const environment env;
-        const size_t var_idx;
         const term body;
 
         bool operator==(const v_lambda &o) const;
     };
+
+    static_assert(sizeof(value) == sizeof(uintptr_t));
+    static_assert(alignof(constant::value_type) >= 8);
+    static_assert(alignof(v_delay) >= 8);
+    static_assert(alignof(v_lambda) >= 8);
+    static_assert(alignof(v_builtin) >= 8);
+    static_assert(alignof(v_constr) >= 8);
+
+    template<typename Visitor>
+    decltype(auto) value::visit(Visitor &&visitor) const
+    {
+        switch (_tag()) {
+            case storage_tag::constant: return visitor(as_const());
+            case storage_tag::delay: return visitor(_payload_as<v_delay>());
+            case storage_tag::lambda: return visitor(_payload_as<v_lambda>());
+            case storage_tag::builtin: return visitor(_payload_as<v_builtin>());
+            case storage_tag::constr: return visitor(_payload_as<v_constr>());
+        }
+        throw error("invalid runtime value tag");
+    }
 
 #if defined(__GNUC__) && !defined(__clang__)
     // GCC 13 reacts oddly to the libc++ implementation of std::pmr::string
@@ -1659,9 +2033,9 @@ namespace fmt {
                 return fmt::format_to(next, ")");
             } else if constexpr (std::is_same_v<T, constant_list> || std::is_same_v<T, constant_array>) {
                 auto next = fmt::format_to(out, "[");
-                for (auto it = v->vals.begin(); it != v->vals.end(); ++it) {
+                for (auto it = v.begin(); it != v.end(); ++it) {
                     next = format_constant_value_to<true>(next, **it);
-                    if (std::next(it) != v->vals.end())
+                    if (std::next(it) != v.end())
                         next = fmt::format_to(next, ", ");
                 }
                 return fmt::format_to(next, "]");
@@ -1753,15 +2127,7 @@ namespace fmt {
     struct formatter<turbo::plutus::t_delay>: formatter<int> {
         template<typename FormatContext>
         auto format(const turbo::plutus::t_delay &v, FormatContext &ctx) const -> decltype(ctx.out()) {
-            return fmt::format_to(ctx.out(), "(delay {})", *v.expr);
-        }
-    };
-
-    template<>
-    struct formatter<turbo::plutus::t_lambda>: formatter<int> {
-        template<typename FormatContext>
-        auto format(const turbo::plutus::t_lambda &v, FormatContext &ctx) const -> decltype(ctx.out()) {
-            return fmt::format_to(ctx.out(), "(lam v{} {})", v.var_idx, *v.expr);
+            return fmt::format_to(ctx.out(), "(delay {})", v.expr);
         }
     };
 
@@ -1769,7 +2135,7 @@ namespace fmt {
     struct formatter<turbo::plutus::apply>: formatter<int> {
         template<typename FormatContext>
         auto format(const turbo::plutus::apply &v, FormatContext &ctx) const -> decltype(ctx.out()) {
-            return fmt::format_to(ctx.out(), "[{} {}]", *v.func, *v.arg);
+            return fmt::format_to(ctx.out(), "[{} {}]", v.func, v.arg);
         }
     };
 
@@ -1777,7 +2143,7 @@ namespace fmt {
     struct formatter<turbo::plutus::force>: formatter<int> {
         template<typename FormatContext>
         auto format(const turbo::plutus::force &v, FormatContext &ctx) const -> decltype(ctx.out()) {
-            return fmt::format_to(ctx.out(), "(force {})", *v.expr);
+            return fmt::format_to(ctx.out(), "(force {})", v.expr);
         }
     };
 
@@ -1814,11 +2180,87 @@ namespace fmt {
     };
 
     template<>
+    struct formatter<turbo::plutus::term_format_ref>: formatter<int> {
+        template<typename OutputIt>
+        static OutputIt format_term(OutputIt out_it, const turbo::plutus::term &v, const size_t depth)
+        {
+            return v.visit([&](const auto &payload) {
+                return format_value(out_it, payload, depth);
+            });
+        }
+
+        template<typename OutputIt>
+        static OutputIt format_terms(OutputIt out_it, const turbo::plutus::term_list &vals, const size_t depth)
+        {
+            for (auto it = vals->begin(); it != vals->end(); ++it) {
+                out_it = format_term(out_it, *it, depth);
+                if (std::next(it) != vals->end())
+                    out_it = fmt::format_to(out_it, " ");
+            }
+            return out_it;
+        }
+
+        template<typename OutputIt, typename Value>
+        static OutputIt format_value(OutputIt out_it, const Value &v, const size_t depth)
+        {
+            using namespace turbo::plutus;
+            using val_type = std::decay_t<Value>;
+            if constexpr (std::is_same_v<val_type, variable>) {
+                const auto name_idx = v.idx < depth ? depth - 1 - v.idx : v.idx;
+                return fmt::format_to(out_it, "v{}", name_idx);
+            } else if constexpr (std::is_same_v<val_type, t_delay>) {
+                out_it = fmt::format_to(out_it, "(delay ");
+                out_it = format_term(out_it, v.expr, depth);
+                return fmt::format_to(out_it, ")");
+            } else if constexpr (std::is_same_v<val_type, force>) {
+                out_it = fmt::format_to(out_it, "(force ");
+                out_it = format_term(out_it, v.expr, depth);
+                return fmt::format_to(out_it, ")");
+            } else if constexpr (std::is_same_v<val_type, t_lambda>) {
+                out_it = fmt::format_to(out_it, "(lam v{} ", depth);
+                out_it = format_term(out_it, v.expr, depth + 1);
+                return fmt::format_to(out_it, ")");
+            } else if constexpr (std::is_same_v<val_type, apply>) {
+                out_it = fmt::format_to(out_it, "[");
+                out_it = format_term(out_it, v.func, depth);
+                out_it = fmt::format_to(out_it, " ");
+                out_it = format_term(out_it, v.arg, depth);
+                return fmt::format_to(out_it, "]");
+            } else if constexpr (std::is_same_v<val_type, t_constr>) {
+                out_it = fmt::format_to(out_it, "(constr {} ", v.tag);
+                out_it = format_terms(out_it, v.args, depth);
+                return fmt::format_to(out_it, ")");
+            } else if constexpr (std::is_same_v<val_type, t_case>) {
+                out_it = fmt::format_to(out_it, "(case ");
+                out_it = format_term(out_it, v.arg, depth);
+                out_it = fmt::format_to(out_it, " ");
+                out_it = format_terms(out_it, v.cases, depth);
+                return fmt::format_to(out_it, ")");
+            } else {
+                return fmt::format_to(out_it, "{}", v);
+            }
+        }
+
+        template<typename FormatContext>
+        auto format(const turbo::plutus::term_format_ref &v, FormatContext &ctx) const -> decltype(ctx.out()) {
+            return format_term(ctx.out(), v.val, v.depth);
+        }
+    };
+
+    template<>
+    struct formatter<turbo::plutus::t_lambda>: formatter<int> {
+        template<typename FormatContext>
+        auto format(const turbo::plutus::t_lambda &v, FormatContext &ctx) const -> decltype(ctx.out()) {
+            return fmt::format_to(ctx.out(), "(lam v0 {})", turbo::plutus::term_format_ref { v.expr, 1 });
+        }
+    };
+
+    template<>
     struct formatter<turbo::plutus::term::value_type>: formatter<int> {
         template<typename FormatContext>
         auto format(const turbo::plutus::term::value_type &vv, FormatContext &ctx) const -> decltype(ctx.out()) {
-            return std::visit([&ctx](const auto &v) {
-                return fmt::format_to(ctx.out(), "{}", v);
+            return std::visit([&](const auto &payload) {
+                return formatter<turbo::plutus::term_format_ref>::format_value(ctx.out(), payload, 0);
             }, vv);
         }
     };
@@ -1827,7 +2269,7 @@ namespace fmt {
     struct formatter<turbo::plutus::term>: formatter<int> {
         template<typename FormatContext>
         auto format(const turbo::plutus::term &v, FormatContext &ctx) const -> decltype(ctx.out()) {
-            return fmt::format_to(ctx.out(), "{}", *v);
+            return fmt::format_to(ctx.out(), "{}", turbo::plutus::term_format_ref { v, 0 });
         }
     };
 
@@ -1888,13 +2330,21 @@ namespace fmt {
 
     template<>
     struct formatter<turbo::plutus::environment::node>: formatter<int> {
+        template<typename OutputIt>
+        static OutputIt format_nodes(OutputIt out_it, const turbo::plutus::environment::node &v)
+        {
+            size_t idx = 0;
+            for (auto node = &v; node; node = node->parent.get(), ++idx) {
+                if (idx)
+                    out_it = fmt::format_to(out_it, ", ");
+                out_it = fmt::format_to(out_it, "v{}={}", idx, node->val);
+            }
+            return out_it;
+        }
+
         template<typename FormatContext>
         auto format(const turbo::plutus::environment::node &v, FormatContext &ctx) const -> decltype(ctx.out()) {
-            using namespace turbo::plutus;
-            auto out_it = fmt::format_to(ctx.out(), "v{}={}", v.var_idx, v.val);
-            if (v.parent)
-                out_it = fmt::format_to(out_it, ", {}", *v.parent);
-            return out_it;
+            return format_nodes(ctx.out(), v);
         }
     };
 
@@ -1903,9 +2353,10 @@ namespace fmt {
         template<typename FormatContext>
         auto format(const turbo::plutus::environment &v, FormatContext &ctx) const -> decltype(ctx.out()) {
             using namespace turbo::plutus;
+            auto out_it = fmt::format_to(ctx.out(), "env [");
             if (const auto *node = v.get(); node)
-                fmt::format_to(ctx.out(), "env [{}]", *node);
-            return fmt::format_to(ctx.out(), "env []");
+                out_it = formatter<environment::node>::format_nodes(out_it, *node);
+            return fmt::format_to(out_it, "]");
         }
     };
 
@@ -1914,7 +2365,9 @@ namespace fmt {
         template<typename FormatContext>
         auto format(const turbo::plutus::value &v, FormatContext &ctx) const -> decltype(ctx.out()) {
             using namespace turbo::plutus;
-            return fmt::format_to(ctx.out(), "{}", *v);
+            return v.visit([&ctx](const auto &payload) {
+                return fmt::format_to(ctx.out(), "{}", payload);
+            });
         }
     };
 
@@ -1941,7 +2394,7 @@ namespace fmt {
         template<typename FormatContext>
         auto format(const turbo::plutus::v_delay &v, FormatContext &ctx) const -> decltype(ctx.out()) {
             using namespace turbo::plutus;
-            return fmt::format_to(ctx.out(), "(delay {})", *v.expr);
+            return fmt::format_to(ctx.out(), "(delay {})", v.expr);
         }
     };
 
@@ -1950,7 +2403,7 @@ namespace fmt {
         template<typename FormatContext>
         auto format(const turbo::plutus::v_lambda &v, FormatContext &ctx) const -> decltype(ctx.out()) {
             using namespace turbo::plutus;
-            return fmt::format_to(ctx.out(), "(lam v{} {})", v.var_idx, *v.body);
+            return fmt::format_to(ctx.out(), "(lam v0 {})", term_format_ref { v.body, 1 });
         }
     };
 

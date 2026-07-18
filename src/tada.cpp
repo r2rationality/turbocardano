@@ -7,7 +7,9 @@
 #ifdef MI_OVERRIDE
 #   include <mimalloc-new-delete.h>
 #endif
-#include <../lib/turbo/common/cli.hpp>
+#include <iostream>
+#include <turbo/common/cli.hpp>
+#include <turbo/config.hpp>
 
 int main(const int argc, const char **argv)
 {

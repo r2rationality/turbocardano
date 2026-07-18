@@ -4,7 +4,9 @@
  * License: https://github.com/r2rationality/turbocardano/blob/main/LICENSE */
 
 #include "zero2.hpp"
+#include <turbo/common/file.hpp>
 #include <turbo/common/test.hpp>
+#include <turbo/config.hpp>
 
 using namespace turbo;
 using namespace turbo::cbor;

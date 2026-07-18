@@ -5,6 +5,7 @@
 
 #include <turbo/cardano/conway/block.hpp>
 #include <turbo/common/test.hpp>
+#include <turbo/plutus/context.hpp>
 
 using namespace turbo;
 using namespace turbo::cardano;

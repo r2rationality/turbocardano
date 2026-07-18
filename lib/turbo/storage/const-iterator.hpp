@@ -7,6 +7,10 @@
 #include <turbo/chunk-registry-fwd.hpp>
 #include <turbo/storage/chunk-info.hpp>
 
+namespace turbo::cardano {
+    struct parsed_header;
+}
+
 namespace turbo::storage {
     struct block_distance_t {
         ptrdiff_t blocks = 0;

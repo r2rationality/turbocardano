@@ -22,7 +22,7 @@ namespace {
         bool operator==(const script_meta &o) const
         {
             return version == o.version
-                && *expr == *o.expr
+                && expr == o.expr
                 && cost == o.cost;
         }
     };
@@ -161,6 +161,16 @@ suite plutus_machine_suite = [] {
             machine m { alloc, costs::defaults().for_script(cardano::script_type::plutus_v3, builtin_semantics::c), builtins::semantics_v2() };
             const auto [res, cost] = m.evaluate(s.program());
             const std::string exp { "(lam v0 v0)" };
+            const auto act = fmt::format("{}", res);
+            expect_equal(exp, act);
+        };
+        "discharge substitutes a captured outer binding"_test = [] {
+            const std::string_view uplc { "(program 1.0.0 [(lam v0 (lam v1 v0)) (con bool True)])" };
+            allocator alloc {};
+            uplc::script s { alloc, uint8_vector { uplc } };
+            machine m { alloc, costs::defaults().for_script(cardano::script_type::plutus_v3, builtin_semantics::c), builtins::semantics_v2() };
+            const auto [res, cost] = m.evaluate(s.program());
+            const std::string exp { "(lam v0 (con bool True))" };
             const auto act = fmt::format("{}", res);
             expect_equal(exp, act);
         };

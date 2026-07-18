@@ -4,6 +4,8 @@
  * License: https://github.com/r2rationality/turbocardano/blob/main/LICENSE */
 
 #include <turbo/common/mutex.hpp>
+#include <turbo/common/logger.hpp>
+#include <turbo/cardano/network/miniprotocol/handshake/handler.hpp>
 #include <turbo/cardano/network/multiplexer.hpp>
 
 namespace turbo::cardano::network {
