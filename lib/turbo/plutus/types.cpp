@@ -9,29 +9,21 @@
 #include <utfcpp/utf8.h>
 
 namespace turbo::plutus {
-    using builtin_name_map = std::unordered_map<std::string_view, builtin_tag>;
-    static const builtin_name_map &builtin_names()
-    {
-        static builtin_name_map name_map {};
-        if (name_map.empty()) [[unlikely]] {
-            const auto &info_map = builtins::semantics_v1();
-            for (const auto &[tag, info]: info_map) {
-                name_map.try_emplace(info.name, tag);
-            }
-        }
-        return name_map;
-    }
-
     bool builtin_tag_known_name(const std::string_view name)
     {
-        return builtin_names().contains(name);
+        for (const auto &descriptor: builtins::descriptors) {
+            if (descriptor.name == name)
+                return true;
+        }
+        return false;
     }
 
     builtin_tag builtin_tag_from_name(const std::string_view name)
     {
-        const auto &name_map = builtin_names();
-        if (const auto it = name_map.find(name); it != name_map.end()) [[likely]]
-            return it->second;
+        for (size_t i = 0; i < builtins::descriptors.size(); ++i) {
+            if (builtins::descriptors[i].name == name)
+                return static_cast<builtin_tag>(i);
+        }
         throw error(fmt::format("unknown builtin: {}", name));
     }
 
@@ -790,13 +782,6 @@ namespace turbo::plutus {
         return res;
     }
 
-    term::term(allocator &alloc, value_type &&v):
-        _storage { std::visit([&](auto &&payload) {
-            return term { alloc, std::move(payload) }._storage;
-        }, std::move(v)) }
-    {
-    }
-
     bool term::_builtin_spine_equal(const term &o) const
     {
         const auto &storage = *static_cast<const term_builtin_spine_storage *>(
@@ -919,13 +904,6 @@ namespace turbo::plutus {
     }
 
     value::value(allocator &alloc, const buffer b): value { alloc, bstr_type { alloc, b } }
-    {
-    }
-
-    value::value(allocator &alloc, value_type &&v):
-        _storage { std::visit([&](auto &&payload) {
-            return value { alloc, std::move(payload) }._storage;
-        }, std::move(v)) }
     {
     }
 

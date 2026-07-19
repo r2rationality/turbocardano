@@ -3,8 +3,9 @@
  * Copyright (c) 2024-2026 R2 Rationality OÜ (info at r2rationality dot com)
  * License: https://github.com/r2rationality/turbocardano/blob/main/LICENSE */
 
+#include <bit>
 #include <turbo/cardano/common/config.hpp>
-#include <turbo/plutus/costs.hpp>
+#include <turbo/plutus/costs-config.hpp>
 #include <turbo/plutus/machine.hpp>
 
 namespace turbo::plutus::costs {
@@ -158,31 +159,6 @@ namespace turbo::plutus::costs {
         });
     }
 
-    arg_sizes default_size_fun::size(const value_args &args) const
-    {
-        const auto *args_ptr = args.data();
-        return { args.size(), [args_ptr](const size_t idx) {
-            return _mem_usage(args_ptr[idx]);
-        } };
-    };
-
-    arg_sizes literal_in_x_size_fun::size(const value_args &args) const
-    {
-        const auto *args_ptr = args.data();
-        return { args.size(), [args_ptr](const size_t idx) {
-            const auto &arg = args_ptr[idx];
-            if (idx != 0)
-                return _mem_usage(arg);
-            const auto &literal = *arg.as_int();
-            if (literal == 0)
-                return uint64_t { 0 };
-            const cpp_int magnitude = literal < 0 ? -literal : literal;
-            if (magnitude >= max_cost)
-                return max_cost;
-            return magnitude.convert_to<uint64_t>();
-        } };
-    }
-
     static uint64_t _tree_depth(size_t size)
     {
         uint64_t depth = 0;
@@ -191,19 +167,6 @@ namespace turbo::plutus::costs {
             size >>= 1;
         }
         return depth;
-    }
-
-    arg_sizes value_max_depth_size_fun::size(const value_args &args) const
-    {
-        const auto *args_ptr = args.data();
-        const auto index = _index;
-        return { args.size(), [args_ptr, index](const size_t idx) {
-            const auto &arg = args_ptr[idx];
-            if (idx != index)
-                return _mem_usage(arg);
-            const auto &v = arg.as_asset_value();
-            return saturated_add(_tree_depth(v->size()), _tree_depth(v.max_inner_size()));
-        } };
     }
 
     static uint64_t _data_node_count(const data &d)
@@ -227,40 +190,9 @@ namespace turbo::plutus::costs {
         }, *d);
     }
 
-    arg_sizes data_node_count_size_fun::size(const value_args &args) const
-    {
-        const auto *args_ptr = args.data();
-        return { args.size(), [args_ptr](const size_t idx) {
-            const auto &arg = args_ptr[idx];
-            return idx == 0 ? _data_node_count(arg.as_data()) : _mem_usage(arg);
-        } };
-    }
-
-    arg_sizes sizes_for(const op_model &model, const builtin_tag tag, const value_args &args,
-            const bool text_costed_by_byte_length)
-    {
-        if (text_costed_by_byte_length
-                && (tag == builtin_tag::append_string || tag == builtin_tag::equals_string
-                    || tag == builtin_tag::encode_utf8)) {
-            const auto *args_ptr = args.data();
-            return { args.size(), [args_ptr](const size_t idx) {
-                return args_ptr[idx].as_str()->size() / 4;
-            } };
-        }
-        return model.size->size(args);
-    }
-
-    arg_sizes num_bytes_as_num_words_fun::size(const value_args &args) const
-    {
-        const auto *args_ptr = args.data();
-        return { args.size(), [args_ptr](const size_t idx) {
-            return _num_bytes_as_num_words(args_ptr[idx].as_int());
-        } };
-    };
-
     namespace {
-        struct compiled_arg_sizes {
-            compiled_arg_sizes(const op_model &model, const builtin_tag tag, const value_args &args,
+        struct runtime_arg_sizes {
+            runtime_arg_sizes(const builtin_cost &model, const builtin_tag tag, const value_args &args,
                     const bool text_costed_by_byte_length):
                 _model { model }, _tag { tag }, _args { args },
                 _text_costed_by_byte_length { text_costed_by_byte_length }
@@ -275,7 +207,7 @@ namespace turbo::plutus::costs {
             uint64_t at(const size_t idx) const
             {
                 if (idx >= _args.size()) [[unlikely]]
-                    throw std::out_of_range("compiled argument size index is out of range");
+                    throw std::out_of_range("runtime argument size index is out of range");
                 const auto mask = static_cast<uint8_t>(1U << idx);
                 if (_computed & mask) [[likely]]
                     return _cache[idx];
@@ -291,12 +223,12 @@ namespace turbo::plutus::costs {
                         && (_tag == builtin_tag::append_string || _tag == builtin_tag::equals_string
                             || _tag == builtin_tag::encode_utf8))
                     return arg.as_str()->size() / 4;
-                switch (_model.compiled_size) {
-                    case compiled_size_kind::default_size:
+                switch (_model.size) {
+                    case runtime_size_kind::default_size:
                         return _mem_usage(arg);
-                    case compiled_size_kind::num_bytes_as_num_words:
+                    case runtime_size_kind::num_bytes_as_num_words:
                         return _num_bytes_as_num_words(arg.as_int());
-                    case compiled_size_kind::literal_in_x: {
+                    case runtime_size_kind::literal_in_x: {
                         if (idx != 0)
                             return _mem_usage(arg);
                         const auto &literal = *arg.as_int();
@@ -307,552 +239,173 @@ namespace turbo::plutus::costs {
                             return max_cost;
                         return magnitude.convert_to<uint64_t>();
                     }
-                    case compiled_size_kind::value_max_depth: {
-                        if (idx != _model.compiled_size_index)
+                    case runtime_size_kind::value_max_depth: {
+                        if (idx != _model.size_index)
                             return _mem_usage(arg);
                         const auto &v = arg.as_asset_value();
                         return saturated_add(_tree_depth(v->size()), _tree_depth(v.max_inner_size()));
                     }
-                    case compiled_size_kind::data_node_count:
+                    case runtime_size_kind::data_node_count:
                         return idx == 0 ? _data_node_count(arg.as_data()) : _mem_usage(arg);
                 }
-                throw error("unsupported compiled argument size model");
+                throw error("unsupported runtime argument size model");
             }
 
-            const op_model &_model;
+            const builtin_cost &_model;
             builtin_tag _tag;
             value_args _args;
             bool _text_costed_by_byte_length;
             mutable uint8_t _computed = 0;
-            mutable std::array<uint64_t, arg_sizes::max_size> _cache;
+            mutable std::array<uint64_t, builtin_args::max_size> _cache;
         };
 
-        inline uint64_t evaluate_compiled_cost(const compiled_cost &model, const compiled_arg_sizes &sizes,
-                const value_args &args)
+        template<typename Sizes>
+        inline uint64_t evaluate_formula(const runtime_cost_kind kind, const uint64_t *p,
+                const Sizes &sizes, const value_args &args)
         {
-            const auto &p = model.args;
-            switch (model.kind) {
-                case compiled_cost_kind::constant:
+            switch (kind) {
+                case runtime_cost_kind::constant:
                     return p[0];
-                case compiled_cost_kind::linear_in_x:
+                case runtime_cost_kind::linear_in_x:
                     return saturated_add(p[0], saturated_mul(p[1], sizes.at(0)));
-                case compiled_cost_kind::linear_in_y:
+                case runtime_cost_kind::linear_in_y:
                     return saturated_add(p[0], saturated_mul(p[1], sizes.at(1)));
-                case compiled_cost_kind::linear_in_z:
+                case runtime_cost_kind::linear_in_z:
                     return saturated_add(p[0], saturated_mul(p[1], sizes.at(2)));
-                case compiled_cost_kind::linear_in_u:
+                case runtime_cost_kind::linear_in_u:
                     return saturated_add(p[0], saturated_mul(p[1], sizes.at(3)));
-                case compiled_cost_kind::linear_in_x_and_y:
+                case runtime_cost_kind::linear_in_x_and_y:
                     return saturated_add(p[0], saturated_add(
                         saturated_mul(p[1], sizes.at(0)), saturated_mul(p[2], sizes.at(1))));
-                case compiled_cost_kind::linear_in_y_and_z:
+                case runtime_cost_kind::linear_in_y_and_z:
                     return saturated_add(p[0], saturated_add(
                         saturated_mul(p[1], sizes.at(1)), saturated_mul(p[2], sizes.at(2))));
-                case compiled_cost_kind::linear_in_max_yz:
+                case runtime_cost_kind::linear_in_max_yz:
                     return saturated_add(p[0], saturated_mul(p[1], std::max(sizes.at(1), sizes.at(2))));
-                case compiled_cost_kind::with_interaction_in_x_and_y:
+                case runtime_cost_kind::with_interaction_in_x_and_y:
                     return saturated_add(p[0], saturated_add(saturated_mul(p[2], sizes.at(0)),
                         saturated_add(saturated_mul(p[1], sizes.at(1)),
                             saturated_mul(p[3], saturated_mul(sizes.at(0), sizes.at(1))))));
-                case compiled_cost_kind::quadratic_in_x: {
+                case runtime_cost_kind::quadratic_in_x: {
                     const auto x = sizes.at(0);
                     return saturated_add(p[0], saturated_add(
                         saturated_mul(p[1], x), saturated_mul(p[2], saturated_mul(x, x))));
                 }
-                case compiled_cost_kind::quadratic_in_y: {
+                case runtime_cost_kind::quadratic_in_y: {
                     const auto y = sizes.at(1);
                     return saturated_add(p[0], saturated_add(
                         saturated_mul(p[1], y), saturated_mul(p[2], saturated_mul(y, y))));
                 }
-                case compiled_cost_kind::quadratic_in_z: {
+                case runtime_cost_kind::quadratic_in_z: {
                     const auto z = sizes.at(2);
                     return saturated_add(p[0], saturated_add(
                         saturated_mul(p[1], z), saturated_mul(p[2], saturated_mul(z, z))));
                 }
-                case compiled_cost_kind::literal_in_y_or_linear_in_z: {
+                case runtime_cost_kind::quadratic_in_x_and_y: {
+                    const auto x = static_cast<int64_t>(std::min(sizes.at(0), max_cost));
+                    const auto y = static_cast<int64_t>(std::min(sizes.at(1), max_cost));
+                    const auto signed_arg = [p](const size_t idx) {
+                        return std::bit_cast<int64_t>(p[idx]);
+                    };
+                    auto res = signed_arg(1);
+                    res = _saturated_add_signed(res, _saturated_mul_signed(signed_arg(2), x));
+                    res = _saturated_add_signed(res, _saturated_mul_signed(signed_arg(3), y));
+                    res = _saturated_add_signed(res,
+                        _saturated_mul_signed(_saturated_mul_signed(signed_arg(4), x), x));
+                    res = _saturated_add_signed(res,
+                        _saturated_mul_signed(_saturated_mul_signed(signed_arg(5), x), y));
+                    res = _saturated_add_signed(res,
+                        _saturated_mul_signed(_saturated_mul_signed(signed_arg(6), y), y));
+                    return _non_negative_cost(std::max(signed_arg(0), res));
+                }
+                case runtime_cost_kind::literal_in_y_or_linear_in_z: {
                     const auto &literal = args[1].as_int();
                     if (*literal != 0)
                         return _num_bytes_as_num_words(literal);
                     return saturated_add(p[0], saturated_mul(p[1], sizes.at(2)));
                 }
-                case compiled_cost_kind::added_sizes:
+                case runtime_cost_kind::added_sizes:
                     return saturated_add(p[0], saturated_mul(p[1],
                         saturated_add(sizes.at(0), sizes.at(1))));
-                case compiled_cost_kind::subtracted_sizes: {
+                case runtime_cost_kind::subtracted_sizes: {
                     const auto x = sizes.at(0);
                     const auto y = sizes.at(1);
                     const auto difference = x > y ? x - y : 0;
                     return saturated_add(p[0], saturated_mul(p[1], std::max(p[2], difference)));
                 }
-                case compiled_cost_kind::max_size:
+                case runtime_cost_kind::max_size:
                     return saturated_add(p[0], saturated_mul(p[1], std::max(sizes.at(0), sizes.at(1))));
-                case compiled_cost_kind::min_size:
+                case runtime_cost_kind::min_size:
                     return saturated_add(p[0], saturated_mul(p[1], std::min(sizes.at(0), sizes.at(1))));
-                case compiled_cost_kind::multiplied_sizes:
+                case runtime_cost_kind::multiplied_sizes:
                     return saturated_add(p[0], saturated_mul(p[1],
                         saturated_mul(sizes.at(0), sizes.at(1))));
-                case compiled_cost_kind::linear_on_diagonal: {
+                case runtime_cost_kind::linear_on_diagonal: {
                     const auto x = sizes.at(0);
                     return x == sizes.at(1) ? saturated_add(p[0], saturated_mul(p[1], x)) : p[2];
                 }
-                case compiled_cost_kind::exp_mod: {
+                case runtime_cost_kind::exp_mod: {
                     const auto exponent_modulus = saturated_mul(sizes.at(1), sizes.at(2));
                     const auto cost0 = saturated_add(p[0], saturated_add(
                         saturated_mul(p[1], exponent_modulus),
                         saturated_mul(p[2], saturated_mul(exponent_modulus, sizes.at(2)))));
                     return sizes.at(0) <= sizes.at(2) ? cost0 : saturated_add(cost0, cost0 / 2);
                 }
-                case compiled_cost_kind::generic:
+                case runtime_cost_kind::invalid:
+                case runtime_cost_kind::const_above_diagonal:
+                case runtime_cost_kind::const_below_diagonal:
+                case runtime_cost_kind::above_and_below_diagonal:
                     break;
             }
-            throw error("generic cost model cannot be evaluated as a compiled model");
+            throw error("invalid or nested runtime cost formula");
+        }
+
+        struct ordered_arg_sizes {
+            const runtime_arg_sizes &source;
+
+            uint64_t at(const size_t idx) const
+            {
+                if (idx == 0)
+                    return std::max(source.at(0), source.at(1));
+                if (idx == 1)
+                    return std::min(source.at(0), source.at(1));
+                return source.at(idx);
+            }
+        };
+
+        inline uint64_t evaluate_runtime_cost(const runtime_cost &model, const uint64_t diagonal_constant,
+                const runtime_arg_sizes &sizes, const value_args &args)
+        {
+            switch (model.kind) {
+                case runtime_cost_kind::const_above_diagonal:
+                    if (sizes.at(0) < sizes.at(1))
+                        return diagonal_constant;
+                    return evaluate_formula(model.nested_kind, model.args.data(), sizes, args);
+                case runtime_cost_kind::const_below_diagonal:
+                    if (sizes.at(0) > sizes.at(1))
+                        return diagonal_constant;
+                    return evaluate_formula(model.nested_kind, model.args.data(), sizes, args);
+                case runtime_cost_kind::above_and_below_diagonal:
+                    return evaluate_formula(model.nested_kind, model.args.data(),
+                        ordered_arg_sizes { sizes }, args);
+                default:
+                    return evaluate_formula(model.kind, model.args.data(), sizes, args);
+            }
         }
     }
 
-    cardano::ex_units cost_builtin(const op_model &model, const builtin_tag tag, const value_args &args,
+    cardano::ex_units cost_builtin(const builtin_cost &model, const builtin_tag tag, const value_args &args,
             const bool text_costed_by_byte_length)
     {
-        if (model.compiled_cpu.kind == compiled_cost_kind::constant
-                && model.compiled_mem.kind == compiled_cost_kind::constant) [[likely]]
-            return { model.compiled_mem.args[0], model.compiled_cpu.args[0] };
-        if (model.compiled_cpu.kind == compiled_cost_kind::generic
-                || model.compiled_mem.kind == compiled_cost_kind::generic) [[unlikely]] {
-            const auto sizes = sizes_for(model, tag, args, text_costed_by_byte_length);
-            const auto cpu = model.cpu->cost(sizes, args);
-            const auto mem = model.mem->cost(sizes, args);
-            return { mem, cpu };
-        }
-        compiled_arg_sizes compiled_sizes { model, tag, args, text_costed_by_byte_length };
-        const auto cpu = evaluate_compiled_cost(model.compiled_cpu, compiled_sizes, args);
-        const auto mem = evaluate_compiled_cost(model.compiled_mem, compiled_sizes, args);
+        if (model.cpu.kind == runtime_cost_kind::constant
+                && model.mem.kind == runtime_cost_kind::constant) [[likely]]
+            return { model.mem.args[0], model.cpu.args[0] };
+        runtime_arg_sizes sizes { model, tag, args, text_costed_by_byte_length };
+        const auto cpu = evaluate_runtime_cost(model.cpu, model.cpu_diagonal_constant, sizes, args);
+        const auto mem = evaluate_runtime_cost(model.mem, model.mem_diagonal_constant, sizes, args);
         return { mem, cpu };
     }
 
-    // the names of the classes match the names in the builtinCostModel config JSON
-    struct constant_cost: cost_fun {
-        constant_cost(const arg_map &args)
-            : _cost { std::stoull(args.at("arguments")) }
-        {
-        }
-
-        uint64_t cost(const arg_sizes &, const value_args &) const override
-        {
-            return _cost;
-        }
-
-        bool operator==(const cost_fun &o) const override
-        {
-            return _cost == dynamic_cast<const constant_cost &>(o)._cost;
-        }
-    protected:
-        const uint64_t _cost;
-    };
-
-    struct linear_in_x: cost_fun {
-        linear_in_x(const arg_map &args):
-            _intercept { std::stoull(args.at("arguments-intercept")) },
-            _slope { std::stoull(args.at("arguments-slope")) }
-        {
-        }
-
-        uint64_t cost(const arg_sizes &sizes, const value_args &) const override
-        {
-            return saturated_add(_intercept, saturated_mul(_slope, sizes.at(0)));
-        }
-
-        bool operator==(const cost_fun &o_) const override
-        {
-            const auto &o = dynamic_cast<decltype(*this) &>(o_);
-            return _intercept == o._intercept && _slope == o._slope;
-        }
-    protected:
-        const uint64_t _intercept, _slope;
-    };
-
-    struct linear_in_y: linear_in_x {
-        using linear_in_x::linear_in_x;
-
-        uint64_t cost(const arg_sizes &sizes, const value_args &) const override
-        {
-            return saturated_add(_intercept, saturated_mul(_slope, sizes.at(1)));
-        }
-    };
-
-    struct linear_in_z: linear_in_x {
-        using linear_in_x::linear_in_x;
-
-        uint64_t cost(const arg_sizes &sizes, const value_args &) const override
-        {
-            return saturated_add(_intercept, saturated_mul(_slope, sizes.at(2)));
-        }
-    };
-
-    struct linear_in_u: linear_in_x {
-        using linear_in_x::linear_in_x;
-
-        uint64_t cost(const arg_sizes &sizes, const value_args &) const override
-        {
-            return saturated_add(_intercept, saturated_mul(_slope, sizes.at(3)));
-        }
-    };
-
-    struct linear_in_x_and_y: cost_fun {
-        linear_in_x_and_y(const arg_map &args):
-            _intercept { std::stoull(args.at("arguments-intercept")) },
-            _slope1 { std::stoull(args.at("arguments-slope1")) },
-            _slope2 { std::stoull(args.at("arguments-slope2")) }
-        {
-        }
-
-        uint64_t cost(const arg_sizes &sizes, const value_args &) const override
-        {
-            return saturated_add(_intercept,
-                saturated_add(saturated_mul(_slope1, sizes.at(0)), saturated_mul(_slope2, sizes.at(1))));
-        }
-
-        bool operator==(const cost_fun &other) const override
-        {
-            const auto &o = dynamic_cast<const linear_in_x_and_y &>(other);
-            return _intercept == o._intercept && _slope1 == o._slope1 && _slope2 == o._slope2;
-        }
-    private:
-        uint64_t _intercept, _slope1, _slope2;
-    };
-
-    struct with_interaction_in_x_and_y: cost_fun {
-        with_interaction_in_x_and_y(const arg_map &args):
-            _c00 { std::stoull(args.at("arguments-c00")) },
-            _c01 { std::stoull(args.at("arguments-c01")) },
-            _c10 { std::stoull(args.at("arguments-c10")) },
-            _c11 { std::stoull(args.at("arguments-c11")) }
-        {
-        }
-
-        uint64_t cost(const arg_sizes &sizes, const value_args &) const override
-        {
-            return saturated_add(_c00, saturated_add(saturated_mul(_c10, sizes.at(0)),
-                saturated_add(saturated_mul(_c01, sizes.at(1)),
-                    saturated_mul(_c11, saturated_mul(sizes.at(0), sizes.at(1))))));
-        }
-
-        bool operator==(const cost_fun &other) const override
-        {
-            const auto &o = dynamic_cast<const with_interaction_in_x_and_y &>(other);
-            return _c00 == o._c00 && _c01 == o._c01 && _c10 == o._c10 && _c11 == o._c11;
-        }
-    private:
-        uint64_t _c00, _c01, _c10, _c11;
-    };
-
-    struct linear_in_max_yz: linear_in_x {
-        using linear_in_x::linear_in_x;
-
-        uint64_t cost(const arg_sizes &sizes, const value_args &) const override
-        {
-            return saturated_add(_intercept, saturated_mul(_slope, std::max(sizes.at(1), sizes.at(2))));
-        }
-    };
-
-    struct literal_in_y_or_linear_in_z: linear_in_x {
-        using linear_in_x::linear_in_x;
-
-        uint64_t cost(const arg_sizes &sizes, const value_args &args) const override
-        {
-            if (args.size() < 2) [[unlikely]]
-                throw error(fmt::format("cost_function {} requires two arguments but got {}", typeid(*this).name(), args.size()));
-            if (const auto &y_val = args[1].as_int(); *y_val != 0)
-                return _num_bytes_as_num_words(y_val);
-            return saturated_add(_intercept, saturated_mul(_slope, sizes.at(2)));
-        }
-    };
-
-    struct linear_in_y_and_z: cost_fun {
-        linear_in_y_and_z(const arg_map &args):
-            _intercept { std::stoull(args.at("arguments-intercept")) },
-            _slope1 { std::stoull(args.at("arguments-slope1")) },
-            _slope2 { std::stoull(args.at("arguments-slope2")) }
-        {
-        }
-
-        uint64_t cost(const arg_sizes &sizes, const value_args &) const override
-        {
-            return saturated_add(_intercept, saturated_add(saturated_mul(_slope1, sizes.at(1)), saturated_mul(_slope2, sizes.at(2))));
-        }
-
-        bool operator==(const cost_fun &o_) const override
-        {
-            const auto &o = dynamic_cast<decltype(*this) &>(o_);
-            return _intercept == o._intercept && _slope1 == o._slope1 && _slope2 == o._slope2;
-        }
-    protected:
-        const uint64_t _intercept, _slope1, _slope2;
-    };
-
-    struct quadratic_in_y: cost_fun {
-        quadratic_in_y(const arg_map &args):
-            _c0 { std::stoull(args.at("arguments-c0")) },
-            _c1 { std::stoull(args.at("arguments-c1")) },
-            _c2 { std::stoull(args.at("arguments-c2")) }
-        {
-        }
-
-        uint64_t cost(const arg_sizes &sizes, const value_args &) const override
-        {
-            const auto &y = sizes.at(1);
-            return saturated_add(_c0, saturated_add(saturated_mul(_c1, y), saturated_mul(_c2, saturated_mul(y, y))));
-        }
-
-        bool operator==(const cost_fun &o_) const override
-        {
-            const auto &o = dynamic_cast<decltype(*this) &>(o_);
-            return _c0 == o._c0 && _c1 == o._c1 && _c2 == o._c2;
-        }
-    protected:
-        const uint64_t _c0, _c1, _c2;
-    };
-
-    struct quadratic_in_x: quadratic_in_y {
-        using quadratic_in_y::quadratic_in_y;
-
-        uint64_t cost(const arg_sizes &sizes, const value_args &) const override
-        {
-            const auto &x = sizes.at(0);
-            return saturated_add(_c0, saturated_add(saturated_mul(_c1, x), saturated_mul(_c2, saturated_mul(x, x))));
-        }
-    };
-
-    struct quadratic_in_z: quadratic_in_y {
-        using quadratic_in_y::quadratic_in_y;
-
-        uint64_t cost(const arg_sizes &sizes, const value_args &) const override
-        {
-            const auto &z = sizes.at(2);
-            return saturated_add(_c0, saturated_add(saturated_mul(_c1, z), saturated_mul(_c2, saturated_mul(z, z))));
-        }
-    };
-
-    struct quadratic_in_x_and_y: cost_fun {
-        quadratic_in_x_and_y(const arg_map &args):
-            _minimum { std::stoll(args.at("arguments-minimum")) },
-            _c00 { std::stoll(args.at("arguments-c00")) },
-            _c10 { std::stoll(args.at("arguments-c10")) },
-            _c01 { std::stoll(args.at("arguments-c01")) },
-            _c20 { std::stoll(args.at("arguments-c20")) },
-            _c11 { std::stoll(args.at("arguments-c11")) },
-            _c02 { std::stoll(args.at("arguments-c02")) }
-        {
-        }
-
-        uint64_t cost(const arg_sizes &sizes, const value_args &) const override
-        {
-            const auto x = static_cast<int64_t>(std::min(sizes.at(0), max_cost));
-            const auto y = static_cast<int64_t>(std::min(sizes.at(1), max_cost));
-            auto res = _c00;
-            res = _saturated_add_signed(res, _saturated_mul_signed(_c10, x));
-            res = _saturated_add_signed(res, _saturated_mul_signed(_c01, y));
-            res = _saturated_add_signed(res, _saturated_mul_signed(_saturated_mul_signed(_c20, x), x));
-            res = _saturated_add_signed(res, _saturated_mul_signed(_saturated_mul_signed(_c11, x), y));
-            res = _saturated_add_signed(res, _saturated_mul_signed(_saturated_mul_signed(_c02, y), y));
-            return _non_negative_cost(std::max(_minimum, res));
-        }
-
-        bool operator==(const cost_fun &o_) const override
-        {
-            const auto &o = dynamic_cast<decltype(*this) &>(o_);
-            return _minimum == o._minimum && _c00 == o._c00 && _c10 == o._c10 && _c01 == o._c01
-                && _c20 == o._c20 && _c11 == o._c11 && _c02 == o._c02;
-        }
-    protected:
-        const int64_t _minimum, _c00, _c10, _c01, _c20, _c11, _c02;
-    };
-
-    struct added_sizes: linear_in_x {
-        using linear_in_x::linear_in_x;
-
-        uint64_t cost(const arg_sizes &sizes, const value_args &) const override
-        {
-            if (sizes.size() != 2) [[unlikely]]
-                throw error(fmt::format("added_sizes costing function requires exactly two arguments but got {}", sizes.size()));
-            const auto sum = saturated_add(sizes.at(0), sizes.at(1));
-            return saturated_add(_intercept, saturated_mul(_slope, sum));
-        }
-    };
-
-    struct subtracted_sizes: linear_in_x {
-        subtracted_sizes(const arg_map &args):
-            linear_in_x { args },
-            _minimum { std::stoull(args.at("arguments-minimum")) }
-        {
-        }
-
-        uint64_t cost(const arg_sizes &sizes, const value_args &) const override
-        {
-            const auto difference = sizes.at(0) > sizes.at(1) ? sizes.at(0) - sizes.at(1) : 0;
-            return saturated_add(_intercept, saturated_mul(_slope, std::max(_minimum, difference)));
-        }
-
-        bool operator==(const cost_fun &o_) const override
-        {
-            const auto &o = dynamic_cast<decltype(*this) &>(o_);
-            return _minimum == o._minimum && linear_in_x::operator==(o_);
-        }
-    protected:
-        const uint64_t _minimum;
-    };
-
-    struct max_size: linear_in_x {
-        using linear_in_x::linear_in_x;
-
-        uint64_t cost(const arg_sizes &sizes, const value_args &) const override
-        {
-            if (sizes.size() != 2) [[unlikely]]
-                throw error(fmt::format("max_size costing function requires exactly two arguments but got {}", sizes.size()));
-            const auto max = std::max(sizes.at(0), sizes.at(1));
-            return saturated_add(_intercept, saturated_mul(_slope, max));
-        }
-    };
-
-    struct min_size: linear_in_x {
-        using linear_in_x::linear_in_x;
-
-        uint64_t cost(const arg_sizes &sizes, const value_args &) const override
-        {
-            if (sizes.size() != 2) [[unlikely]]
-                throw error(fmt::format("min_size costing function requires exactly two arguments but got {}", sizes.size()));
-            const auto min = std::min(sizes.at(0), sizes.at(1));
-            return saturated_add(_intercept, saturated_mul(_slope, min));
-        }
-    };
-
-    struct multiplied_sizes: linear_in_x {
-        using linear_in_x::linear_in_x;
-
-        uint64_t cost(const arg_sizes &sizes, const value_args &) const override
-        {
-            if (sizes.size() != 2) [[unlikely]]
-                throw error(fmt::format("multiplied_sizes costing function requires exactly two arguments but got {}", sizes.size()));
-            const auto prod = saturated_mul(sizes.at(0), sizes.at(1));
-            return saturated_add(_intercept, saturated_mul(_slope, prod));
-        }
-    };
-
-    static cost_fun_ptr cost_fun_from_prefixed_args(const arg_map &prefixed_args, const std::string &prefix);
-
-    struct const_above_diagonal: cost_fun {
-        const_above_diagonal(const arg_map &args):
-            _cost { std::stoull(args.at("arguments-constant")) },
-            _model { cost_fun_from_prefixed_args(args, "arguments-model-") }
-        {
-        }
-
-        uint64_t cost(const arg_sizes &sizes, const value_args &args) const override
-        {
-            const auto &x = sizes.at(0);
-            const auto &y = sizes.at(1);
-            if (x < y)
-                return _cost;
-            return _model->cost(sizes, args);
-        }
-
-        bool operator==(const cost_fun &o_) const override
-        {
-            const auto &o = dynamic_cast<decltype(*this) &>(o_);
-            return _cost == o._cost && _model && o._model && *_model == *o._model;
-        }
-    protected:
-        const uint64_t _cost;
-        const cost_fun_ptr _model;
-    };
-
-    struct const_below_diagonal: const_above_diagonal {
-        using const_above_diagonal::const_above_diagonal;
-
-        uint64_t cost(const arg_sizes &sizes, const value_args &args) const override
-        {
-            const auto &x = sizes.at(0);
-            const auto &y = sizes.at(1);
-            if (x > y)
-                return _cost;
-            return _model->cost(sizes, args);
-        }
-    };
-
-    struct linear_on_diagonal: linear_in_x {
-        linear_on_diagonal(const arg_map &args):
-            linear_in_x { args },
-            _cost { std::stoull(args.at("arguments-constant")) }
-        {
-        }
-
-        uint64_t cost(const arg_sizes &sizes, const value_args &) const override
-        {
-            const auto &x = sizes.at(0);
-            const auto &y = sizes.at(1);
-            if (x == y)
-                return saturated_add(_intercept, saturated_mul(_slope, x));
-            return _cost;
-        }
-
-        bool operator==(const cost_fun &o_) const override
-        {
-            const auto &o = dynamic_cast<decltype(*this) &>(o_);
-            return _cost == o._cost && linear_in_x::operator==(o_);
-        }
-    protected:
-        const uint64_t _cost;
-    };
-
-    struct above_and_below_diagonal: cost_fun {
-        above_and_below_diagonal(const arg_map &args):
-            _model { cost_fun_from_prefixed_args(args, "arguments-model-") }
-        {
-        }
-
-        uint64_t cost(const arg_sizes &sizes, const value_args &args) const override
-        {
-            if (sizes.size() != 2) [[unlikely]]
-                throw error(fmt::format("above_and_below_diagonal costing function requires exactly two arguments but got {}", sizes.size()));
-            const arg_sizes ordered { std::max(sizes.at(0), sizes.at(1)), std::min(sizes.at(0), sizes.at(1)) };
-            return _model->cost(ordered, args);
-        }
-
-        bool operator==(const cost_fun &o_) const override
-        {
-            const auto &o = dynamic_cast<decltype(*this) &>(o_);
-            return _model && o._model && *_model == *o._model;
-        }
-    private:
-        const cost_fun_ptr _model;
-    };
-
-    struct exp_mod_cost: cost_fun {
-        exp_mod_cost(const arg_map &args):
-            _coefficient00 { std::stoull(args.at("arguments-coefficient00")) },
-            _coefficient11 { std::stoull(args.at("arguments-coefficient11")) },
-            _coefficient12 { std::stoull(args.at("arguments-coefficient12")) }
-        {
-        }
-
-        uint64_t cost(const arg_sizes &sizes, const value_args &) const override
-        {
-            if (sizes.size() != 3) [[unlikely]]
-                throw error(fmt::format("exp_mod_cost costing function requires exactly three arguments but got {}", sizes.size()));
-            const auto exponent_modulus = saturated_mul(sizes.at(1), sizes.at(2));
-            const auto cost0 = saturated_add(_coefficient00,
-                saturated_add(saturated_mul(_coefficient11, exponent_modulus),
-                    saturated_mul(_coefficient12, saturated_mul(exponent_modulus, sizes.at(2)))));
-            return sizes.at(0) <= sizes.at(2) ? cost0 : saturated_add(cost0, cost0 / 2);
-        }
-
-        bool operator==(const cost_fun &o_) const override
-        {
-            const auto &o = dynamic_cast<decltype(*this) &>(o_);
-            return _coefficient00 == o._coefficient00 && _coefficient11 == o._coefficient11
-                && _coefficient12 == o._coefficient12;
-        }
-    private:
-        const uint64_t _coefficient00, _coefficient11, _coefficient12;
-    };
     static op_tag op_tag_from_cek_name(const std::string &name) {
         if (name == "cekApplyCost")
             return term_tag::apply;
@@ -877,148 +430,124 @@ namespace turbo::plutus::costs {
         throw error(fmt::format("unsupported CEK cost item: {}", name));
     }
 
-    static cost_fun_ptr cost_fun_from_args(const arg_map &args)
+    static runtime_cost runtime_cost_from_args(const arg_map &args, uint64_t &diagonal_constant)
     {
-        const auto &typ = args.at("type");
-        if (typ == "constant_cost")
-            return std::make_shared<constant_cost>(args);
-        if (typ == "added_sizes")
-            return std::make_shared<added_sizes>(args);
-        if (typ == "min_size")
-            return std::make_shared<min_size>(args);
-        if (typ == "max_size")
-            return std::make_shared<max_size>(args);
-        if (typ == "multiplied_sizes")
-            return std::make_shared<multiplied_sizes>(args);
-        if (typ == "linear_cost")
-            return std::make_shared<linear_in_x>(args);
-        if (typ == "linear_in_x")
-            return std::make_shared<linear_in_x>(args);
-        if (typ == "linear_in_y" || typ == "linear_in_y2")
-            return std::make_shared<linear_in_y>(args);
-        if (typ == "linear_in_z")
-            return std::make_shared<linear_in_z>(args);
-        if (typ == "linear_in_u")
-            return std::make_shared<linear_in_u>(args);
-        if (typ == "linear_in_x_and_y")
-            return std::make_shared<linear_in_x_and_y>(args);
-        if (typ == "with_interaction_in_x_and_y")
-            return std::make_shared<with_interaction_in_x_and_y>(args);
-        if (typ == "quadratic_in_x")
-            return std::make_shared<quadratic_in_x>(args);
-        if (typ == "quadratic_in_y")
-            return std::make_shared<quadratic_in_y>(args);
-        if (typ == "quadratic_in_z")
-            return std::make_shared<quadratic_in_z>(args);
-        if (typ == "quadratic_in_x_and_y")
-            return std::make_shared<quadratic_in_x_and_y>(args);
-        if (typ == "literal_in_y_or_linear_in_z")
-            return std::make_shared<literal_in_y_or_linear_in_z>(args);
-        if (typ == "linear_in_max_yz")
-            return std::make_shared<linear_in_max_yz>(args);
-        if (typ == "linear_in_y_and_z")
-            return std::make_shared<linear_in_y_and_z>(args);
-        if (typ == "subtracted_sizes")
-            return std::make_shared<subtracted_sizes>(args);
-        if (typ == "const_above_diagonal")
-            return std::make_shared<const_above_diagonal>(args);
-        if (typ == "const_below_diagonal")
-            return std::make_shared<const_below_diagonal>(args);
-        if (typ == "linear_on_diagonal")
-            return std::make_shared<linear_on_diagonal>(args);
-        if (typ == "above_and_below_diagonal")
-            return std::make_shared<above_and_below_diagonal>(args);
-        if (typ == "exp_mod_cost")
-            return std::make_shared<exp_mod_cost>(args);
-        throw error(fmt::format("unsupported cost model type: {}", typ));
-    }
-
-    static cost_fun_ptr cost_fun_from_prefixed_args(const arg_map &prefixed_args, const std::string &prefix)
-    {
-        arg_map args {};
-        for (const auto &[k, v]: prefixed_args) {
-            if (k.starts_with(prefix)) {
-                const auto [it, created] = args.try_emplace(k.substr(prefix.size()), v);
-                if (!created) [[unlikely]]
-                    throw error(fmt::format("duplicate argument {}", k));
-            }
-        }
-        return cost_fun_from_args(args);
-    }
-
-    static compiled_cost compiled_cost_from_args(const arg_map &args)
-    {
+        diagonal_constant = 0;
         const auto value = [&](const std::string_view name) {
             return std::stoull(args.at(std::string { name }));
         };
-        const auto linear = [&](const compiled_cost_kind kind) {
-            return compiled_cost { kind, { value("arguments-intercept"), value("arguments-slope") } };
+        const auto signed_value = [&](const std::string_view name) {
+            return std::bit_cast<uint64_t>(std::stoll(args.at(std::string { name })));
+        };
+        const auto direct = [](const runtime_cost_kind kind,
+                const std::initializer_list<uint64_t> params) {
+            runtime_cost res {};
+            res.kind = kind;
+            if (params.size() > 7) [[unlikely]]
+                throw error("runtime cost formula has too many parameters");
+            std::copy(params.begin(), params.end(), res.args.begin());
+            return res;
+        };
+        const auto linear = [&](const runtime_cost_kind kind) {
+            return direct(kind, { value("arguments-intercept"), value("arguments-slope") });
+        };
+        const auto nested = [&](const runtime_cost_kind kind, const bool has_constant) {
+            constexpr std::string_view prefix { "arguments-model-" };
+            arg_map nested_args {};
+            for (const auto &[key, val]: args) {
+                if (key.starts_with(prefix)) {
+                    const auto [it, created] = nested_args.try_emplace(key.substr(prefix.size()), val);
+                    if (!created) [[unlikely]]
+                        throw error(fmt::format("duplicate argument {}", key));
+                }
+            }
+            uint64_t nested_diagonal_constant = 0;
+            auto nested_cost = runtime_cost_from_args(nested_args, nested_diagonal_constant);
+            if (nested_cost.nested_kind != runtime_cost_kind::invalid) [[unlikely]]
+                throw error("nested diagonal runtime cost formulas are unsupported");
+            runtime_cost res {};
+            res.kind = kind;
+            res.nested_kind = nested_cost.kind;
+            res.args = nested_cost.args;
+            if (has_constant)
+                diagonal_constant = value("arguments-constant");
+            return res;
         };
         const auto &type = args.at("type");
         if (type == "constant_cost")
-            return { compiled_cost_kind::constant, { value("arguments") } };
+            return direct(runtime_cost_kind::constant, { value("arguments") });
         if (type == "linear_cost" || type == "linear_in_x")
-            return linear(compiled_cost_kind::linear_in_x);
+            return linear(runtime_cost_kind::linear_in_x);
         if (type == "linear_in_y" || type == "linear_in_y2")
-            return linear(compiled_cost_kind::linear_in_y);
+            return linear(runtime_cost_kind::linear_in_y);
         if (type == "linear_in_z")
-            return linear(compiled_cost_kind::linear_in_z);
+            return linear(runtime_cost_kind::linear_in_z);
         if (type == "linear_in_u")
-            return linear(compiled_cost_kind::linear_in_u);
+            return linear(runtime_cost_kind::linear_in_u);
         if (type == "linear_in_x_and_y")
-            return { compiled_cost_kind::linear_in_x_and_y, {
+            return direct(runtime_cost_kind::linear_in_x_and_y, {
                 value("arguments-intercept"), value("arguments-slope1"), value("arguments-slope2")
-            } };
+            });
         if (type == "linear_in_y_and_z")
-            return { compiled_cost_kind::linear_in_y_and_z, {
+            return direct(runtime_cost_kind::linear_in_y_and_z, {
                 value("arguments-intercept"), value("arguments-slope1"), value("arguments-slope2")
-            } };
+            });
         if (type == "linear_in_max_yz")
-            return linear(compiled_cost_kind::linear_in_max_yz);
+            return linear(runtime_cost_kind::linear_in_max_yz);
         if (type == "with_interaction_in_x_and_y")
-            return { compiled_cost_kind::with_interaction_in_x_and_y, {
+            return direct(runtime_cost_kind::with_interaction_in_x_and_y, {
                 value("arguments-c00"), value("arguments-c01"),
                 value("arguments-c10"), value("arguments-c11")
-            } };
+            });
         if (type == "quadratic_in_x")
-            return { compiled_cost_kind::quadratic_in_x, {
+            return direct(runtime_cost_kind::quadratic_in_x, {
                 value("arguments-c0"), value("arguments-c1"), value("arguments-c2")
-            } };
+            });
         if (type == "quadratic_in_y")
-            return { compiled_cost_kind::quadratic_in_y, {
+            return direct(runtime_cost_kind::quadratic_in_y, {
                 value("arguments-c0"), value("arguments-c1"), value("arguments-c2")
-            } };
+            });
         if (type == "quadratic_in_z")
-            return { compiled_cost_kind::quadratic_in_z, {
+            return direct(runtime_cost_kind::quadratic_in_z, {
                 value("arguments-c0"), value("arguments-c1"), value("arguments-c2")
-            } };
+            });
+        if (type == "quadratic_in_x_and_y")
+            return direct(runtime_cost_kind::quadratic_in_x_and_y, {
+                signed_value("arguments-minimum"), signed_value("arguments-c00"),
+                signed_value("arguments-c10"), signed_value("arguments-c01"),
+                signed_value("arguments-c20"), signed_value("arguments-c11"),
+                signed_value("arguments-c02")
+            });
         if (type == "literal_in_y_or_linear_in_z")
-            return linear(compiled_cost_kind::literal_in_y_or_linear_in_z);
+            return linear(runtime_cost_kind::literal_in_y_or_linear_in_z);
         if (type == "added_sizes")
-            return linear(compiled_cost_kind::added_sizes);
+            return linear(runtime_cost_kind::added_sizes);
         if (type == "subtracted_sizes")
-            return { compiled_cost_kind::subtracted_sizes, {
+            return direct(runtime_cost_kind::subtracted_sizes, {
                 value("arguments-intercept"), value("arguments-slope"), value("arguments-minimum")
-            } };
+            });
         if (type == "max_size")
-            return linear(compiled_cost_kind::max_size);
+            return linear(runtime_cost_kind::max_size);
         if (type == "min_size")
-            return linear(compiled_cost_kind::min_size);
+            return linear(runtime_cost_kind::min_size);
         if (type == "multiplied_sizes")
-            return linear(compiled_cost_kind::multiplied_sizes);
+            return linear(runtime_cost_kind::multiplied_sizes);
+        if (type == "const_above_diagonal")
+            return nested(runtime_cost_kind::const_above_diagonal, true);
+        if (type == "const_below_diagonal")
+            return nested(runtime_cost_kind::const_below_diagonal, true);
+        if (type == "above_and_below_diagonal")
+            return nested(runtime_cost_kind::above_and_below_diagonal, false);
         if (type == "linear_on_diagonal")
-            return { compiled_cost_kind::linear_on_diagonal, {
+            return direct(runtime_cost_kind::linear_on_diagonal, {
                 value("arguments-intercept"), value("arguments-slope"), value("arguments-constant")
-            } };
+            });
         if (type == "exp_mod_cost")
-            return { compiled_cost_kind::exp_mod, {
+            return direct(runtime_cost_kind::exp_mod, {
                 value("arguments-coefficient00"), value("arguments-coefficient11"),
                 value("arguments-coefficient12")
-            } };
-        // Nested and signed-polynomial models retain the generic implementation. They are less
-        // common, and keeping the fallback makes this representation independent of protocol
-        // cost-model evolution.
-        return {};
+            });
+        throw error(fmt::format("unsupported cost model type: {}", type));
     }
 
     static cardano::ex_units ex_units_from_args(const arg_map &args)
@@ -1043,7 +572,7 @@ namespace turbo::plutus::costs {
         return c;
     }
 
-    static op_model op_model_from_args(const arg_map &args)
+    static builtin_cost builtin_cost_from_args(const arg_map &args)
     {
         if (args.empty()) [[unlikely]]
             throw error("cost arguments must be non-empty!");
@@ -1073,13 +602,9 @@ namespace turbo::plutus::costs {
                 }
             }
         }
-        static auto default_sizer = std::make_shared<default_size_fun>();
-        op_model model {};
-        model.cpu = cost_fun_from_args(cpu_args);
-        model.mem = cost_fun_from_args(mem_args);
-        model.size = default_sizer;
-        model.compiled_cpu = compiled_cost_from_args(cpu_args);
-        model.compiled_mem = compiled_cost_from_args(mem_args);
+        builtin_cost model {};
+        model.cpu = runtime_cost_from_args(cpu_args, model.cpu_diagonal_constant);
+        model.mem = runtime_cost_from_args(mem_args, model.mem_diagonal_constant);
         return model;
     }
 
@@ -1186,7 +711,7 @@ namespace turbo::plutus::costs {
         return args;
     }
 
-    static parsed_model parse(const arg_map &args)
+    static runtime_model ingest(const arg_map &args)
     {
         using tmp_model = std::map<op_tag, arg_map>;
         tmp_model tmp {};
@@ -1212,7 +737,7 @@ namespace turbo::plutus::costs {
                     logger::debug("found cost model for an unsupported builtin: {}", op_name);
             }
         }
-        parsed_model m {};
+        runtime_model m {};
         for (const auto &[t, args]: tmp) {
             std::visit([&](const auto &tag) {
                 using T = std::decay_t<decltype(tag)>;
@@ -1232,40 +757,30 @@ namespace turbo::plutus::costs {
                         default: throw error(fmt::format("unsupported tag: {}", tag));
                     }
                 } else if constexpr (std::is_same_v<T, builtin_tag>) {
-                    const auto [op, created] = m.builtin_fun.try_emplace(tag, op_model_from_args(args));
+                    const auto [op, created] = m.builtin_costs.try_emplace(tag, builtin_cost_from_args(args));
                     if (!created) [[unlikely]]
                         throw error("internal error: duplicate tag in the parsed cost model!");
                     switch (tag) {
                         case builtin_tag::drop_list: {
-                            static auto custom_fun = std::make_shared<literal_in_x_size_fun>();
-                            op->size = custom_fun;
-                            op->compiled_size = compiled_size_kind::literal_in_x;
+                            op->size = runtime_size_kind::literal_in_x;
                             break;
                         }
                         case builtin_tag::replicate_byte: {
-                            static auto custom_fun = std::make_shared<num_bytes_as_num_words_fun>();
-                            op->size = custom_fun;
-                            op->compiled_size = compiled_size_kind::num_bytes_as_num_words;
+                            op->size = runtime_size_kind::num_bytes_as_num_words;
                             break;
                         }
                         case builtin_tag::insert_coin: {
-                            static auto custom_fun = std::make_shared<value_max_depth_size_fun>(3);
-                            op->size = custom_fun;
-                            op->compiled_size = compiled_size_kind::value_max_depth;
-                            op->compiled_size_index = 3;
+                            op->size = runtime_size_kind::value_max_depth;
+                            op->size_index = 3;
                             break;
                         }
                         case builtin_tag::lookup_coin: {
-                            static auto custom_fun = std::make_shared<value_max_depth_size_fun>(2);
-                            op->size = custom_fun;
-                            op->compiled_size = compiled_size_kind::value_max_depth;
-                            op->compiled_size_index = 2;
+                            op->size = runtime_size_kind::value_max_depth;
+                            op->size_index = 2;
                             break;
                         }
                         case builtin_tag::un_value_data: {
-                            static auto custom_fun = std::make_shared<data_node_count_size_fun>();
-                            op->size = custom_fun;
-                            op->compiled_size = compiled_size_kind::data_node_count;
+                            op->size = runtime_size_kind::data_node_count;
                             break;
                         }
                         default:
@@ -1279,7 +794,7 @@ namespace turbo::plutus::costs {
         return m;
     }
 
-    const parsed_model &parsed_models::for_script(const cardano::script_type typ,
+    const runtime_model &runtime_models::for_script(const cardano::script_type typ,
             const builtin_semantics semantics) const
     {
         const variants *models = nullptr;
@@ -1351,16 +866,16 @@ namespace turbo::plutus::costs {
         return names;
     }
 
-    parsed_models parse(const cardano::plutus_cost_models &models)
+    runtime_models ingest(const cardano::plutus_cost_models &models)
     {
-        parsed_models res {};
+        runtime_models res {};
         const auto *v1 = models.find(0);
         const auto *v2 = models.find(1);
         const auto *v3 = models.find(2);
-        const auto add = [](parsed_models::variants &variants, const builtin_semantics semantics,
+        const auto add = [](runtime_models::variants &variants, const builtin_semantics semantics,
                 const cardano::plutus_cost_model *params, const arg_map &defaults) {
             variants.at(static_cast<size_t>(semantics)).emplace(
-                parse(params ? plutus_costs_to_args(*params, defaults) : defaults));
+                ingest(params ? plutus_costs_to_args(*params, defaults) : defaults));
         };
         add(res.v1, builtin_semantics::a, v1, default_cost_args_a());
         add(res.v1, builtin_semantics::b, v1, default_cost_args_b());
@@ -1373,9 +888,9 @@ namespace turbo::plutus::costs {
         return res;
     }
 
-    const parsed_models &defaults()
+    const runtime_models &defaults()
     {
-        static auto models = parse(cardano::config::get().plutus_all_cost_models);
+        static auto models = ingest(cardano::config::get().plutus_all_cost_models);
         return models;
     }
 }

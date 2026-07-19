@@ -1148,6 +1148,12 @@ namespace turbo::plutus {
             _block_info.era));
     }
 
+    void context::_require_configurable(const std::string_view operation) const
+    {
+        if (_prepared) [[unlikely]]
+            throw error(fmt::format("cannot {} after transaction-context preparation", operation));
+    }
+
     context::context(uint8_vector &&tx_body_data, uint8_vector &&tx_wits_data, const storage::block_info &block, const cardano::config &cfg):
         _cfg { cfg },
         _tx_body_bytes { std::move(tx_body_data) },
@@ -1190,14 +1196,37 @@ namespace turbo::plutus {
 
     void context::set_inputs(stored_txo_list &&inputs_, stored_txo_list &&ref_inputs_)
     {
+        _require_configurable("change transaction inputs");
+        if (_inputs_set) [[unlikely]]
+            throw error("transaction inputs have already been set");
         _inputs = std::move(inputs_);
         _ref_inputs = std::move(ref_inputs_);
         _tx->foreach_script([&](auto &&s) {
             _scripts.try_emplace(s.hash(), std::move(s));
         }, this);
         _tx->foreach_datum([&](const auto &d) {
-            _datums.try_emplace(d.hash, data::from_cbor(alloc(), d.data));
+            _datums.try_emplace(d.hash, data::from_cbor(_alloc, d.data));
         });
+        _inputs_set = true;
+    }
+
+    void context::prepare()
+    {
+        if (_prepared)
+            return;
+        if (!_inputs_set) [[unlikely]]
+            throw error("transaction inputs must be set before transaction-context preparation");
+
+        const auto &pv = _require_protocol_ver();
+        for (const auto &[id, _]: _redeemers) {
+            const auto &script = _scripts.at(redeemer_script(id));
+            const auto typ = script.type();
+            if (_shared.contains(typ))
+                continue;
+            data_encoder enc { _alloc, typ, pv };
+            _shared.try_emplace(typ, enc.context_shared(*this));
+        }
+        _prepared = true;
     }
 
     const tx_base &context::tx() const
@@ -1254,6 +1283,8 @@ namespace turbo::plutus {
 
     prepared_script context::prepare_script(const tx_redeemer &r) const
     {
+        if (!_prepared) [[unlikely]]
+            throw error("transaction context must be prepared before preparing scripts");
         allocator script_alloc {};
         auto t_redeemer = term { script_alloc, constant { script_alloc, data::from_cbor(script_alloc, r.data) } };
         switch (r.tag) {
@@ -1424,16 +1455,14 @@ namespace turbo::plutus {
 
     term context::data(allocator &script_alloc, const script_type typ, const tx_redeemer &r) const
     {
-        // allocate the per-script data with the per-script allocator
-        // but allocate the shared date with the per-context allocator
+        // Per-script data belongs to the machine allocator. Shared transaction data was
+        // materialized before the context became immutable and is now read-only, so multiple
+        // scripts can be prepared concurrently without touching shared allocator state.
         const auto &pv = _require_protocol_ver();
         data_encoder enc { script_alloc, typ, pv };
-        auto shared_it = _shared.find(typ);
-        if (shared_it == _shared.end()) {
-            data_encoder enc_shared { alloc(), typ, pv };
-            auto [new_it, created] = _shared.try_emplace(typ, enc_shared.context_shared(*this));
-            shared_it = new_it;
-        }
+        const auto shared_it = _shared.find(typ);
+        if (shared_it == _shared.end()) [[unlikely]]
+            throw error(fmt::format("missing prepared transaction data for {}", typ));
         return { script_alloc, constant { script_alloc, enc.context(*this, shared_it->second, r) } };
     }
 }

@@ -6,6 +6,7 @@
 #include <turbo/common/scheduler.hpp>
 #include <turbo/common/test.hpp>
 #include <turbo/plutus/conformance-data.hpp>
+#include <turbo/plutus/costs-config.hpp>
 #include <turbo/plutus/flat-encoder.hpp>
 #include <turbo/plutus/flat.hpp>
 #include <turbo/plutus/machine.hpp>
@@ -51,11 +52,11 @@ namespace fmt {
 namespace {
     static constexpr uint64_t conformance_protocol_major = machine::builtin_case_protocol_major;
 
-    const costs::parsed_model &conformance_cost_model()
+    const costs::runtime_model &conformance_cost_model()
     {
         // The upstream corpus is generated with Plutus' testing defaults, not
         // with the node configuration's currently active ledger parameters.
-        static const auto models = costs::parse({});
+        static const auto models = costs::ingest({});
         return models.for_script(cardano::script_type::plutus_v3, builtin_semantics::e);
     }
 
@@ -155,27 +156,7 @@ suite plutus_machine_suite = [] {
     using plutus::allocator;
     using boost::ext::ut::v2_1_0::nothrow;
     "plutus::machine"_test = [] {
-        "custom builtin semantics use the generic fallback"_test = [] {
-            allocator alloc {};
-            auto semantics = builtins::semantics_v2();
-            semantics.at(builtin_tag::add_integer).func = builtin_two_arg {
-                [](allocator &result_alloc, const value &, const value &) {
-                    return value { result_alloc, int64_t { 42 } };
-                }
-            };
-            auto fun = term { alloc, t_builtin { builtin_tag::add_integer } };
-            auto partial = term { alloc,
-                apply { std::move(fun), term { alloc,
-                    plutus::constant { alloc, bint_type { alloc, int64_t { 1 } } } } } };
-            const auto expr = term { alloc,
-                apply { std::move(partial), term { alloc,
-                    plutus::constant { alloc, bint_type { alloc, int64_t { 2 } } } } } };
-            machine m { alloc, costs::defaults().for_script(cardano::script_type::plutus_v3, builtin_semantics::c),
-                semantics };
-            expect_equal(term { alloc,
-                plutus::constant { alloc, bint_type { alloc, int64_t { 42 } } } }, m.evaluate(expr).expr);
-        };
-        "Flat builtin spines preserve evaluation, costing, and custom semantics"_test = [] {
+        "Flat builtin spines preserve evaluation and costing"_test = [] {
             allocator source_alloc {};
             const uplc::script source {
                 source_alloc,
@@ -188,10 +169,10 @@ suite plutus_machine_suite = [] {
             const flat::script decoded { decode_alloc, buffer { bytes }, false };
 
             allocator generic_eval_alloc {};
-            machine generic { generic_eval_alloc };
+            machine generic { generic_eval_alloc, cardano::script_type::plutus_v3 };
             const auto generic_result = generic.evaluate(source.program());
             allocator spine_eval_alloc {};
-            machine spine { spine_eval_alloc };
+            machine spine { spine_eval_alloc, cardano::script_type::plutus_v3 };
             const auto spine_result = spine.evaluate(decoded.program());
             expect_equal(generic_result.expr, spine_result.expr);
             expect_equal(generic_result.cost, spine_result.cost);
@@ -210,10 +191,10 @@ suite plutus_machine_suite = [] {
                 partial_decode_alloc, buffer { partial_bytes }, false
             };
             allocator partial_generic_eval_alloc {};
-            machine partial_generic { partial_generic_eval_alloc };
+            machine partial_generic { partial_generic_eval_alloc, cardano::script_type::plutus_v3 };
             const auto partial_generic_result = partial_generic.evaluate(partial_source.program());
             allocator partial_spine_eval_alloc {};
-            machine partial_spine { partial_spine_eval_alloc };
+            machine partial_spine { partial_spine_eval_alloc, cardano::script_type::plutus_v3 };
             const auto partial_spine_result = partial_spine.evaluate(partial_decoded.program());
             expect_equal(partial_generic_result.expr, partial_spine_result.expr);
             expect_equal(partial_generic_result.cost, partial_spine_result.cost);
@@ -226,24 +207,12 @@ suite plutus_machine_suite = [] {
             machine low_budget { low_budget_eval_alloc, cardano::script_type::plutus_v3,
                 cardano::ex_units { spine_result.cost.mem, spine_result.cost.steps - 1 } };
             expect(throws([&] { low_budget.evaluate(decoded.program()); }));
-
-            auto semantics = builtins::semantics_v2();
-            semantics.at(builtin_tag::add_integer).func = builtin_two_arg {
-                [](allocator &result_alloc, const value &, const value &) {
-                    return value { result_alloc, int64_t { 42 } };
-                }
-            };
-            allocator custom_eval_alloc {};
-            machine custom { custom_eval_alloc,
-                costs::defaults().for_script(cardano::script_type::plutus_v3, builtin_semantics::c),
-                semantics };
-            expect_equal("(con integer 42)", fmt::format("{}", custom.evaluate(decoded.program()).expr));
         };
         "discharge updates variable indices"_test = [] {
             const std::string_view uplc { "(program 1.0.0 [(lam v0 (lam v1 v1)) (con bool True)])" };
             allocator alloc {};
             uplc::script s { alloc, uint8_vector { uplc } };
-            machine m { alloc, costs::defaults().for_script(cardano::script_type::plutus_v3, builtin_semantics::c), builtins::semantics_v2() };
+            machine m { alloc, cardano::script_type::plutus_v3 };
             const auto [res, cost] = m.evaluate(s.program());
             const std::string exp { "(lam v0 v0)" };
             const auto act = fmt::format("{}", res);
@@ -253,7 +222,7 @@ suite plutus_machine_suite = [] {
             const std::string_view uplc { "(program 1.0.0 [(lam v0 (lam v1 v0)) (con bool True)])" };
             allocator alloc {};
             uplc::script s { alloc, uint8_vector { uplc } };
-            machine m { alloc, costs::defaults().for_script(cardano::script_type::plutus_v3, builtin_semantics::c), builtins::semantics_v2() };
+            machine m { alloc, cardano::script_type::plutus_v3 };
             const auto [res, cost] = m.evaluate(s.program());
             const std::string exp { "(lam v0 (con bool True))" };
             const auto act = fmt::format("{}", res);

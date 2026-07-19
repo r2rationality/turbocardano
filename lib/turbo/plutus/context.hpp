@@ -56,13 +56,19 @@ namespace turbo::plutus {
 
         void set_inputs(stored_txo_list &&inputs_, stored_txo_list &&ref_inputs_);
 
-        void cost_models(const costs::parsed_models &models)
+        // Freeze configuration and materialize shared transaction data. After this returns,
+        // prepare_script() is read-only and may be called concurrently for different scripts.
+        void prepare();
+
+        void cost_models(const costs::runtime_models &models)
         {
+            _require_configurable("change cost models");
             _cost_models = models;
         }
 
         void protocol_ver(const protocol_version &pv)
         {
+            _require_configurable("change the protocol version");
             _protocol_ver = pv;
             _shared.clear();
         }
@@ -128,28 +134,24 @@ namespace turbo::plutus {
         datum_map _datums {};
         script_info_map _scripts {};
         redeemer_map _redeemers {};
-        std::reference_wrapper<const costs::parsed_models> _cost_models = costs::defaults();
-        mutable std::optional<allocator> _alloc {};
-        mutable std::map<script_type, plutus::data> _shared {};
-
-        allocator &alloc() const
-        {
-            if (!_alloc)
-                _alloc.emplace();
-            return *_alloc;
-        }
+        std::reference_wrapper<const costs::runtime_models> _cost_models = costs::defaults();
+        allocator _alloc {};
+        std::map<script_type, plutus::data> _shared {};
+        bool _inputs_set = false;
+        bool _prepared = false;
 
         const cardano::config &config() const
         {
             return _cfg;
         }
 
-        const costs::parsed_models &cost_models() const
+        const costs::runtime_models &cost_models() const
         {
             return _cost_models;
         }
 
         const protocol_version &_require_protocol_ver() const;
+        void _require_configurable(std::string_view operation) const;
 
         term data(allocator &script_allocator, script_type typ, const tx_redeemer &) const;
 

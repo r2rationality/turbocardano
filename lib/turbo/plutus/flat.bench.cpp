@@ -24,7 +24,7 @@ suite plutus_flat_suite = [] {
             [&] {
                 for (const auto &bytes: data) {
                     plutus::allocator alloc {};
-                    plutus::flat::script s { alloc, bytes };
+                    plutus::flat::script s { alloc, buffer { bytes } };
                 }
             },
             total_size

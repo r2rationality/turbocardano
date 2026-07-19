@@ -6,20 +6,23 @@
 
 #include <turbo/cardano/common/types.hpp>
 #include <turbo/plutus/types.hpp>
-#include <turbo/util.hpp>
 
 namespace turbo::plutus::flat {
     struct script {
+        // Input is borrowed only for the duration of construction. The decoded
+        // program and all surviving payloads are stored in alloc.
         explicit script(allocator &alloc, const buffer bytes, bool cbor=true);
-        explicit script(allocator &alloc, uint8_vector &&bytes, bool cbor=true);
         script(allocator &alloc, const buffer bytes, cardano::script_type, uint64_t protocol_major, bool cbor=true);
-        script(allocator &alloc, uint8_vector &&bytes, cardano::script_type, uint64_t protocol_major, bool cbor=true);
-        ~script();
-	    plutus::version version() const;
+        plutus::version version() const;
         term program() const;
     private:
-        struct impl;
-        std::unique_ptr<impl> _impl;
+        struct decoded;
+        struct decoder;
+
+        explicit script(decoded &&);
+
+        plutus::version _version;
+        term _program;
     };
 }
 

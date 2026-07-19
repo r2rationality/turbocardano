@@ -14,26 +14,27 @@
 #include <bit>
 
 namespace turbo::plutus::flat {
-    struct script::impl {
-        impl(allocator &alloc, uint8_vector &&bytes, const bool cbor,
+    struct script::decoded {
+        plutus::version version;
+        term program;
+    };
+
+    struct script::decoder {
+        decoder(allocator &alloc, const buffer bytes, const bool cbor,
                 std::optional<script_validation> validation={}):
-            _alloc { alloc }, _validation { std::move(validation) }, _bytes_raw { std::move(bytes) },
-            _bytes { cbor ? _extract_cbor_data(_bytes_raw) : static_cast<buffer>(_bytes_raw) },
-            _ver { _decode_version() },
-            _term { _decode_term() }
+            _alloc { alloc }, _validation { std::move(validation) }, _source_begin { bytes.data() },
+            _bytes { cbor ? _extract_cbor_data(bytes) : bytes },
+            _byte_next { _bytes.data() },
+            _byte_end { _bytes.empty() ? _bytes.data() : _bytes.data() + _bytes.size() }
+        {
+        }
+
+        decoded decode()
         {
             if (_bytes.empty()) [[unlikely]]
                 throw error("a flat script cannot be empty!");
-        }
-
-        plutus::version version() const
-        {
-            return _ver;
-        }
-
-        term program() const
-        {
-            return _term;
+            _ver = _decode_version();
+            return { _ver, _decode_term() };
         }
     private:
         static constexpr size_t max_script_size = 1 << 16;
@@ -42,14 +43,15 @@ namespace turbo::plutus::flat {
 
         allocator &_alloc;
         std::optional<script_validation> _validation;
-        uint8_vector _bytes_raw;
-        buffer _bytes { _bytes_raw };
-        const uint8_t *_byte_next = _bytes.data();
-        const uint8_t *const _byte_end = _bytes.data() + _bytes.size();
+        const uint8_t *_source_begin;
+        buffer _bytes;
+        const uint8_t *_byte_next;
+        const uint8_t *const _byte_end;
         uint8_t _next_bit_mask = 0x80;
         size_t _num_vars = 0;
-        plutus::version _ver;
-        term _term;
+        plutus::version _ver {};
+        uint8_vector _varint_scratch {};
+        uint8_vector _bytestring_scratch {};
 
         static buffer _extract_cbor_data(const buffer bytes)
         {
@@ -110,7 +112,7 @@ namespace turbo::plutus::flat {
 
         ptrdiff_t _byte_pos() const
         {
-            return _byte_next - _bytes_raw.data();
+            return _byte_next - _source_begin;
         }
 
         cpp_int _decode_varlen_uint()
@@ -135,18 +137,18 @@ namespace turbo::plutus::flat {
                 }
             }
 
-            thread_local uint8_vector bytes {};
-            bytes.assign(prefix.begin(), prefix.end());
+            _varint_scratch.assign(prefix.begin(), prefix.end());
             for (;;) {
                 const auto b = _next_byte();
-                bytes.emplace_back(b);
+                _varint_scratch.emplace_back(b);
                 if (!(b & 0x80))
                     break;
-                if (bytes.size() >= max_varint_bytes) [[unlikely]]
+                if (_varint_scratch.size() >= max_varint_bytes) [[unlikely]]
                     throw error(fmt::format("a variable length uint that has more than {} bytes at byte: {}", max_varint_bytes, _byte_pos()));
             }
             cpp_int v {};
-            boost::multiprecision::import_bits(v, bytes.data(), bytes.data() + bytes.size(), 7, false);
+            boost::multiprecision::import_bits(v, _varint_scratch.data(),
+                _varint_scratch.data() + _varint_scratch.size(), 7, false);
             return v;
         }
 
@@ -201,21 +203,32 @@ namespace turbo::plutus::flat {
 
         buffer _decode_bytestring()
         {
-            thread_local uint8_vector bytes {};
             _consume_padding();
-            bytes.clear();
-            for (;;) {
-                const size_t chunk_size = _next_byte();
-                if (!chunk_size)
-                    break;
-                const size_t data_idx = bytes.size();
-                bytes.resize(bytes.size() + chunk_size);
-                if (_byte_next + chunk_size >= _byte_end)
-                    throw error(fmt::format("insufficient data for a bytestring of size {} at byte: {}", chunk_size, _byte_pos()));
-                memcpy(bytes.data() + data_idx, _byte_next, chunk_size);
+            const size_t first_chunk_size = _next_byte();
+            if (!first_chunk_size)
+                return {};
+
+            const auto read_chunk = [&](const size_t chunk_size) {
+                if (static_cast<size_t>(_byte_end - _byte_next) <= chunk_size) [[unlikely]]
+                    throw error(fmt::format("insufficient data for a bytestring of size {} at byte: {}",
+                        chunk_size, _byte_pos()));
+                const buffer chunk { _byte_next, chunk_size };
                 _byte_next += chunk_size;
-            }
-            return bytes;
+                return chunk;
+            };
+
+            const auto first_chunk = read_chunk(first_chunk_size);
+            size_t next_chunk_size = _next_byte();
+            if (!next_chunk_size)
+                return first_chunk;
+
+            _bytestring_scratch.assign(first_chunk.begin(), first_chunk.end());
+            do {
+                const auto chunk = read_chunk(next_chunk_size);
+                _bytestring_scratch.insert(_bytestring_scratch.end(), chunk.begin(), chunk.end());
+                next_chunk_size = _next_byte();
+            } while (next_chunk_size);
+            return _bytestring_scratch;
         }
 
         str_type _decode_string()
@@ -240,41 +253,44 @@ namespace turbo::plutus::flat {
             return { _alloc, bls_g2_decompress(_decode_bytestring()) };
         }
 
-        constant_type _decode_type_application(std::vector<type_tag>::iterator &it, const std::vector<type_tag>::iterator &end)
+        type_tag _decode_next_type_tag()
         {
-            if (++it == end)
+            if (!_next_bit())
                 throw error("type list too short!");
-            switch (*it) {
+            return static_cast<type_tag>(_decode_fixed_uint<4>());
+        }
+
+        constant_type _decode_next_constant_type()
+        {
+            return _decode_constant_type(_decode_next_type_tag());
+        }
+
+        constant_type _decode_type_application()
+        {
+            const auto container_tag = _decode_next_type_tag();
+            switch (container_tag) {
                 case type_tag::list:
                 case type_tag::array: {
-                    const auto container_tag = *it;
-                    if (++it == end)
-                        throw error("type list too short!");
                     constant_type::list_type nested { _alloc };
-                    nested.emplace_back(_decode_constant_type(it, end));
+                    nested.emplace_back(_decode_next_constant_type());
                     return { _alloc, container_tag, { std::move(nested) } };
                 }
                 case type_tag::pair: {
-                    if (++it == end)
-                        throw error("type list too short!");
                     constant_type::list_type nested { _alloc };
                     nested.reserve(2);
-                    nested.emplace_back(_decode_constant_type(it, end));
-                    if (++it == end)
-                        throw error("type list too short!");
-                    nested.emplace_back(_decode_constant_type(it, end));
+                    nested.emplace_back(_decode_next_constant_type());
+                    nested.emplace_back(_decode_next_constant_type());
                     return { _alloc, type_tag::pair, { std::move(nested) } };
                 }
                 case type_tag::application:
-                    return _decode_type_application(it, end);
+                    return _decode_type_application();
                 default:
-                    throw error(fmt::format("unsupported container type for an application: {}", *it));
+                    throw error(fmt::format("unsupported container type for an application: {}", container_tag));
             }
         }
 
-        constant_type _decode_constant_type(std::vector<type_tag>::iterator &it, const std::vector<type_tag>::iterator &end)
+        constant_type _decode_constant_type(const type_tag typ)
         {
-            const auto &typ = *it;
             switch (typ) {
                 case type_tag::integer:
                 case type_tag::bytestring:
@@ -291,7 +307,7 @@ namespace turbo::plutus::flat {
                 case type_tag::pair:
                     throw error("list and pair types are supported only within a type application");
                 case type_tag::application:
-                    return _decode_type_application(it, end);
+                    return _decode_type_application();
                 default: throw error(fmt::format("unsupported constant type: {}", static_cast<int>(typ)));
             }
         }
@@ -355,17 +371,11 @@ namespace turbo::plutus::flat {
 
         constant _decode_constant()
         {
-            thread_local std::vector<type_tag> types {};
-            types.clear();
-            for (;;) {
-                if (!_next_bit())
-                    break;
-                types.emplace_back(static_cast<type_tag>(_decode_fixed_uint<4>()));
-            }
-            if (types.empty())
+            if (!_next_bit())
                 throw error(fmt::format("no type is defined at byte: {}!", _byte_pos()));
-            auto types_it = types.begin();
-            auto typ = _decode_constant_type(types_it, types.end());
+            auto typ = _decode_constant_type(static_cast<type_tag>(_decode_fixed_uint<4>()));
+            while (_next_bit())
+                static_cast<void>(_decode_fixed_uint<4>());
             if (_validation)
                 _validation->check_constant(typ);
             return _decode_constant_val(std::move(typ));
@@ -527,59 +537,31 @@ namespace turbo::plutus::flat {
             return ver;
         }
 
-        static void _pad(std::vector<bool> &bits)
-        {
-            size_t pad_bits = 0;
-            switch (bits.size() % 8) {
-                case 0: pad_bits = 7; break;
-                case 1: pad_bits = 6; break;
-                case 2: pad_bits = 5; break;
-                case 3: pad_bits = 4; break;
-                case 4: pad_bits = 3; break;
-                case 5: pad_bits = 2; break;
-                case 6: pad_bits = 1; break;
-                case 7: pad_bits = 0; break;
-                default: std::unreachable();
-            }
-            for (; pad_bits > 0; --pad_bits)
-                bits.emplace_back(false);
-            bits.emplace_back(true);
-            if (bits.size() % 8 != 0)
-                throw error(fmt::format("failed to pad the bit string to a byte boundary: {}!", bits.size()));
-        }
     };
 
-    script::script(allocator &alloc, uint8_vector &&bytes, const bool cbor):
-            _impl { std::make_unique<impl>(alloc, std::move(bytes), cbor) }
+    script::script(decoded &&decoded):
+        _version { decoded.version }, _program { std::move(decoded.program) }
     {
     }
 
     script::script(allocator &alloc, const buffer bytes, const bool cbor):
-        script { alloc, uint8_vector { bytes }, cbor }
-    {
-    }
-
-    script::script(allocator &alloc, uint8_vector &&bytes, const cardano::script_type typ,
-            const uint64_t protocol_major, const bool cbor):
-        _impl { std::make_unique<impl>(alloc, std::move(bytes), cbor, script_validation { typ, protocol_major }) }
+        script { decoder { alloc, bytes, cbor }.decode() }
     {
     }
 
     script::script(allocator &alloc, const buffer bytes, const cardano::script_type typ,
             const uint64_t protocol_major, const bool cbor):
-        script { alloc, uint8_vector { bytes }, typ, protocol_major, cbor }
+        script { decoder { alloc, bytes, cbor, script_validation { typ, protocol_major } }.decode() }
     {
     }
 
-    script::~script() =default;
-
     version script::version() const
     {
-        return _impl->version();
+        return _version;
     }
 
     term script::program() const
     {
-        return _impl->program();
+        return _program;
     }
 }

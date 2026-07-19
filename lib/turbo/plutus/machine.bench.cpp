@@ -188,7 +188,7 @@ namespace {
         // across nanobench epochs.
         bench.batch(batch_size).run(name, [&] {
             allocator eval_alloc {};
-            machine m { eval_alloc };
+            machine m { eval_alloc, cardano::script_type::plutus_v3 };
             m.evaluate_no_res(expr);
         });
     }
@@ -381,7 +381,7 @@ suite plutus_machine_bench_suite = [] {
             bench.run("Flat decode + evaluate", [&] {
                 allocator alloc {};
                 const flat::script decoded { alloc, buffer { bytes }, false };
-                machine m { alloc };
+                machine m { alloc, cardano::script_type::plutus_v3 };
                 m.evaluate_no_res(decoded.program());
             });
         };
@@ -510,19 +510,10 @@ suite plutus_machine_bench_suite = [] {
 
             const auto &cost_model = costs::defaults().for_script(
                 cardano::script_type::plutus_v3, builtin_semantics::c);
-            const auto &semantics = builtins::semantics_v2();
             const auto choose_tag = builtin_tag::choose_unit;
             const auto add_tag = builtin_tag::add_integer;
-            const auto &choose_op = cost_model.builtin_fun.at(choose_tag);
-            const auto &add_op = cost_model.builtin_fun.at(add_tag);
-            const auto &choose_info = semantics.at(choose_tag);
-            const auto &add_info = semantics.at(add_tag);
-            const auto &choose_fun = std::get<builtin_two_arg>(choose_info.func);
-            const auto &add_fun = std::get<builtin_two_arg>(add_info.func);
-
-            auto choose_sizes = costs::sizes_for(choose_op, choose_tag, choose_args, false);
-            for (size_t i = 0; i < choose_sizes.size(); ++i)
-                ankerl::nanobench::doNotOptimizeAway(choose_sizes.at(i));
+            const auto &choose_cost = cost_model.builtin_costs.at(choose_tag);
+            const auto &add_cost = cost_model.builtin_costs.at(add_tag);
 
             ankerl::nanobench::Bench bench {};
             bench.title("Plutus builtin completion components")
@@ -535,44 +526,16 @@ suite plutus_machine_bench_suite = [] {
                 .minEpochTime(std::chrono::milliseconds { 20 });
 
             run_component_benchmark(bench, "costing: model lookup", [&] {
-                const auto &op = cost_model.builtin_fun.at(choose_tag);
-                ankerl::nanobench::doNotOptimizeAway(op.cpu.get());
-            });
-            run_component_benchmark(bench, "costing: construct argument sizes", [&] {
-                auto sizes = costs::sizes_for(choose_op, choose_tag, choose_args, false);
-                ankerl::nanobench::doNotOptimizeAway(sizes.size());
-            });
-            run_component_benchmark(bench, "costing: CPU model with prepared sizes", [&] {
-                ankerl::nanobench::doNotOptimizeAway(choose_op.cpu->cost(choose_sizes, choose_args));
-            });
-            run_component_benchmark(bench, "costing: memory model with prepared sizes", [&] {
-                ankerl::nanobench::doNotOptimizeAway(choose_op.mem->cost(choose_sizes, choose_args));
+                const auto &op = cost_model.builtin_costs.at(choose_tag);
+                ankerl::nanobench::doNotOptimizeAway(op.cpu.kind);
             });
             run_component_benchmark(bench, "costing: complete chooseUnit path", [&] {
-                const auto &op = cost_model.builtin_fun.at(choose_tag);
-                auto sizes = costs::sizes_for(op, choose_tag, choose_args, false);
-                ankerl::nanobench::doNotOptimizeAway(op.cpu->cost(sizes, choose_args));
-                ankerl::nanobench::doNotOptimizeAway(op.mem->cost(sizes, choose_args));
+                ankerl::nanobench::doNotOptimizeAway(
+                    costs::cost_builtin(choose_cost, choose_tag, choose_args, false));
             });
             run_component_benchmark(bench, "costing: complete addInteger path", [&] {
-                const auto &op = cost_model.builtin_fun.at(add_tag);
-                auto sizes = costs::sizes_for(op, add_tag, add_args, false);
-                ankerl::nanobench::doNotOptimizeAway(op.cpu->cost(sizes, add_args));
-                ankerl::nanobench::doNotOptimizeAway(op.mem->cost(sizes, add_args));
-            });
-            run_component_benchmark(bench, "costing: compiled chooseUnit path", [&] {
-                const auto &op = cost_model.builtin_fun.at(choose_tag);
                 ankerl::nanobench::doNotOptimizeAway(
-                    costs::cost_builtin(op, choose_tag, choose_args, false));
-            });
-            run_component_benchmark(bench, "costing: compiled addInteger path", [&] {
-                const auto &op = cost_model.builtin_fun.at(add_tag);
-                ankerl::nanobench::doNotOptimizeAway(
-                    costs::cost_builtin(op, add_tag, add_args, false));
-            });
-            run_component_benchmark(bench, "semantics: map lookup", [&] {
-                const auto &info = semantics.at(choose_tag);
-                ankerl::nanobench::doNotOptimizeAway(info.num_args);
+                    costs::cost_builtin(add_cost, add_tag, add_args, false));
             });
             run_component_benchmark(bench, "semantics: indexed descriptor lookup", [&] {
                 const auto &info = builtins::descriptor(choose_tag);
@@ -582,38 +545,10 @@ suite plutus_machine_bench_suite = [] {
                 auto res = builtins::choose_unit(arg_alloc, choose_args->at(0), choose_args->at(1));
                 ankerl::nanobench::doNotOptimizeAway(res);
             });
-            run_component_benchmark(bench, "semantics: prepared chooseUnit function", [&] {
-                auto res = choose_fun(arg_alloc, choose_args->at(0), choose_args->at(1));
-                ankerl::nanobench::doNotOptimizeAway(res);
-            });
-            run_component_benchmark(bench, "semantics: lookup + dispatch + chooseUnit", [&] {
-                const auto &info = semantics.at(choose_tag);
-                const auto &fun = std::get<builtin_two_arg>(info.func);
-                auto res = fun(arg_alloc, choose_args->at(0), choose_args->at(1));
-                ankerl::nanobench::doNotOptimizeAway(res);
-            });
-            run_component_benchmark(bench, "semantics: direct dispatch + chooseUnit", [&] {
-                auto res = builtins::apply_direct(arg_alloc, true, choose_tag, choose_args);
-                ankerl::nanobench::doNotOptimizeAway(res);
-            });
             bench.batch(primitive_batch_size).run("semantics: direct addInteger body", [&] {
                 allocator result_alloc {};
                 for (size_t i = 0; i < primitive_batch_size; ++i) {
                     auto res = builtins::add_integer(result_alloc, add_args->at(0), add_args->at(1));
-                    ankerl::nanobench::doNotOptimizeAway(res);
-                }
-            });
-            bench.batch(primitive_batch_size).run("semantics: prepared addInteger function", [&] {
-                allocator result_alloc {};
-                for (size_t i = 0; i < primitive_batch_size; ++i) {
-                    auto res = add_fun(result_alloc, add_args->at(0), add_args->at(1));
-                    ankerl::nanobench::doNotOptimizeAway(res);
-                }
-            });
-            bench.batch(primitive_batch_size).run("semantics: direct dispatch + addInteger", [&] {
-                allocator result_alloc {};
-                for (size_t i = 0; i < primitive_batch_size; ++i) {
-                    auto res = builtins::apply_direct(result_alloc, true, add_tag, add_args);
                     ankerl::nanobench::doNotOptimizeAway(res);
                 }
             });
@@ -630,7 +565,7 @@ suite plutus_machine_bench_suite = [] {
                 uint64_t total_steps = 0;
                 for (const auto &s: scripts) {
                     allocator eval_alloc {};
-                    machine m { eval_alloc };
+                    machine m { eval_alloc, cardano::script_type::plutus_v3 };
                     const auto res = m.evaluate(s.program());
                     total_steps += res.cost.steps;
                 }

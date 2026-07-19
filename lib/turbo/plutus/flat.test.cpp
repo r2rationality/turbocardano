@@ -55,6 +55,26 @@ suite turbo_plutus_flat_suite = [] {
                 })) << fmt::format("{}", raw_cbor);
             }
         };
+        "decoded values outlive non-owning input"_test = [] {
+            for (const size_t payload_size: { size_t { 32 }, size_t { 300 } }) {
+                allocator source_alloc {};
+                uint8_vector payload(payload_size, uint8_t { 0xAB });
+                const term source {
+                    source_alloc,
+                    plutus::constant {
+                        source_alloc, bstr_type { source_alloc, buffer { payload } }
+                    }
+                };
+                const auto encoded = encode(version { 1, 0, 0 }, source);
+
+                allocator decode_alloc {};
+                const auto decoded = [&] {
+                    auto local_input = encoded;
+                    return script { decode_alloc, buffer { local_input }, false };
+                }();
+                expect_equal(source, decoded.program());
+            }
+        };
         "literal builtin applications use a compact spine"_test = [] {
             allocator source_alloc {};
             const auto one = term { source_alloc,
