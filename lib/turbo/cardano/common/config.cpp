@@ -5,7 +5,7 @@
 
 #include <turbo/base64.hpp>
 #include <turbo/cardano/common/config.hpp>
-#include <turbo/plutus/costs.hpp>
+#include <turbo/plutus/costs-config.hpp>
 
 namespace turbo::cardano {
     const config &config::get()

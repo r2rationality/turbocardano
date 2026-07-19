@@ -19,6 +19,7 @@ suite cardano_conway_suite = [] {
             for (const auto &path: file::files_with_ext(install_path("data/conway"), ".zpp")) {
                 plutus::context ctx { path, ccfg };
                 ctx.protocol_ver({ 9, 0 });
+                ctx.prepare();
                 expect(boost::ut::nothrow([&] {
                     try {
                         for (const auto &[rid, rinfo]: ctx.redeemers()) {

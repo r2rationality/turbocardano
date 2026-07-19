@@ -14,6 +14,7 @@
 #include <turbo/parallel/ordered-consumer.hpp>
 #include <turbo/parallel/ordered-queue.hpp>
 #include <turbo/plutus/context.hpp>
+#include <turbo/plutus/costs-config.hpp>
 #include <turbo/txwit/validator.hpp>
 
 namespace turbo::txwit {
@@ -765,7 +766,7 @@ namespace turbo::txwit {
             const validation_config_t &_cfg;
             state _st {};
             plutus_cost_models _cost_models_raw = _st.params().plutus_cost_models;
-            costs::parsed_models _cost_models = costs::parse(_cost_models_raw);
+            costs::runtime_models _cost_models = costs::ingest(_cost_models_raw);
             wit_cnt _cnts {};
             size_t _num_errs = 0;
 
@@ -778,7 +779,7 @@ namespace turbo::txwit {
                     _st.start_epoch(part.epoch);
                     if (_st.params().plutus_cost_models != _cost_models_raw) {
                         _cost_models_raw = _st.params().plutus_cost_models;
-                        _cost_models = costs::parse(_cost_models_raw);
+                        _cost_models = costs::ingest(_cost_models_raw);
                     }
                 }
             }
@@ -1009,6 +1010,7 @@ namespace turbo::txwit {
                                 _validate_tx_invariants(part, tx_ctx, plutus_ctx.get());
                                 if (plutus_ctx) {
                                     plutus_ctx->cost_models(_cost_models);
+                                    plutus_ctx->prepare();
                                     const auto &tx = plutus_ctx->tx();
                                     batch_cnts += _cfg.witnesses_ok_stage2(tx.block(), tx, *plutus_ctx);
                                 }

@@ -13,7 +13,7 @@
 #include <turbo/cbor/zero2.hpp>
 #include <turbo/crypto/crc32.hpp>
 #include <turbo/crypto/sha3.hpp>
-#include <turbo/plutus/costs.hpp>
+#include <turbo/plutus/costs-config.hpp>
 
 namespace turbo::cardano {
     using namespace crypto;

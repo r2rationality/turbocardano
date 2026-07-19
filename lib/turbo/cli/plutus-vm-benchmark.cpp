@@ -76,8 +76,10 @@ namespace turbo::cli::plutus_vm_benchmark {
                         logger::warn("benchmark {} reached --max-iterations={} after {:.3f}s, before --min-time={:.3f}s",
                             name, max_iterations, to_seconds(stats.total_time), to_seconds(min_time));
                     }
-                    std::cerr << fmt::format("{}: mean {} ns, median {} ns, {} iterations, {:.3f}s measured\n",
-                        name, stats.mean_ns, stats.median_ns, stats.iterations, to_seconds(stats.total_time));
+                    std::cerr << fmt::format("{}: mean {} ns, median {} ns, CV {}, {} iterations, {:.3f}s measured\n",
+                        name, stats.mean_ns, stats.median_ns,
+                        stats.mean_ns > 0 ? static_cast<double>(stats.stddev_ns) / stats.mean_ns : 0.0,
+                        stats.iterations, to_seconds(stats.total_time));
                     out = fmt::format_to(out, "{},{},{},{},{},{},{},{}\n",
                         vm_name, name, stats.mean_ns, stats.median_ns, stats.min_ns, stats.max_ns,
                         stats.stddev_ns, stats.iterations);

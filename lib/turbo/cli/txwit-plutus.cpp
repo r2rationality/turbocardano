@@ -6,7 +6,7 @@
 #include <turbo/chunk-registry.hpp>
 #include <turbo/history.hpp>
 #include <turbo/plutus/context.hpp>
-#include <turbo/plutus/costs.hpp>
+#include <turbo/plutus/costs-config.hpp>
 #include <turbo/zpp-stream.hpp>
 #include "common.hpp"
 
@@ -32,12 +32,12 @@ namespace turbo::cli::txwit_plutus {
             const auto &ctx_dir = args.at(0);
             user_config cfg { opts };
             scheduler sched { cfg.num_workers };
-            parsed_models_update_list epoch_cost_models {};
+            runtime_models_update_list epoch_cost_models {};
             {
                 zpp_stream::read_stream s { fmt::format("{}/cost-models/all.zpp", ctx_dir) };
                 const auto updates  = s.read<cost_model_update_list>();
                 for (const auto &u: updates) {
-                    epoch_cost_models.emplace_back(u.epoch, costs::parse(u.models));
+                    epoch_cost_models.emplace_back(u.epoch, costs::ingest(u.models));
                 }
             }
             file::path_list paths {};
@@ -101,11 +101,11 @@ namespace turbo::cli::txwit_plutus {
             wit_cnt wits {};
         };
 
-        struct parsed_models_update {
+        struct runtime_models_update {
             uint64_t epoch;
-            costs::parsed_models models;
+            costs::runtime_models models;
         };
-        using parsed_models_update_list = std::vector<parsed_models_update>;
+        using runtime_models_update_list = std::vector<runtime_models_update>;
 
         struct cost_model_update {
             uint64_t epoch;
@@ -113,7 +113,7 @@ namespace turbo::cli::txwit_plutus {
         };
         using cost_model_update_list = std::vector<cost_model_update>;
 
-        static eval_result _evaluate_context_file(const std::string &ctx_path, const parsed_models_update_list &epoch_cost_models, const user_config &cfg)
+        static eval_result _evaluate_context_file(const std::string &ctx_path, const runtime_models_update_list &epoch_cost_models, const user_config &cfg)
         {
             timer t { fmt::format("evaluation of a script context file {}", ctx_path), logger::level::info };
             logger::info("thread {} started testing context file {}", std::this_thread::get_id(), ctx_path);
@@ -140,6 +140,7 @@ namespace turbo::cli::txwit_plutus {
                         throw error("internal error: can't find a passing epoch cost model!");
                     it = std::prev(it);
                     ctx.cost_models(it->models);
+                    ctx.prepare();
                     if (const auto *a_tx = dynamic_cast<const alonzo::tx *>(&ctx.tx()); a_tx)
                         res.wits += a_tx->witnesses_ok_plutus(ctx);
                     ++res.tx_ok;

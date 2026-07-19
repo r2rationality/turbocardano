@@ -76,6 +76,7 @@ suite cardano_alonzo_suite = [] {
                         case 7: ctx.protocol_ver({ 9, 0 }); break;
                         default: break;
                     }
+                    ctx.prepare();
                     expect(ctx.tx().witnesses_ok(&ctx)) << path;
                 } catch (const error &err) {
                     expect(false) << fmt::format("validation of tx witnesses for tx {} failed with: {}", path, err.what());

@@ -8,7 +8,7 @@
 #include <turbo/index/merge-zpp.hpp>
 #include <turbo/index/utxo.hpp>
 #include <turbo/plutus/context.hpp>
-#include <turbo/plutus/costs.hpp>
+#include <turbo/plutus/costs-config.hpp>
 #include <turbo/plutus/flat-encoder.hpp>
 #include <turbo/zpp-stream.hpp>
 #include "common.hpp"
@@ -58,12 +58,12 @@ namespace turbo::cli::plutus_extract_scripts {
             std::optional<std::string> file_prefix {};
             if (const auto opt_it = opts.find("file"); opt_it != opts.end() && opt_it->second)
                 file_prefix.emplace(*opt_it->second);
-            parsed_models_update_list epoch_cost_models {};
+            runtime_models_update_list epoch_cost_models {};
             {
                 zpp_stream::read_stream s { fmt::format("{}/cost-models/all.zpp", ctx_dir) };
                 const auto updates  = s.read<cost_model_update_list>();
                 for (const auto &u: updates) {
-                    epoch_cost_models.emplace_back(u.epoch, costs::parse(u.models));
+                    epoch_cost_models.emplace_back(u.epoch, costs::ingest(u.models));
                 }
             }
             file::path_list paths {};
@@ -95,11 +95,11 @@ namespace turbo::cli::plutus_extract_scripts {
             bool uplc = false;
         };
 
-        struct parsed_models_update {
+        struct runtime_models_update {
             uint64_t epoch;
-            costs::parsed_models models;
+            costs::runtime_models models;
         };
-        using parsed_models_update_list = std::vector<parsed_models_update>;
+        using runtime_models_update_list = std::vector<runtime_models_update>;
 
         struct cost_model_update {
             uint64_t epoch;
@@ -120,7 +120,7 @@ namespace turbo::cli::plutus_extract_scripts {
             }
         };
 
-        static extract_res _extract_scripts(const std::string &out_dir, const std::string &ctx_path, const parsed_models_update_list &epoch_cost_models, const user_config &cfg)
+        static extract_res _extract_scripts(const std::string &out_dir, const std::string &ctx_path, const runtime_models_update_list &epoch_cost_models, const user_config &cfg)
         {
             timer t { fmt::format("evaluation of a script context file {}", ctx_path), logger::level::info };
             logger::info("thread {} started testing context file {}", std::this_thread::get_id(), ctx_path);
@@ -145,6 +145,7 @@ namespace turbo::cli::plutus_extract_scripts {
                         throw error("internal error: can't find a passing epoch cost model!");
                     it = std::prev(it);
                     ctx.cost_models(it->models);
+                    ctx.prepare();
                     size_t r_idx = 0;
                     for (const auto &[rid, r]: ctx.redeemers()) {
                         const auto ps = ctx.prepare_script(r);
