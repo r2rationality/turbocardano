@@ -594,7 +594,6 @@ namespace turbo::cardano {
             return archive(self.val);
         }
 
-        static cert_t from_cbor(cbor::zero2::value &v);
         std::optional<credential_t> signing_cred() const;
     };
     using cert_list = vector_t<cert_t>;

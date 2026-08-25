@@ -3,6 +3,7 @@
  * Copyright (c) 2024-2026 R2 Rationality OÜ (info at r2rationality dot com)
  * License: https://github.com/r2rationality/turbocardano/blob/main/LICENSE */
 
+#include <vector>
 #include <turbo/common/scheduler.hpp>
 #include <turbo/common/test.hpp>
 #include <turbo/parallel/ordered-queue.hpp>
@@ -69,6 +70,36 @@ suite parallel_ordered_queue_suite = [] {
             expect_equal(total_items, ok.load(std::memory_order_relaxed));
             expect_equal(0, err.load(std::memory_order_relaxed));
             expect_equal(false, !!q.take());
+        };
+        "publishes externally stored items"_test = [] {
+            static constexpr size_t total_items = 4096;
+            auto &sched = scheduler::get();
+            if (sched.num_workers() <= 1) [[unlikely]]
+                throw error("unit test requires at least two workers!");
+            ordered_queue q {};
+            std::vector<size_t> items(total_items);
+            std::atomic_size_t consumed { 0 };
+            std::atomic_size_t errors { 0 };
+            for (size_t worker = 0; worker < sched.num_workers(); ++worker) {
+                sched.submit("parallel-publish-and-take", 100, [&, worker] {
+                    for (size_t idx = worker; idx < total_items; idx += sched.num_workers()) {
+                        items[idx] = idx + 1;
+                        q.put(idx);
+                    }
+                    while (consumed.load(std::memory_order_relaxed) < total_items) {
+                        if (const auto idx = q.take(); idx) {
+                            if (items[*idx] != *idx + 1)
+                                errors.fetch_add(1, std::memory_order_relaxed);
+                            consumed.fetch_add(1, std::memory_order_relaxed);
+                        } else {
+                            std::this_thread::yield();
+                        }
+                    }
+                });
+            }
+            sched.process();
+            expect_equal(total_items, consumed.load(std::memory_order_relaxed));
+            expect_equal(0, errors.load(std::memory_order_relaxed));
         };
     };
 };

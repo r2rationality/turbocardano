@@ -18,12 +18,13 @@ suite zstd_bench_suite = [] {
         auto data = zstd::read("./data/chunk-registry/compressed/chunk/977E9BB3D15A5CFF5C5E48617288C5A731DB654C0B42D63627C690CEADC9E1F3.zstd");
         if (data.size() > (1 << 22))
             data.resize(1 << 24);
-        for (const auto &[zstd_level, exp_throughput]: {
+        static constexpr perf_exp experiments[] {
             perf_exp { 1, 300e6 },
             perf_exp { 3, 200e6 },
             perf_exp { 9, 50e6 },
             perf_exp { 22, 2e6 }
-        }) {
+        };
+        for (const auto &[zstd_level, exp_throughput]: experiments) {
             uint8_vector compressed {};
             benchmark("zstd::compress level " + std::to_string(zstd_level), [&] {
                 zstd::compress(compressed, data, zstd_level);

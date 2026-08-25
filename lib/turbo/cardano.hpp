@@ -4,6 +4,7 @@
  * Copyright (c) 2024-2026 R2 Rationality OÜ (info at r2rationality dot com)
  * License: https://github.com/r2rationality/turbocardano/blob/main/LICENSE */
 
+#include <cstddef>
 #include <turbo/cardano/common/common.hpp>
 
 namespace turbo::cardano {
@@ -20,7 +21,7 @@ namespace turbo::cardano {
         const block_header_base *operator->() const;
     private:
         struct impl;
-        byte_array<736> _impl_storage;
+        alignas(std::max_align_t) byte_array<736> _impl_storage;
     };
 
     struct parsed_block {
@@ -44,19 +45,7 @@ namespace turbo::cardano {
         uint8_vector data;
         header_container hdr;
 
-        static parsed_header from_cbor(cbor::zero2::value &v, const config &cfg=config::get())
-        {
-            auto &it = v.array();
-            auto typ = it.read().uint();
-            cbor::encoder block_tuple {};
-            if (typ == 0) {
-                auto &it2 = it.read().array();
-                auto hdr_era = numeric_cast<uint8_t>(it2.read().array().read().uint());
-                block_tuple.array(2).uint(hdr_era).array(1);
-                return { hdr_era, it2.read().tag().read().bytes(), cfg };
-            }
-            return { numeric_cast<uint8_t>(typ + 1), it.read().tag().read().bytes(), cfg };
-        }
+        static parsed_header from_cbor(cbor::zero2::value &, const config &cfg=config::get());
 
         parsed_header(const buffer bytes, const config &cfg=config::get()):
             data { bytes },
@@ -88,6 +77,10 @@ namespace turbo::cardano {
 
         void to_cbor(cbor::encoder &enc) const;
     private:
+#if defined(__GNUC__) && !defined(__clang__) && (__GNUC__ == 13 || __GNUC__ == 15)
+#   pragma GCC diagnostic push
+#   pragma GCC diagnostic ignored "-Wfree-nonheap-object"
+#endif
         static uint8_vector _make_header_data(const uint8_t era, const buffer header_bytes)
         {
             cbor::encoder enc {};
@@ -98,6 +91,9 @@ namespace turbo::cardano {
             enc << header_bytes;
             return std::move(enc.cbor());
         }
+#if defined(__GNUC__) && !defined(__clang__) && __GNUC__ == 13
+#   pragma GCC diagnostic pop
+#endif
     };
     static_assert(std::is_move_constructible_v<parsed_header>);
 }

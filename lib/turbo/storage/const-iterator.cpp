@@ -175,11 +175,13 @@ namespace turbo::storage {
             const auto pos = *this - cbegin(_cr, _chunks);
             return cbegin(_cr, _chunks) + std::max(difference_type { 0 }, pos + n);
         }
+        auto offset = static_cast<size_t>(n);
         auto it = *this;
-        while (it._chunk_it != _chunks.end() && n > 0) {
-            if (n < it._chunk_it->second.blocks.size() - it._block_no)
-                return { _cr, _chunks, it._chunk_it, it._block_no + n };
-            n -= it._chunk_it->second.blocks.size() - it._block_no;
+        while (it._chunk_it != _chunks.end() && offset > 0) {
+            const auto chunk_remaining = it._chunk_it->second.blocks.size() - it._block_no;
+            if (offset < chunk_remaining)
+                return { _cr, _chunks, it._chunk_it, it._block_no + offset };
+            offset -= chunk_remaining;
             ++it._chunk_it;
             it._block_no = 0;
         }
@@ -219,27 +221,35 @@ namespace turbo::storage {
         return { bytes.subbuf(file_offset,  blk.size) };
     }
 
-    std::pair<uint8_vector, const_iterator>
+    std::tuple<uint8_vector, const_iterator, int32_t>
     const_iterator::chunk_remaining_data(const const_iterator last_it) const
     {
+        static constexpr int32_t fast_compression_level = 3;
         if (*this == last_it) [[unlikely]]
-            return std::make_pair(uint8_vector {}, last_it);
-        if (**this == _chunk_it->second.blocks.front() && last_it._chunk_it != _chunk_it) {
+            return { uint8_vector {}, last_it, fast_compression_level };
+        const auto &chunk = _chunk_it->second;
+        if (**this == chunk.blocks.front() && last_it._chunk_it != _chunk_it) {
             const auto path = full_path(_cr._db_dir, _chunk_it->second.rel_path());
-            return std::make_pair(file::read(path), const_iterator { _cr, _chunks, std::next(_chunk_it), 0 });
+            return {
+                file::read(path),
+                const_iterator { _cr, _chunks, std::next(_chunk_it), 0 },
+                chunk.compression_level
+            };
         }
         const auto bytes = _prep_chunk_cache();
         const auto &blk = operator*();
         const auto file_offset = blk.offset - _chunk_it->second.offset;
         if (last_it._chunk_it == _chunk_it && last_it._block_no < _chunk_it->second.blocks.size()) {
-            return std::make_pair(
-                zstd::compress(bytes.subbuf(file_offset, last_it->offset - blk.offset), 3),
-                last_it
-            );
+            return {
+                zstd::compress(bytes.subbuf(file_offset, last_it->offset - blk.offset), fast_compression_level),
+                last_it,
+                fast_compression_level
+            };
         }
-        return std::make_pair(
-            zstd::compress(bytes.subbuf(file_offset), 3),
-            const_iterator { _cr, _chunks, std::next(_chunk_it), 0 }
-        );
+        return {
+            zstd::compress(bytes.subbuf(file_offset), fast_compression_level),
+            const_iterator { _cr, _chunks, std::next(_chunk_it), 0 },
+            fast_compression_level
+        };
     }
 }

@@ -53,7 +53,7 @@ namespace turbo::cli::test_stake_balances {
 
             double diff_rel() const
             {
-                return abs(diff) / (double)balance_expected;
+                return std::abs(static_cast<double>(diff)) / balance_expected;
             }
         };
 
@@ -122,7 +122,7 @@ namespace turbo::cli::test_stake_balances {
                 log_msg
                     << fmt::format("{}", te.id)
                     << " tx count: " << te.tx_count
-                    << " differs by " << te.diff / 1'000'000u << "." << abs(te.diff) % 1'000'000u << " ADA"
+                    << " differs by " << te.diff / 1'000'000u << "." << std::abs(te.diff) % 1'000'000u << " ADA"
                     << " or " << te.diff_rel() * 100 << "%"
                     << '\n';
             }

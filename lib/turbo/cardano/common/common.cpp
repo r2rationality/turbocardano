@@ -10,10 +10,6 @@
 #include <turbo/plutus/context.hpp>
 
 namespace turbo::cardano {
-    invalid_tx_set::invalid_tx_set(cbor::zero2::value &v):
-        base_type { base_type::from_cbor(v) }, raw { v.data_raw() }
-    {
-    }
 
     block_info block_info::from_block(const cardano::block_container &blk)
     {
@@ -29,50 +25,6 @@ namespace turbo::cardano {
         };
     }
 
-    redeemer_tag redeemer_tag_from_cbor(cbor::zero2::value &v)
-    {
-        switch (const auto typ = v.uint(); typ) {
-            case 0: return redeemer_tag::spend;
-            case 1: return redeemer_tag::mint;
-            case 2: return redeemer_tag::cert;
-            case 3: return redeemer_tag::reward;
-            case 4: return redeemer_tag::vote;
-            case 5: return redeemer_tag::propose;
-            default: throw error(fmt::format("unsupported redeemer tag: {}", typ));
-        }
-    }
-
-    ipv4_addr ipv4_addr::from_cbor(cbor::zero2::value &v)
-    {
-        return { v.bytes() };
-    }
-
-    ipv6_addr ipv6_addr::from_cbor(cbor::zero2::value &v)
-    {
-        return { v.bytes() };
-    }
-
-    pool_params pool_params::from_cbor(cbor::zero2::value &v)
-    {
-        auto &it = v.array();
-        it.skip(1);
-        return from_cbor(it);
-    }
-
-    pool_params pool_params::from_cbor(cbor::zero2::array_reader &it)
-    {
-        // assumes the pool hash has already been consumed!
-        return pool_params {
-            it.read().bytes(),
-            it.read().uint(),
-            it.read().uint(),
-            decltype(margin)::from_cbor(it.read()),
-            it.read().bytes(),
-            decltype(owners)::from_cbor(it.read()),
-            decltype(relays)::from_cbor(it.read()),
-            decltype(metadata)::from_cbor(it.read())
-        };
-    }
 
     void pool_params::to_cbor(era_encoder &enc, const pool_hash &pool_id) const
     {
@@ -88,59 +40,6 @@ namespace turbo::cardano {
         metadata.to_cbor(enc);
     }
 
-    tx_wit_byron_vkey tx_wit_byron_vkey::from_cbor(cbor::zero2::value &v)
-    {
-        auto pv = cbor::zero2::parse(v.tag().read().bytes());
-        auto &it = pv.get().array();
-        return { it.read().bytes(), it.read().bytes() };
-    }
-
-    tx_wit_byron_redeemer tx_wit_byron_redeemer::from_cbor(cbor::zero2::value &v)
-    {
-        auto pv = cbor::zero2::parse(v.tag().read().bytes());
-        auto &it = pv.get().array();
-        return { it.read().bytes(), it.read().bytes() };
-    }
-
-    tx_wit_datum tx_wit_datum::from_cbor(cbor::zero2::value &v)
-    {
-        return { crypto::blake2b::digest<datum_hash>(v.data_raw()), v.data_raw() };
-    }
-
-    tx_wit_shelley_vkey tx_wit_shelley_vkey::from_cbor(cbor::zero2::value &v)
-    {
-        auto &it = v.array();
-        return { it.read().bytes(), it.read().bytes() };
-    }
-
-    tx_wit_shelley_bootstrap tx_wit_shelley_bootstrap::from_cbor(cbor::zero2::value &v)
-    {
-        auto &it = v.array();
-        return { it.read().bytes(), it.read().bytes(), it.read().bytes(), it.read().bytes() };
-    }
-
-    tx_redeemer tx_redeemer::from_cbor(cbor::zero2::map_reader &m_it)
-    {
-        auto &key = m_it.read_key();
-        auto &k_it = key.array();
-        const auto tag = redeemer_tag_from_cbor(k_it.read());
-        const auto ref_idx = k_it.read().uint();
-        auto &val = m_it.read_val(std::move(key));
-        auto &v_it = val.array();
-        return { tag, numeric_cast<uint16_t>(ref_idx), v_it.read().data_raw(), ex_units::from_cbor(v_it.read()) };
-    }
-
-    tx_redeemer tx_redeemer::from_cbor(cbor::zero2::array_reader &a_it)
-    {
-        auto &v = a_it.read();
-        auto &it = v.array();
-        return {
-            redeemer_tag_from_cbor(it.read()),
-            numeric_cast<uint16_t>(it.read().uint()),
-            it.read().data_raw(),
-            ex_units::from_cbor(it.read())
-        };
-    }
 
     void tx_base::foreach_witness_byron_vkey(const byron_vkey_wit_observer_t &observer) const
     {
@@ -162,14 +61,6 @@ namespace turbo::cardano {
         }
     }
 
-    void tx_base::foreach_set(cbor::zero2::value &set_raw, const set_observer_t &observer) const
-    {
-        auto &it = set_raw.array();
-        while (!it.done()) {
-            auto &v = it.read();
-            observer(v);
-        }
-    }
 
     void tx_base::foreach_cert(const cert_observer_t &observer) const
     {
@@ -243,18 +134,13 @@ namespace turbo::cardano {
 
     void tx_base::foreach_redeemer(const redeemer_observer_t &observer) const
     {
-        foreach_witness([&](const auto &wit) {
-            std::visit([&](const auto &v) {
-                using T = std::decay_t<decltype(v)>;
-                if constexpr (std::is_same_v<T, tx_redeemer>) {
-                    observer(v);
-                }
-            }, wit);
-        });
+        for (const auto &[_, redeemer]: redeemers())
+            observer(redeemer);
     }
 
-    wit_cnt tx_base::witnesses_ok_vkey(std::set<key_hash> &valid_vkeys) const
+    wit_cnt tx_base::witnesses_ok_vkey(signer_set &valid_vkeys) const
     {
+        valid_vkeys.reserve(valid_vkeys.size() + witnesses().size());
         const auto &tx_hash = hash();
         wit_cnt cnts {};
         foreach_witness([&](const auto &w) {
@@ -303,7 +189,7 @@ namespace turbo::cardano {
         return cnts;
     }
 
-    wit_cnt tx_base::witnesses_ok_native(const std::set<key_hash> &vkeys) const
+    wit_cnt tx_base::witnesses_ok_native(const signer_set &vkeys) const
     {
         wit_cnt cnts {};
         foreach_script([&](const auto &si) {
@@ -335,7 +221,7 @@ namespace turbo::cardano {
     wit_cnt tx_base::witnesses_ok(const plutus::context *ctx) const
     {
         wit_cnt cnt {};
-        std::set<key_hash> valid_vkeys {};
+        signer_set valid_vkeys {};
         cnt += witnesses_ok_vkey(valid_vkeys);
         cnt += witnesses_ok_native(valid_vkeys);
         if (ctx)
@@ -425,73 +311,4 @@ namespace turbo::cardano {
         return true;
     }
 
-    struct tx_container::impl {
-        impl(const block_info &meta, const uint64_t tx_abs_off, cbor::zero2::value &v, size_t idx, const cardano::config &cfg):
-            _blk { meta.offset, meta, cfg },
-            _val { _make(_blk, tx_abs_off, v, idx) }
-        {
-        }
-
-        impl(const block_info &meta, const uint64_t tx_abs_off, cbor::zero2::value &tx, cbor::zero2::value &wit, const size_t idx, const cardano::config &cfg):
-            impl { meta, tx_abs_off, tx, idx, cfg }
-        {
-            std::visit([&](auto &tx_v) {
-                tx_v.parse_witnesses(wit);
-            }, _val);
-        }
-
-        const tx_base &base() const
-        {
-            return std::visit([&](auto &tx_v) -> const tx_base & {
-                return tx_v;
-            }, _val);
-        }
-    private:
-        using value_type = std::variant<byron::tx, shelley::tx, mary::tx, alonzo::tx, babbage::tx, conway::tx>;
-
-        mocks::block _blk;
-        value_type _val;
-
-        static value_type _make(const block_base &blk, const uint64_t tx_abs_off, cbor::zero2::value &tx, const size_t idx)
-        {
-            const auto blk_off = tx_abs_off - blk.offset() - blk.header_offset();
-            switch (blk.era()) {
-                case 1: return byron::tx { blk, blk_off, tx, idx };
-                case 2: return shelley::tx { blk, blk_off, tx, idx };
-                case 3:
-                case 4: return mary::tx { blk, blk_off, tx, idx};
-                case 5: return alonzo::tx { blk, blk_off, tx, idx };
-                case 6: return babbage::tx { blk, blk_off, tx, idx };
-                case 7: return conway::tx { blk, blk_off, tx, idx };
-                default: throw error(fmt::format("unsupported era {}!", blk.era()));
-            }
-        }
-    };
-
-    tx_container::tx_container(const block_info &meta, const uint64_t tx_abs_off, cbor::zero2::value &tx, const size_t idx, const config &cfg)
-    {
-        static_assert(sizeof(impl_storage) >= sizeof(impl));
-        new (reinterpret_cast<impl*>(_impl.data())) impl { meta, tx_abs_off, tx, idx, cfg };
-    }
-
-    tx_container::tx_container(const block_info &meta, const uint64_t tx_abs_off, cbor::zero2::value &tx, cbor::zero2::value &wits, const size_t idx, const config &cfg)
-    {
-        static_assert(sizeof(impl_storage) >= sizeof(impl));
-        new (reinterpret_cast<impl*>(_impl.data())) impl { meta, tx_abs_off, tx, wits, idx, cfg };
-    }
-
-    tx_container::~tx_container()
-    {
-        reinterpret_cast<impl*>(_impl.data())->~impl();
-    }
-
-    const tx_base &tx_container::operator*() const
-    {
-        return reinterpret_cast<const impl*>(_impl.data())->base();
-    }
-
-    const tx_base *tx_container::operator->() const
-    {
-        return &reinterpret_cast<const impl*>(_impl.data())->base();
-    }
 }

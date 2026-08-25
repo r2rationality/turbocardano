@@ -176,6 +176,24 @@ namespace turbo {
     struct chunk_registry {
         enum class mode { store, index, validate };
 
+        struct repack_stats_t {
+            size_t chunks_analyzed = 0;
+            size_t chunks_repacked = 0;
+            size_t partial_groups_merged = 0;
+            uint64_t compressed_size_before = 0;
+            uint64_t compressed_size_after = 0;
+
+            repack_stats_t &operator+=(const repack_stats_t &o)
+            {
+                chunks_analyzed += o.chunks_analyzed;
+                chunks_repacked += o.chunks_repacked;
+                partial_groups_merged += o.partial_groups_merged;
+                compressed_size_before += o.compressed_size_before;
+                compressed_size_after += o.compressed_size_after;
+                return *this;
+            }
+        };
+
         // Shall be a multiple of an SSD's sector size and larger than Cardano's largest block (including Byron boundary ones too!)
         using chunk_info = storage::chunk_info;
         using chunk_map = storage::chunk_map;
@@ -235,7 +253,7 @@ namespace turbo {
 
         explicit chunk_registry(const std::string &data_dir, mode mode=mode::validate,
             cardano::config ccfg=cardano::config::get(), scheduler &sched=scheduler::get(), file_remover &fr=file_remover::get(),
-            bool auto_maintenance=true);
+            bool auto_maintenance=true, bool validate_vrf=true);
         ~chunk_registry();
 
         // Interoperability
@@ -307,9 +325,10 @@ namespace turbo {
         // state modifying methods
 
         void maintenance();
+        repack_stats_t repack();
         void import(const chunk_registry &src_cr);
-        progress_point add_buffer(uint64_t offset, uint8_vector uncompressed, std::optional<uint8_vector> compressed={});
-        void add_file(uint64_t offset, const std::string &local_path);
+        progress_point add_buffer(uint64_t offset, uint8_vector uncompressed, std::optional<uint8_vector> compressed={}, int32_t compression_level=0);
+        void add_file(uint64_t offset, const std::string &local_path, int32_t compression_level=0);
         [[nodiscard]] std::exception_ptr accept_progress(const cardano::optional_point &start, const std::optional<progress_point> &target, const std::function<void()> &action);
         void accept_anything_or_throw(const cardano::optional_point &start, const std::optional<progress_point> &target, const std::function<void()> &action);
         //void accept_progress_or_throw(const cardano::optional_point &start, const std::optional<progress_point> &target, const std::function<void()> &action);
@@ -328,6 +347,7 @@ namespace turbo {
         const cardano::config _cardano_cfg;
         scheduler &_sched;
         file_remover &_file_remover;
+        mutable mutex::unique_lock::mutex_type _processors_mutex alignas(mutex::alignment) {};
         std::set<const chunk_processor *> _processors {}; // initialize before indexer and validator who call register_processor/remove_processor
         std::unique_ptr<indexer::incremental> _indexer {};
         std::unique_ptr<validator::incremental> _validator {};
@@ -347,7 +367,8 @@ namespace turbo {
         static thread_local uint8_vector _read_buffer;
 
         void _node_export_chain(const std::filesystem::path &immutable_dir, const std::filesystem::path &volatile_dir, int prio_base=100) const;
-        std::pair<chunk_info, std::exception_ptr> _parse(uint64_t offset, const buffer &raw_data, size_t compressed_size) const;
+        std::pair<chunk_info, std::exception_ptr> _parse(uint64_t offset, const buffer &raw_data, size_t compressed_size,
+            int32_t compression_level, const std::optional<cardano::block_hash> &data_hash) const;
 
         epoch_info _epoch(const uint64_t epoch) const;
         void _my_truncate(const cardano::optional_point &new_tip, const bool track_changes);
@@ -366,7 +387,8 @@ namespace turbo {
         void _commit_tx();
         void _save_state(const std::string &path);
         void _do_truncate(const cardano::optional_point &new_tip, const bool track_changes);
-        progress_point _add(const uint64_t offset, const std::string &local_path, buffer uncompressed, uint64_t compressed_size);
+        progress_point _add(const uint64_t offset, const std::string &local_path, buffer uncompressed,
+            uint64_t compressed_size, int32_t compression_level, std::optional<cardano::block_hash> data_hash={});
         void _add(chunk_info &&chunk, const bool normal=true);
         void _notify_of_updates(mutex::unique_lock &update_lk, bool force=false);
 

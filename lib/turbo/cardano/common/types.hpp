@@ -4,12 +4,14 @@
  * Copyright (c) 2024-2026 R2 Rationality OÜ (info at r2rationality dot com)
  * License: https://github.com/r2rationality/turbocardano/blob/main/LICENSE */
 
+#include <algorithm>
 #include <chrono>
 #include <functional>
 #include <map>
 #include <optional>
 #include <utility>
 #include <vector>
+#include <boost/container/static_vector.hpp>
 #include <turbo/bech32.hpp>
 #include <turbo/cardano/common/types/base.hpp>
 #include <turbo/cardano/kes.hpp>
@@ -30,6 +32,28 @@ namespace turbo::cardano {
     typedef error error;
 
     static constexpr size_t max_data_struct_size = size_t { 8 } << 30;
+
+    template<size_t SZ>
+    using static_byte_vector_base_t = boost::container::static_vector<uint8_t, SZ>;
+
+    template<size_t SZ>
+    struct static_byte_vector_t: static_byte_vector_base_t<SZ> {
+        using base_type = static_byte_vector_base_t<SZ>;
+        using base_type::base_type;
+
+        static_byte_vector_t(const buffer buf): base_type{_size_ok(buf)}
+        {}
+
+        operator buffer() const {
+            return {this->data(), this->size()};
+        }
+    private:
+        static base_type _size_ok(const buffer buf) {
+            if (buf.size() > SZ) [[unlikely]]
+                throw error(fmt::format("buffer size is too big for a {}-byte static_byte_vector: {}!", SZ, buf.size()));
+            return {buf.begin(), buf.end()};
+        }
+    };
 
     auto decode_versioned(cbor::zero2::value &v, auto proc)
     {
@@ -211,6 +235,10 @@ namespace turbo::cardano {
     M map_from_cbor(cbor::zero2::value &v)
     {
         M res {};
+        if constexpr (requires { res.reserve(size_t {}); }) {
+            if (!v.indefinite()) [[likely]]
+                res.reserve(v.special_uint());
+        }
         auto &it = v.map();
         while (!it.done()) {
             auto &key = it.read_key();
@@ -307,18 +335,14 @@ namespace turbo::cardano {
         pool_hash delegate {};
         vrf_vkey vrf {};
 
-        static shelley_delegate from_cbor(cbor::zero2::value &v)
-        {
-            auto &it = v.array();
-            return { it.read().bytes(), it.read().bytes() };
-        }
+        static shelley_delegate from_cbor(cbor::zero2::value &);
 
         bool operator==(const shelley_delegate &o) const
         {
             return delegate == o.delegate && vrf == o.vrf;
         }
     };
-    using shelley_delegate_map = std::map<key_hash, shelley_delegate>;
+    using shelley_delegate_map = flat_map<key_hash, shelley_delegate>;
 
     struct config;
 
@@ -721,22 +745,7 @@ namespace turbo::cardano {
         throw error(fmt::format("unsupported script type: {}", s));
     }
 
-    inline script_type script_type_from_cbor(cbor::zero2::value &v)
-    {
-        switch (const auto s_typ = v.uint(); s_typ) {
-            case 0: return script_type::native;
-            case 1: return script_type::plutus_v1;
-            case 2: return script_type::plutus_v2;
-            case 3: return script_type::plutus_v3;
-            default: throw error(fmt::format("unsupported script_type: {}", s_typ));
-        }
-    }
-
     struct script_info {
-        static script_info from_cbor(const script_type typ, cbor::zero2::value &);
-        static script_info from_cbor(cbor::zero2::value &);
-        static script_info from_cbor(buffer bytes);
-
         static constexpr auto serialize(auto &archive, auto &self)
         {
             return archive(self._data, self._hash);
@@ -746,27 +755,10 @@ namespace turbo::cardano {
         {
         }
 
-        script_info(script_info &&o): _data { std::move(o._data) }
-        {
-        }
-
-        script_info(const script_info &o): script_info { o.type(), o.script() }
-        {
-        }
-
-        script_info &operator=(script_info &&o)
-        {
-            _data = std::move(o._data);
-            _hash = o._hash;
-            return *this;
-        }
-
-        script_info &operator=(const script_info &o)
-        {
-            _hash = o._hash;
-            _data = o._data;
-            return *this;
-        }
+        script_info(script_info &&) =default;
+        script_info(const script_info &) =default;
+        script_info &operator=(script_info &&) =default;
+        script_info &operator=(const script_info &) =default;
 
         void to_cbor(era_encoder &) const;
 
@@ -802,9 +794,9 @@ namespace turbo::cardano {
 
         static uint8_vector _canonical(const script_type type, const buffer script)
         {
-            uint8_vector bytes {};
-            bytes.reserve(script.size() + 1);
-            bytes << static_cast<uint8_t>(type) << script;
+            uint8_vector bytes(script.size() + 1);
+            bytes.front() = static_cast<uint8_t>(type);
+            std::copy(script.begin(), script.end(), bytes.begin() + 1);
             return bytes;
         }
 
@@ -815,7 +807,7 @@ namespace turbo::cardano {
         uint8_vector _data;
         mutable std::optional<script_hash> _hash {};
     };
-    using script_info_map = std::map<script_hash, script_info>;
+    using script_info_map = flat_map<script_hash, script_info>;
 
     struct byron_addr {
         static byron_addr from_bytes(buffer);
@@ -1188,7 +1180,8 @@ namespace turbo::cardano {
             } else {
                 const bech32 addr_bech32(addr_sv);
                 resize(addr_bech32.size());
-                memcpy(data(), addr_bech32.data(), addr_bech32.size());
+                if (addr_bech32.size() != 0)
+                    memcpy(data(), addr_bech32.data(), addr_bech32.size());
             }
         }
     };
@@ -1254,10 +1247,7 @@ namespace turbo::cardano {
     struct amount {
         uint64_t coins { 0 };
 
-        static amount from_cbor(cbor::zero2::value &v)
-        {
-            return { v.uint() };
-        }
+        static amount from_cbor(cbor::zero2::value &);
 
         operator uint64_t() const
         {
@@ -1312,11 +1302,7 @@ namespace turbo::cardano {
         tx_hash hash {};
         tx_out_idx idx {};
 
-        static tx_out_ref from_cbor(cbor::zero2::value &v)
-        {
-            auto &it = v.array();
-            return { it.read().bytes(), it.read().uint() };
-        }
+        static tx_out_ref from_cbor(cbor::zero2::value &);
 
         std::strong_ordering operator<=>(const auto &o) const
         {
@@ -1406,9 +1392,6 @@ namespace turbo::cardano {
         }
 
         inline json::object to_json() const;
-    private:
-        static tx_out_data from_shelley_cbor(cbor::zero2::value &);
-        static tx_out_data from_babbage_cbor(cbor::zero2::value &);
     };
     using tx_output = tx_out_data;
     using tx_output_list = vector_t<tx_output>;
@@ -1474,6 +1457,7 @@ namespace turbo::cardano {
                     return 6;
                 case 9:
                 case 10:
+                case 11:
                     return 7;
                 default: throw error(fmt::format("unsupported protocol major version: {}", major));
             }
@@ -1485,7 +1469,7 @@ namespace turbo::cardano {
     struct plutus_cost_model {
         using storage_type = static_map<std::string, int64_t>;
         using raw_value_type = std::vector<int64_t>;
-        using diff_type = std::map<std::string, std::pair<std::optional<int64_t>, std::optional<int64_t>>>;
+        using diff_type = flat_map<std::string, std::pair<std::optional<int64_t>, std::optional<int64_t>>>;
 
         plutus_cost_model(): plutus_cost_model(raw_value_type {}) {}
         explicit plutus_cost_model(raw_value_type raw_values): plutus_cost_model(std::move(raw_values), {}) {}
@@ -1729,7 +1713,7 @@ namespace turbo::cardano {
         void rehash();
     };
 
-    using signer_set = std::set<key_hash>;
+    using signer_set = flat_set<key_hash>;
 
     struct param_update_t;
 
@@ -1879,7 +1863,7 @@ namespace turbo::cardano {
     };
 
     struct vrf_cert {
-        vrf_result result {};
+        static_byte_vector_t<sizeof(vrf_result)> result {};
         vrf_proof proof {};
 
         static vrf_cert from_cbor(cbor::zero2::value &v);
@@ -1991,7 +1975,7 @@ namespace turbo::cardano {
 
     struct pool_metadata {
         std::string url {};
-        hash_32 hash {};
+        static_byte_vector_t<32> hash {};
 
         static constexpr auto serialize(auto &archive, auto &self)
         {
@@ -2123,23 +2107,15 @@ namespace turbo::cardano {
             return archive(self._epoch);
         }
 
-        static void check(uint64_t epoch)
-        {
-            if (epoch >= (1U << 16))
-                throw error(fmt::format("epoch number is too big: {}!", epoch));
-        }
-
         epoch() =default;
 
-        epoch(uint64_t epoch): _epoch(static_cast<uint16_t>(epoch))
+        epoch(const uint64_t epoch): _epoch(numeric_cast<decltype(_epoch)>(epoch))
         {
-            check(epoch);
         }
 
-        epoch &operator=(uint64_t epoch)
+        epoch &operator=(const uint64_t epoch)
         {
-            check(epoch);
-            _epoch = static_cast<uint16_t>(epoch);
+            _epoch = numeric_cast<decltype(_epoch)>(epoch);
             return *this;
         }
 
@@ -2148,7 +2124,7 @@ namespace turbo::cardano {
             return _epoch;
         }
     private:
-        uint16_t _epoch = 0;
+        uint64_t _epoch = 0;
     };
 
     struct parsed_block;
@@ -2688,7 +2664,7 @@ namespace std {
     struct hash<turbo::cardano::tx_out_ref> {
         size_t operator()(const auto &o) const noexcept
         {
-            return *reinterpret_cast<const size_t *>(o.hash.data());
+            return turbo::load_unaligned<size_t>(o.hash.data());
         }
     };
 

@@ -8,21 +8,6 @@
 
 using namespace turbo;
 
-namespace {
-    void touch_pages(uint8_vector &data)
-    {
-        static constexpr size_t page_size = 4096;
-        for (size_t off = 0; off < data.size(); off += page_size) {
-            volatile auto *p = data.data() + off;
-            *p = static_cast<uint8_t>(off);
-        }
-        if (!data.empty()) {
-            volatile auto *p = data.data() + data.size() - 1;
-            *p = static_cast<uint8_t>(data.size());
-        }
-    }
-}
-
 suite turbo_common_memory_suite = [] {
     "turbo::common::memory"_test = [] {
         "my_usage_mb"_test = [] {

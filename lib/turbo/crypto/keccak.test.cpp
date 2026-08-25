@@ -22,4 +22,10 @@ suite crypto_keccak_suite = [] {
             expect(hash == static_cast<buffer>(exp_hash_bin)) << hash;
         }
     };
+    "crypto::keccak unaligned input"_test = [] {
+        uint8_vector storage(257, 0xA5);
+        const buffer aligned { storage.data(), 256 };
+        const buffer unaligned { storage.data() + 1, 256 };
+        expect_equal(keccak::digest(unaligned), keccak::digest(aligned));
+    };
 };

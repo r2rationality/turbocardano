@@ -8,16 +8,33 @@
 #include <turbo/plutus/machine.hpp>
 
 namespace turbo::cardano::alonzo {
+    tx::tx(const cardano::block_base &blk, const uint64_t blk_off, cbor::zero2::value &tx_raw, const size_t idx, const bool invalid):
+        tx_base { blk, blk_off, idx, invalid },
+        _body { transaction_body_t::from_cbor(tx_raw) }
+    {
+    }
+
+    void tx_base::parse_witnesses(cbor::zero2::value &v)
+    {
+        auto decoded = transaction_witness_set_t::from_cbor(v);
+        _wits = std::move(decoded.items);
+        _redeemers = std::move(decoded.redeemers.items);
+        _redeemers_raw = decoded.redeemers.raw;
+        _wits_raw = decoded.raw;
+    }
+
+    const tx_redeemer_map *tx_base::redeemer_items() const
+    {
+        return &_redeemers;
+    }
+
+    buffer tx_base::redeemer_bytes() const
+    {
+        return _redeemers_raw;
+    }
+
     using namespace turbo::plutus;
 
-    signer_set tx_base::parse_signers(cbor::zero2::value &v)
-    {
-        signer_set s {};
-        foreach_set(v, [&](auto &sv) {
-            s.emplace_hint(s.end(), sv.bytes());
-        });
-        return s;
-    }
 
     void tx_base::foreach_collateral(const input_observer_t &observer) const
     {
@@ -31,130 +48,72 @@ namespace turbo::cardano::alonzo {
             observer(s);
     }
 
-    void tx_base::parse_redeemers(cbor::zero2::value &v)
-    {
-        if (!v.indefinite()) [[likely]]
-            _wits.reserve(_wits.size() + v.special_uint());
-        auto &it = v.array();
-        while (!it.done()) {
-            _wits.emplace_back(tx_redeemer::from_cbor(it));
-        }
-    }
-
-    void tx_base::parse_witnesses(cbor::zero2::value &v)
-    {
-        auto &it = v.map();
-        while (!it.done()) {
-            auto &key = it.read_key();
-            const auto typ = key.uint();
-            auto &val = it.read_val(std::move(key));
-            switch (typ) {
-                case 0: parse_witnesses_type<tx_wit_shelley_vkey>(val); break;
-                case 1: parse_witnesses_script(script_type::native, val); break;
-                case 2: parse_witnesses_type<tx_wit_shelley_bootstrap>(val); break;
-                case 3: parse_witnesses_script(script_type::plutus_v1, val); break;
-                case 4: parse_witnesses_type<tx_wit_datum>(val); break;
-                case 5: parse_redeemers(val); break;
-                default: throw error(fmt::format("unsupported shelley::tx witness type: {}", typ));
-            }
-        }
-        _wits_raw = v.data_raw();
-    }
-
-    tx::tx(const cardano::block_base &blk, const uint64_t blk_off, cbor::zero2::value &tx_raw, const size_t idx, const bool invalid):
-        tx_base { blk, blk_off, idx, invalid }
-    {
-        auto &it = tx_raw.map();
-        while (!it.done()) {
-            auto &mk = it.read_key();
-            const auto typ = mk.uint();
-            auto &mv = it.read_val(std::move(mk));
-            switch (typ) {
-                case 0: _inputs = parse_inputs(mv); break;
-                case 1: _outputs = parse_outputs(mv); break;
-                case 2: _fee = mv.uint(); break;
-                case 3: _validity_end.emplace(mv.uint()); break;
-                case 4: _certs = parse_certs(mv); break;
-                case 5: _withdrawals = parse_withdrawals(mv); break;
-                case 6: _updates = parse_updates(mv); break;
-                case 7: break; // metadata_hash
-                case 8: _validity_start.emplace(mv.uint()); break;
-                case 9: _mints = parse_mints(mv); break;
-                case 11: break; // script_data_hash
-                case 13: _collateral_inputs = parse_inputs(mv); break;
-                case 14: _required_signers = parse_signers(mv); break;
-                case 15: break; // network_id
-                default: throw error(fmt::format("unsupported tx element type: {}", typ));
-            }
-        }
-        _raw = tx_raw.data_raw();
-    }
 
     const cert_list &tx::certs() const
     {
-        return _certs;
+        return _body.certs;
     }
 
     const input_set &tx::collateral_inputs() const
     {
-        return _collateral_inputs;
+        return _body.collateral_inputs;
     }
 
     uint64_t tx::fee() const
     {
-        return _fee;
+        return _body.fee;
     }
 
     const tx_hash &tx::hash() const
     {
-        if (!_hash)
-            _hash.emplace(crypto::blake2b::digest<tx_hash>(_raw));
-        return *_hash;
+        if (!_body.hash)
+            _body.hash.emplace(crypto::blake2b::digest<tx_hash>(_body.raw));
+        return *_body.hash;
     }
 
     const input_set &tx::inputs() const
     {
-        return _inputs;
+        return _body.inputs;
     }
 
     const multi_mint_map &tx::mints() const
     {
-        return _mints;
+        return _body.mints;
     }
 
     const param_update_proposal_list &tx::updates() const
     {
-        return _updates;
+        return _body.updates;
     }
 
     const tx_output_list &tx::outputs() const
     {
-        return _outputs;
+        return _body.outputs;
     }
 
     buffer tx::raw() const
     {
-        return _raw;
+        return _body.raw;
     }
 
     const signer_set &tx::required_signers() const
     {
-        return _required_signers;
+        return _body.required_signers;
     }
 
     std::optional<uint64_t> tx::validity_start() const
     {
-        return _validity_start;
+        return _body.validity_start;
     }
 
     std::optional<uint64_t> tx::validity_end() const
     {
-        return _validity_end;
+        return _body.validity_end;
     }
 
     const withdrawal_map &tx::withdrawals() const
     {
-        return _withdrawals;
+        return _body.withdrawals;
     }
 
     block_hash block_base::compute_body_hash(const buffer &txs_raw, const buffer &wits_raw, const buffer &meta_raw, const buffer &invalid_raw)
@@ -166,24 +125,6 @@ namespace turbo::cardano::alonzo {
             crypto::blake2b::digest<block_hash>(invalid_raw),
         };
         return crypto::blake2b::digest<block_hash>(buffer { reinterpret_cast<const uint8_t *>(part_hashes.data()), sizeof(part_hashes) });
-    }
-
-    block::block(const uint64_t era, const uint64_t offset, const uint64_t hdr_offset, cbor::zero2::value &blk, const cardano::config &cfg):
-        block { era, offset, hdr_offset, blk.array(), blk, cfg }
-    {
-    }
-
-    block::block(const uint64_t era, const uint64_t offset, const uint64_t hdr_offset, cbor::zero2::array_reader &it, cbor::zero2::value &blk, const cardano::config &cfg):
-        block_base { offset, hdr_offset },
-        _hdr { era, it.read(), cfg },
-        _txs { parse_txs<tx>(*this, blk.data_begin(), it) },
-        _meta { it.read() },
-        _invalid_txs { it.read() },
-        _raw { blk.data_raw() }
-    {
-        for (const auto tx_idx: _invalid_txs) {
-            mark_invalid_tx(tx_idx);
-        }
     }
 
     uint32_t block::body_size() const

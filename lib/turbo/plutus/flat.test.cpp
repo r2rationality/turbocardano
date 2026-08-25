@@ -189,7 +189,7 @@ suite turbo_plutus_flat_suite = [] {
                       [](const auto &a, const auto &b) {
                           if (a.cbor.size() != b.cbor.size())
                               return a.cbor.size() < b.cbor.size();
-                          return memcmp(a.cbor.data(), b.cbor.data(), a.cbor.size()) < 0;
+                          return !a.cbor.empty() && memcmp(a.cbor.data(), b.cbor.data(), a.cbor.size()) < 0;
                       }
             );
             for (const auto &[path, cbor]: scripts) {

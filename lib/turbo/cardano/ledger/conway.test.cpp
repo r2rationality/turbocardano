@@ -28,6 +28,51 @@ namespace {
         {
             return _enact_state.constitution.policy_id;
         }
+
+        void populate_pool_vrf_key_hashes()
+        {
+            _populate_pool_vrf_key_hashes();
+        }
+
+        uint64_t pool_vrf_key_occurrences(const vrf_vkey &vrf) const
+        {
+            if (const auto it = _pool_vrf_key_hashes.find(vrf); it != _pool_vrf_key_hashes.end())
+                return it->second;
+            return 0;
+        }
+
+        void process_tx_prelude(
+            const index::timed_update::conway_tx_prelude &prelude,
+            const cert_loc_t &loc)
+        {
+            _process_tx_prelude(prelude, loc);
+        }
+
+        void prepare_redelegated_reward(
+            const stake_ident &stake_id,
+            const pool_hash &reward_time_pool,
+            const pool_hash &boundary_pool,
+            const uint64_t stake,
+            const uint64_t reward)
+        {
+            _active_pool_params.try_emplace(reward_time_pool);
+            _active_pool_params.try_emplace(boundary_pool);
+            _active_pool_dist.create(reward_time_pool);
+            _active_pool_dist.create(boundary_pool);
+            _active_pool_dist.add(boundary_pool, stake);
+            _active_inv_delegs[boundary_pool].emplace(stake_id);
+
+            auto &account = _accounts[stake_id];
+            account.stake = stake;
+            account.ptr.emplace(0, 0, 0);
+            account.deleg = boundary_pool;
+
+            _potential_rewards[stake_id].emplace(
+                ledger::reward_type::member,
+                reward_time_pool,
+                reward,
+                reward_time_pool);
+        }
     };
 }
 
@@ -38,6 +83,7 @@ suite cardano_ledger_conway_suite = [] {
         std::vector<item> updates {
             { cert_loc_t { 10, 2, 0 }, cardano::conway::vote_info_t {} },
             { cert_loc_t { 10, 2, 0 }, turbo::index::timed_update::stake_withdraw {} },
+            { cert_loc_t { 10, 2, 0 }, turbo::index::timed_update::conway_tx_prelude {} },
             { cert_loc_t { 10, 2, 24 }, proposal_t {} },
             { cert_loc_t { 10, 2, 1 }, reg_cert {} },
             { cert_loc_t { 10, 2, 23 }, proposal_t {} },
@@ -45,20 +91,71 @@ suite cardano_ledger_conway_suite = [] {
         };
         std::sort(updates.begin(), updates.end());
         expect_equal(0, updates[0].loc.cert_idx);
-        expect(std::holds_alternative<turbo::index::timed_update::stake_withdraw>(updates[0].update));
+        expect(std::holds_alternative<turbo::index::timed_update::conway_tx_prelude>(updates[0].update));
         expect_equal(0, updates[1].loc.cert_idx);
-        expect(std::holds_alternative<reg_drep_cert>(updates[1].update));
-        expect_equal(1, updates[2].loc.cert_idx);
-        expect(std::holds_alternative<reg_cert>(updates[2].update));
-        expect_equal(23, updates[3].loc.cert_idx);
-        expect(std::holds_alternative<proposal_t>(updates[3].update));
-        expect_equal(24, updates[4].loc.cert_idx);
+        expect(std::holds_alternative<turbo::index::timed_update::stake_withdraw>(updates[1].update));
+        expect_equal(0, updates[2].loc.cert_idx);
+        expect(std::holds_alternative<reg_drep_cert>(updates[2].update));
+        expect_equal(1, updates[3].loc.cert_idx);
+        expect(std::holds_alternative<reg_cert>(updates[3].update));
+        expect_equal(23, updates[4].loc.cert_idx);
         expect(std::holds_alternative<proposal_t>(updates[4].update));
-        expect_equal(0, updates[5].loc.cert_idx);
-        expect(std::holds_alternative<cardano::conway::vote_info_t>(updates[5].update));
+        expect_equal(24, updates[5].loc.cert_idx);
+        expect(std::holds_alternative<proposal_t>(updates[5].update));
+        expect_equal(0, updates[6].loc.cert_idx);
+        expect(std::holds_alternative<cardano::conway::vote_info_t>(updates[6].update));
     };
     "cardano::ledger::conway::state"_test = [] {
         const credential_t id0 { crypto::blake2b::digest<key_hash>(std::string_view { "0" }), false };
+        "protocol version 11 remains in Conway"_test = [] {
+            expect_equal(7, protocol_version { 11, 0 }.era());
+        };
+        "protocol version 11 rejects duplicate pool VRF keys"_test = [] {
+            test_state st {};
+            st.protocol_ver({ 11, 0 });
+            const auto pool_a = crypto::blake2b::digest<pool_hash>(std::string_view { "pool-a" });
+            const auto pool_b = crypto::blake2b::digest<pool_hash>(std::string_view { "pool-b" });
+            pool_params params {};
+            params.vrf_vkey = crypto::blake2b::digest<vrf_vkey>(std::string_view { "shared-vrf" });
+            expect(nothrow([&] { st.register_pool({ pool_a, params }); }));
+            expect(throws([&] { st.register_pool({ pool_b, params }); }));
+            expect_equal(1, st.pool_vrf_key_occurrences(params.vrf_vkey));
+            expect(nothrow([&] { st.register_pool({ pool_a, params }); }));
+            expect_equal(2, st.pool_vrf_key_occurrences(params.vrf_vkey));
+            expect(nothrow([&] { st.register_pool({ pool_a, params }); }));
+            expect_equal(2, st.pool_vrf_key_occurrences(params.vrf_vkey));
+            const auto original_vrf = params.vrf_vkey;
+            params.vrf_vkey = crypto::blake2b::digest<vrf_vkey>(std::string_view { "replacement-vrf" });
+            expect(nothrow([&] { st.register_pool({ pool_a, params }); }));
+            expect_equal(1, st.pool_vrf_key_occurrences(original_vrf));
+            expect_equal(1, st.pool_vrf_key_occurrences(params.vrf_vkey));
+        };
+        "protocol version 11 migration counts existing pool VRF keys"_test = [] {
+            test_state st {};
+            st.protocol_ver({ 10, 0 });
+            const auto pool_a = crypto::blake2b::digest<pool_hash>(std::string_view { "pool-a" });
+            const auto pool_b = crypto::blake2b::digest<pool_hash>(std::string_view { "pool-b" });
+            pool_params params {};
+            params.vrf_vkey = crypto::blake2b::digest<vrf_vkey>(std::string_view { "shared-vrf" });
+            st.register_pool({ pool_a, params });
+            st.register_pool({ pool_b, params });
+            st.populate_pool_vrf_key_hashes();
+            expect_equal(2, st.pool_vrf_key_occurrences(params.vrf_vkey));
+        };
+        "protocol version 11 updates dormant DReps in the transaction prelude"_test = [&] {
+            const auto &cfg = cardano::config::get();
+            test_state st {};
+            st.protocol_ver({ 11, 0 });
+            st.process_cert(reg_drep_cert { id0, st.params().drep_deposit }, cert_loc_t { 0, 0, 0 });
+            st.start_epoch({ 1 });
+            expect_equal(1, st.num_dormant_epochs());
+            expect_equal(20, st.drep_state().at(id0).expire_epoch);
+            st.process_tx_prelude(
+                index::timed_update::conway_tx_prelude { .has_proposals=true },
+                cert_loc_t { slot::from_epoch(1, cfg), 0, 0 });
+            expect_equal(0, st.num_dormant_epochs());
+            expect_equal(21, st.drep_state().at(id0).expire_epoch);
+        };
         "babbage transition starts with first conway epoch dormant"_test = [] {
             auto &cfg = cardano::config::get();
             auto &sched = scheduler::get();
@@ -67,6 +164,22 @@ suite cardano_ledger_conway_suite = [] {
             ledger::babbage::state babbage_st { std::move(alonzo_st) };
             ledger::conway::state st { std::move(babbage_st) };
             expect_equal(1, st.num_dormant_epochs());
+        };
+        "rewards follow the delegation at the epoch boundary"_test = [] {
+            test_state st {};
+            const stake_ident stake_id {
+                crypto::blake2b::digest<key_hash>(std::string_view { "stake" }),
+                false
+            };
+            const auto reward_time_pool = crypto::blake2b::digest<pool_hash>(std::string_view { "old-pool" });
+            const auto boundary_pool = crypto::blake2b::digest<pool_hash>(std::string_view { "new-pool" });
+            st.prepare_redelegated_reward(stake_id, reward_time_pool, boundary_pool, 100, 45);
+
+            st.start_epoch({ 1 });
+
+            const auto &pool_power = st.pulser_data().pool_voting_power;
+            expect_equal(0, pool_power.get(reward_time_pool));
+            expect_equal(145, pool_power.get(boundary_pool));
         };
         "proposal resets dormant epochs and extends active dreps"_test = [&] {
             const auto &cfg = cardano::config::get();

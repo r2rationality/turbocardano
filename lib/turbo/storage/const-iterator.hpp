@@ -6,6 +6,7 @@
 
 #include <turbo/chunk-registry-fwd.hpp>
 #include <turbo/storage/chunk-info.hpp>
+#include <tuple>
 
 namespace turbo::cardano {
     struct parsed_header;
@@ -56,7 +57,7 @@ namespace turbo::storage {
         bool is_ebb() const;
         cardano::parsed_header header() const;
         uint8_vector block_data() const;
-        std::pair<uint8_vector, const_iterator> chunk_remaining_data(const_iterator last_it) const;
+        std::tuple<uint8_vector, const_iterator, int32_t> chunk_remaining_data(const_iterator last_it) const;
 
         const_iterator &operator--();
         const_iterator &operator++();

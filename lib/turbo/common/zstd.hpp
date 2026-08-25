@@ -10,6 +10,7 @@ extern "C" {
 
 namespace turbo::zstd {
     static constexpr size_t max_zstd_buffer = static_cast<size_t>(1) << 28;
+    static constexpr int default_compression_level = 22;
 
     struct compress_context {
         explicit compress_context(): _ctx { ZSTD_createCCtx() }
@@ -72,7 +73,7 @@ namespace turbo::zstd {
         ZSTD_DCtx* _ctx;
     };
 
-    inline void compress(uint8_vector &compressed, const buffer &orig, const int level=22, const size_t max_buffer=max_zstd_buffer)
+    inline void compress(uint8_vector &compressed, const buffer &orig, const int level=default_compression_level, const size_t max_buffer=max_zstd_buffer)
     {
         if (orig.size() > max_buffer)
             throw error(fmt::format("data size {} is greater than the maximum allowed: {}!", orig.size(), max_buffer));
@@ -86,7 +87,7 @@ namespace turbo::zstd {
         compressed.resize(compressed_size);
     }
 
-    inline uint8_vector compress(const buffer &orig, int level=22)
+    inline uint8_vector compress(const buffer &orig, int level=default_compression_level)
     {
         uint8_vector res {};
         compress(res, orig, level);

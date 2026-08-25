@@ -17,6 +17,25 @@ namespace turbo::index::timed_update {
             return archive(self.stake_id, self.amount);
         }
     };
+    struct reward_withdraw {
+        cardano::reward_id_t reward_id {};
+        uint64_t amount = 0;
+
+        static constexpr auto serialize(auto &archive, auto &self)
+        {
+            return archive(self.reward_id, self.amount);
+        }
+    };
+    struct conway_tx_prelude {
+        bool has_proposals = false;
+        std::set<cardano::credential_t> voting_dreps {};
+        std::vector<reward_withdraw> withdrawals {};
+
+        static constexpr auto serialize(auto &archive, auto &self)
+        {
+            return archive(self.has_proposals, self.voting_dreps, self.withdrawals);
+        }
+    };
     struct collected_collateral_input {
         cardano::tx_hash tx_hash {};
         cardano::tx_out_idx txo_idx {};
@@ -59,7 +78,8 @@ namespace turbo::index::timed_update {
         collected_collateral_input,
         collected_collateral_refund,
         cardano::proposal_t,
-        cardano::conway::vote_info_t
+        cardano::conway::vote_info_t,
+        conway_tx_prelude
     >;
     struct item {
         cardano::cert_loc_t loc {};
@@ -88,13 +108,19 @@ namespace turbo::index::timed_update {
         {
             return std::visit<size_t>([](const auto &u) {
                 using T = std::decay_t<decltype(u)>;
-                if constexpr (std::is_same_v<T, stake_withdraw>)
+                // PV11 transaction-level effects, including withdrawals, run
+                // before certificates. The legacy withdrawal remains a
+                // separate update and must also precede certificates; Conway
+                // ignores it at PV11 after applying the prelude instead.
+                if constexpr (std::is_same_v<T, conway_tx_prelude>)
                     return 0;
+                if constexpr (std::is_same_v<T, stake_withdraw>)
+                    return 1;
                 if constexpr (std::is_same_v<T, cardano::proposal_t>)
-                    return 2;
-                if constexpr (std::is_same_v<T, cardano::conway::vote_info_t>)
                     return 3;
-                return 1;
+                if constexpr (std::is_same_v<T, cardano::conway::vote_info_t>)
+                    return 4;
+                return 2;
             }, v);
         }
     };
@@ -106,6 +132,20 @@ namespace turbo::index::timed_update {
         {
             const auto slot = tx.block().slot();
             if (const auto *c_tx = dynamic_cast<const cardano::conway::tx *>(&tx); c_tx) {
+                conway_tx_prelude prelude { .has_proposals=!c_tx->proposals().empty() };
+                for (const auto &v: c_tx->votes()) {
+                    if (v.voter.type == cardano::voter_t::type_t::drep_key
+                            || v.voter.type == cardano::voter_t::type_t::drep_script) {
+                        prelude.voting_dreps.emplace(
+                            v.voter.hash,
+                            v.voter.type == cardano::voter_t::type_t::drep_script);
+                    }
+                }
+                tx.foreach_withdrawal([&](const auto &with) {
+                    prelude.withdrawals.push_back({ cardano::reward_id_t { with.address.bytes() }, with.amount });
+                });
+                if (prelude.has_proposals || !prelude.voting_dreps.empty() || !prelude.withdrawals.empty())
+                    _data.emplace_back(cardano::cert_loc_t { slot, tx.index(), 0 }, std::move(prelude));
                 size_t cert_idx = 0;
                 c_tx->foreach_cert([&](const auto &cert) {
                     std::visit([&](const auto &c) {

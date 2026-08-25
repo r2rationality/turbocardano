@@ -37,12 +37,21 @@ namespace turbo::cardano::network::miniprotocol::blockfetch
     };
 
     struct msg_compressed_blocks_t {
+        // The compressed encodings represent normalized quality classes, not the source's exact Zstandard level.
+        static constexpr uint64_t encoding_raw = 0;
+        static constexpr uint64_t encoding_zstd_fast = 1;
+        static constexpr uint64_t encoding_zstd_max = 2;
+        static constexpr int32_t fast_compression_level = 3;
+        static constexpr int32_t max_encoding_min_compression_level = 21;
+
         uint64_t encoding;
         uint8_vector payload;
 
         static msg_compressed_blocks_t from_cbor(cbor::zero2::array_reader &);
         void to_cbor(cbor::encoder &) const;
         uint8_vector bytes() const;
+        [[nodiscard]] int32_t compression_level() const;
+        [[nodiscard]] static uint64_t encoding_for_compression_level(int32_t);
     };
 
     struct msg_batch_done_t {

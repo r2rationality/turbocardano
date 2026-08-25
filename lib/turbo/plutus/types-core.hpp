@@ -492,7 +492,8 @@ namespace turbo::plutus {
             value_type(allocator &alloc, const buffer b):
                 std::pmr::vector<uint8_t>(b.size(), alloc.resource())
             {
-                memcpy(data(), b.data(), b.size());
+                if (!b.empty())
+                    memcpy(data(), b.data(), b.size());
             }
 
             value_type(allocator &alloc, const size_t sz): std::pmr::vector<uint8_t>(sz, alloc.resource())
@@ -502,12 +503,15 @@ namespace turbo::plutus {
             value_type &operator=(const buffer &buf)
             {
                 resize(buf.size());
-                memcpy(data(), buf.data(), buf.size());
+                if (!buf.empty())
+                    memcpy(data(), buf.data(), buf.size());
                 return *this;
             }
 
             value_type &operator<<(const buffer buf)
             {
+                if (buf.empty())
+                    return *this;
                 size_t end_off = size();
                 resize(end_off + buf.size());
                 memcpy(data() + end_off, buf.data(), buf.size());
@@ -833,7 +837,7 @@ namespace turbo::plutus {
     };
 
     struct asset_value {
-        using key_type = std::vector<uint8_t>;
+        using key_type = uint8_vector;
         using quantity_type = cpp_int;
         using inner_type = std::map<key_type, quantity_type>;
         using map_type = std::map<key_type, inner_type>;

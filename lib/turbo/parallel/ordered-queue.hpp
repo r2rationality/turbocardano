@@ -35,7 +35,9 @@ namespace turbo::parallel {
         {
             for (;;) {
                 index_type exp_idx = _next_take.load(std::memory_order_relaxed);
-                if (exp_idx == _next_ordered.load(std::memory_order_relaxed))
+                // Pair with put()'s release store so that receiving an index also
+                // publishes the corresponding externally stored item.
+                if (exp_idx == _next_ordered.load(std::memory_order_acquire))
                     return {};
                 if (_next_take.compare_exchange_strong(exp_idx, exp_idx + 1, std::memory_order_acq_rel, std::memory_order_relaxed))
                     return exp_idx;

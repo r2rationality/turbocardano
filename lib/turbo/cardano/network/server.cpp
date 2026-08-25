@@ -17,6 +17,8 @@
 #include <boost/asio/experimental/awaitable_operators.hpp>
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/ip/tcp.hpp>
+#include <boost/asio/read.hpp>
+#include <boost/asio/write.hpp>
 #include <boost/asio/use_future.hpp>
 #include <boost/asio/use_awaitable.hpp>
 #ifdef DT_CLEAR_BOOST_DEPRECATED_HEADERS
@@ -66,10 +68,10 @@ namespace turbo::cardano::network {
 
             static void process_transfer_result(const std::string_view op_name, const std::error_code ec, const size_t transferred, const size_t expected, const op_observer_ptr observer)
             {
-                if (transferred != expected) [[unlikely]]
-                    observer->failed(fmt::format("asio::{}: completed only {} bytes while expected {}", op_name, transferred, expected));
                 if (ec) [[unlikely]]
                     observer->failed(fmt::format("asio::{} error: {}", op_name, ec.message()));
+                else if (transferred != expected) [[unlikely]]
+                    observer->failed(fmt::format("asio::{}: completed only {} bytes while expected {}", op_name, transferred, expected));
                 else
                     observer->done();
             }
@@ -81,14 +83,14 @@ namespace turbo::cardano::network {
 
             void async_read(const write_buffer buf, op_observer_ptr observer) override
             {
-                _conn.async_read_some(boost::asio::mutable_buffer { buf.data(), buf.size() }, [observer, buf](const auto &ec, const size_t transferred) {
+                boost::asio::async_read(_conn, boost::asio::mutable_buffer { buf.data(), buf.size() }, [observer, buf](const auto &ec, const size_t transferred) {
                     process_transfer_result("read", ec, transferred, buf.size(), observer);
                 });
             }
 
             void async_write(const buffer buf, op_observer_ptr observer) override
             {
-                _conn.async_write_some(boost::asio::const_buffer { buf.data(), buf.size() }, [buf, observer](const auto &ec, const size_t transferred) {
+                boost::asio::async_write(_conn, boost::asio::const_buffer { buf.data(), buf.size() }, [buf, observer](const auto &ec, const size_t transferred) {
                     process_transfer_result("write", ec, transferred, buf.size(), observer);
                 });
             }

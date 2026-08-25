@@ -4,6 +4,7 @@
  * License: https://github.com/r2rationality/turbocardano/blob/main/LICENSE */
 
 #include <turbo/cardano/ledger/state.hpp>
+#include <turbo/common/scheduler.hpp>
 #include <turbo/common/test.hpp>
 
 namespace {
@@ -27,6 +28,16 @@ suite cardano_ledger_state_suite = [] {
             expect(st.epoch() == 0_ull);
             expect(st.end_offset() == 0_ull);
             expect(st.pool_stake_dist().empty());
+            expect(!st.utxos().empty());
+
+            state snapshot_target {
+                cardano::config::get(), scheduler::get(), state::init_mode::empty
+            };
+            expect(snapshot_target.utxos().empty());
+            snapshot_target.clear(state::init_mode::empty);
+            expect(snapshot_target.utxos().empty());
+            snapshot_target.clear();
+            expect(snapshot_target == st);
         };
         "finish_epoch"_test = [] {
             state st {};
@@ -66,7 +77,10 @@ suite cardano_ledger_state_suite = [] {
             st.reserves(10'000'000'000'000'000ULL);
             st.start_epoch();
             st.save_zpp(tmp_state.path());
-            state st2 {};
+            state st2 {
+                cardano::config::get(), scheduler::get(), state::init_mode::empty
+            };
+            expect(st2.utxos().empty());
             st2.load_zpp(tmp_state.path());
             expect(st == st2);
         };
@@ -77,6 +91,25 @@ suite cardano_ledger_state_suite = [] {
             st.start_epoch();
             st.reserves(10'000'000'000'000'000ULL);
             st.start_epoch();
+            st.save_node(tmp_state.path(), cardano::point {});
+            state st2 {};
+            st2.load_node(tmp_state.path());
+            expect(st == st2);
+        };
+        "save_node and load_node pv11"_test = [] {
+            file::tmp tmp_state { "validator-state-node-pv11-test" };
+            state st {};
+            update_params(st, 1, { .protocol_ver=cardano::protocol_version { 11, 0 } });
+            st.start_epoch();
+            cardano::pool_params params {};
+            params.vrf_vkey = cardano::vrf_vkey::from_hex(
+                "000102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F");
+            params.reward_id.at(0) = 0xE0 | cardano::config::get().shelley_network_id;
+            const auto pool_id = cardano::pool_hash::from_hex(
+                "000102030405060708090A0B0C0D0E0F101112131415161718191A1B");
+            st.register_pool({ pool_id, params });
+            params.cost = 1;
+            st.register_pool({ pool_id, params });
             st.save_node(tmp_state.path(), cardano::point {});
             state st2 {};
             st2.load_node(tmp_state.path());

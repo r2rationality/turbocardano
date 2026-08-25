@@ -57,6 +57,9 @@ namespace turbo::cardano::network {
                     p.generator = std::move(generator);
                     if (p.generator->resume()) {
                         p.buffer = p.generator->result();
+                        // Publish the prepared generator and buffer. ready also lets
+                        // exactly one sender claim the next packet.
+                        p.ready.store(true, std::memory_order_release);
                         _available_egress.fetch_add(1, std::memory_order_relaxed);
                         return true;
                     }
@@ -122,6 +125,7 @@ namespace turbo::cardano::network {
         struct protocol_data {
             protocol_observer_ptr observer;
             std::atomic_bool busy { false };
+            std::atomic_bool ready { false };
             std::optional<data_generator_t> generator {};
             // the last item returned from the generator or empty
             uint8_vector buffer {};
@@ -192,8 +196,13 @@ namespace turbo::cardano::network {
                         _data.generator.reset();
                         _data.busy.store(false, std::memory_order_release);
                         _parent._available_egress.fetch_sub(1, std::memory_order_relaxed);
+                        _parent._notify_send_observer(&op_observer_t::done);
+                        return;
                     }
                 }
+                // Publish buffer/generator changes made by this completion before
+                // another process_egress call claims the next packet.
+                _data.ready.store(true, std::memory_order_release);
                 _parent._notify_send_observer(&op_observer_t::done);
             }
         private:
@@ -341,7 +350,9 @@ namespace turbo::cardano::network {
                     _next_protocol = _protocols.begin();
                 const auto &p_id = _next_protocol->first;
                 auto &p_data = _next_protocol->second;
-                if (p_data.busy.load(std::memory_order_acquire)) {
+                bool expected_ready = true;
+                if (p_data.ready.compare_exchange_strong(
+                        expected_ready, false, std::memory_order_acquire, std::memory_order_relaxed)) {
                     // once the buffer is non-empty, the sender owns the resource
                     if (!p_data.buffer.empty() && p_data.packet.empty()) {
                         const auto sz = std::min(_next_protocol->second.buffer.size(), segment_info::max_payload_size);

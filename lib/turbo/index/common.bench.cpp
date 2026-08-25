@@ -52,6 +52,7 @@ suite index_common_bench_suite = [] {
                 while (idx.read(item)) {
                     ++read_items;
                 }
+                ankerl::nanobench::doNotOptimizeAway(read_items);
             }, num_items * sizeof(index_item));
         }
 
@@ -75,6 +76,7 @@ suite index_common_bench_suite = [] {
                         ++read_items;
                     }
                 }
+                ankerl::nanobench::doNotOptimizeAway(read_items);
             }, num_items * num_parts * sizeof(index_item));
         }
 

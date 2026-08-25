@@ -22,6 +22,68 @@ namespace turbo::cardano::alonzo {
         static block_hash compute_body_hash(const buffer &txs_raw, const buffer &wits_raw, const buffer &meta_raw, const buffer &invalid_raw);
     };
 
+    struct required_signers_t: signer_set {
+        using signer_set::signer_set;
+        static required_signers_t from_cbor(cbor::zero2::value &);
+    };
+
+    struct cost_models_t {
+        plutus_cost_models value {};
+
+        static cost_models_t from_cbor(cbor::zero2::value &);
+    };
+
+    struct transaction_output_t {
+        tx_out_data value {};
+
+        static transaction_output_t from_cbor(cbor::zero2::value &);
+    };
+
+    struct transaction_outputs_t {
+        tx_output_list value {};
+
+        static transaction_outputs_t from_cbor(cbor::zero2::value &);
+    };
+
+    struct protocol_param_update_t {
+        param_update value {};
+
+        static protocol_param_update_t from_cbor(cbor::zero2::value &);
+    };
+
+    struct update_t {
+        param_update_proposal_list value {};
+
+        static update_t from_cbor(cbor::zero2::value &);
+    };
+
+    struct transaction_body_t: mary::transaction_body_t {
+        required_signers_t required_signers {};
+        shelley::transaction_inputs_t collateral_inputs {};
+
+        static transaction_body_t from_cbor(cbor::zero2::value &);
+    };
+
+    struct redeemer_t {
+        tx_redeemer value {};
+
+        static redeemer_t from_cbor(cbor::zero2::value &);
+    };
+
+    struct redeemers_t {
+        tx_redeemer_map items {};
+        buffer raw {};
+
+        static redeemers_t from_cbor(cbor::zero2::value &);
+        void add(tx_redeemer &&);
+    };
+
+    struct transaction_witness_set_t: shelley::transaction_witness_set_t {
+        redeemers_t redeemers {};
+
+        static transaction_witness_set_t from_cbor(cbor::zero2::value &);
+    };
+
     struct tx_base: mary::tx_base {
         using mary::tx_base::tx_base;
         virtual const signer_set &required_signers() const =0;
@@ -30,8 +92,11 @@ namespace turbo::cardano::alonzo {
         void foreach_required_signer(const signer_observer_t &observer) const override;
         void parse_witnesses(cbor::zero2::value &) override;
     protected:
-        signer_set parse_signers(cbor::zero2::value &);
-        virtual void parse_redeemers(cbor::zero2::value &v);
+        const tx_redeemer_map *redeemer_items() const override;
+        buffer redeemer_bytes() const override;
+
+        tx_redeemer_map _redeemers {};
+        buffer _redeemers_raw {};
     };
 
     struct tx: tx_base {
@@ -50,19 +115,12 @@ namespace turbo::cardano::alonzo {
         const signer_set &required_signers() const override;
         const input_set &collateral_inputs() const override;
     private:
-        input_set _inputs {};
-        tx_output_list _outputs {};
-        uint64_t _fee;
-        std::optional<uint64_t> _validity_end;
-        cert_list _certs {};
-        withdrawal_map _withdrawals {};
-        param_update_proposal_list _updates {};
-        std::optional<uint64_t> _validity_start {};
-        multi_mint_map _mints {};
-        signer_set _required_signers {};
-        input_set _collateral_inputs {};
-        buffer _raw;
-        mutable std::optional<tx_hash> _hash {};
+        transaction_body_t _body;
+    };
+
+    struct block_transactions_t: block_tx_list<tx> {
+        using block_tx_list<tx>::block_tx_list;
+        static block_transactions_t from_cbor(const block_base &, const uint8_t *block_begin, cbor::zero2::array_reader &);
     };
 
     struct block: block_base {
@@ -74,7 +132,7 @@ namespace turbo::cardano::alonzo {
         const invalid_tx_set &invalid_txs() const override;
     private:
         block_header _hdr;
-        block_tx_list<tx> _txs;
+        block_transactions_t _txs;
         block_meta_map _meta;
         invalid_tx_set _invalid_txs;
         mutable std::optional<block_hash> _body_hash {};

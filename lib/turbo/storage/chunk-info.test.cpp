@@ -14,6 +14,7 @@ suite storage_chunk_info_suite = [] {
             storage::chunk_info chunk {};
             expect(chunk.offset == 0_ull);
             expect(chunk.data_size == 0_ull);
+            expect(chunk.compression_level == 0);
             expect(chunk.data_hash == cardano::block_hash::from_hex("0000000000000000000000000000000000000000000000000000000000000000"));
         };
         "rel_path"_test = [] {

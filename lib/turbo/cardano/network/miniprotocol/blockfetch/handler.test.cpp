@@ -9,6 +9,7 @@
 #include <turbo/chunk-registry.hpp>
 #include <turbo/common/test.hpp>
 #include <turbo/common/variant.hpp>
+#include <turbo/common/zstd.hpp>
 #include "messages.hpp"
 
 namespace {
@@ -37,6 +38,40 @@ namespace {
 suite cardano_network_miniprotocol_blockfetch_suite = [] {
     "cardano::network::miniprotocol::blockfetch"_test = [] {
         const auto cr = std::make_shared<chunk_registry>(install_path("data/chunk-registry"), chunk_registry::mode::store);
+
+        "compressed encoding metadata"_test = [] {
+            using compressed_msg = msg_compressed_blocks_t;
+            expect_equal(compressed_msg::encoding_zstd_fast,
+                compressed_msg::encoding_for_compression_level(0));
+            expect_equal(compressed_msg::encoding_zstd_fast,
+                compressed_msg::encoding_for_compression_level(20));
+            expect_equal(compressed_msg::encoding_zstd_max,
+                compressed_msg::encoding_for_compression_level(21));
+            expect_equal(compressed_msg::encoding_zstd_max,
+                compressed_msg::encoding_for_compression_level(zstd::default_compression_level));
+
+            const uint8_vector raw { 0, 1, 2, 3, 4, 5 };
+            const compressed_msg fast {
+                compressed_msg::encoding_zstd_fast,
+                zstd::compress(raw, compressed_msg::fast_compression_level)
+            };
+            expect_equal(compressed_msg::fast_compression_level, fast.compression_level());
+            expect_equal(raw, fast.bytes());
+
+            const compressed_msg maximum {
+                compressed_msg::encoding_zstd_max,
+                zstd::compress(raw, zstd::default_compression_level)
+            };
+            expect_equal(zstd::default_compression_level, maximum.compression_level());
+            expect_equal(raw, maximum.bytes());
+
+            const auto decoded = decode(encode(maximum));
+            expect(fatal(std::holds_alternative<compressed_msg>(decoded)));
+            const auto &decoded_maximum = dt::variant::get_nice<compressed_msg>(decoded);
+            expect_equal(compressed_msg::encoding_zstd_max, decoded_maximum.encoding);
+            expect_equal(maximum.payload, decoded_maximum.payload);
+            expect_equal(zstd::default_compression_level, decoded_maximum.compression_level());
+        };
 
         "client done"_test = [&] {
             handler h { cr, config_t {} };
@@ -79,6 +114,8 @@ suite cardano_network_miniprotocol_blockfetch_suite = [] {
             expect(std::holds_alternative<msg_compressed_blocks_t>(resp.at(1)));
             expect(std::holds_alternative<msg_batch_done_t>(resp.at(2)));
             const auto &blks = dt::variant::get_nice<msg_compressed_blocks_t>(resp.at(1));
+            expect_equal(msg_compressed_blocks_t::encoding_zstd_fast, blks.encoding);
+            expect_equal(msg_compressed_blocks_t::fast_compression_level, blks.compression_level());
             const auto bytes = blks.bytes();
             cbor::zero2::decoder dec { bytes };
             std::vector<std::unique_ptr<block_container>> blocks {};

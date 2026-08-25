@@ -18,23 +18,11 @@
 namespace turbo::cardano {
     using namespace crypto;
 
-    point2 point2::from_cbor(cbor::zero2::value &v)
-    {
-        auto &it = v.array();
-        return { it.read().uint(), it.read().bytes() };
-    }
-
     void point2::to_cbor(cbor::encoder &enc) const
     {
         enc.array(2);
         enc.uint(slot);
         enc.bytes(hash);
-    }
-
-    point3 point3::from_cbor(cbor::zero2::value &v)
-    {
-        auto &it = v.array();
-        return { point2::from_cbor(it.read()), it.read().uint() };
     }
 
     void point3::to_cbor(cbor::encoder &enc) const
@@ -179,21 +167,9 @@ namespace turbo::cardano {
         return update_desc;
     }
 
-    protocol_version protocol_version::from_cbor(cbor::zero2::value &v)
-    {
-        auto &it = v.array();
-        return { it.read().uint(), it.read().uint() };
-    }
-
     void protocol_version::to_cbor(era_encoder &enc) const
     {
         enc.array(2).uint(major).uint(minor);
-    }
-
-    ex_unit_prices ex_unit_prices::from_cbor(cbor::zero2::value &v)
-    {
-        auto &it = v.array();
-        return { decltype(mem)::from_cbor(it.read()), decltype(steps)::from_cbor(it.read()) };
     }
 
     ex_unit_prices ex_unit_prices::from_json(const json::value &j)
@@ -213,66 +189,9 @@ namespace turbo::cardano {
     {
     }
 
-    inline void parse_single_param_update(param_update &upd, const uint64_t idx, cbor::zero2::value &val)
-    {
-        switch (idx) {
-            case 0: upd.min_fee_a.emplace_cbor(val); break;
-            case 1: upd.min_fee_b.emplace_cbor(val); break;
-            case 2: upd.max_block_body_size.emplace_cbor(val); break;
-            case 3: upd.max_transaction_size.emplace_cbor(val); break;
-            case 4: upd.max_block_header_size.emplace_cbor(val); break;
-            case 5: upd.key_deposit.emplace_cbor(val); break;
-            case 6: upd.pool_deposit.emplace_cbor(val); break;
-            case 7: upd.e_max.emplace_cbor(val); break;
-            case 8: upd.n_opt.emplace_cbor(val); break;
-            case 9: upd.pool_pledge_influence.emplace_cbor(val); break;
-            case 10: upd.expansion_rate.emplace_cbor(val); break;
-            case 11: upd.treasury_growth_rate.emplace_cbor(val); break;
-            case 12: upd.decentralization.emplace_cbor(val); break;
-            case 13: upd.extra_entropy.emplace_cbor(val); break;
-            case 14: upd.protocol_ver.emplace_cbor(val); break;
-            case 15: upd.min_utxo_value.emplace_cbor(val); break;
-            case 16: upd.min_pool_cost.emplace_cbor(val); break;
-            case 17: upd.lovelace_per_utxo_byte.emplace_cbor(val); break;
-            case 18: upd.plutus_cost_models.emplace_cbor(val); break;
-            case 19: upd.ex_unit_prices.emplace_cbor(val); break;
-            case 20: upd.max_tx_ex_units.emplace_cbor(val); break;
-            case 21: upd.max_block_ex_units.emplace_cbor(val); break;
-            case 22: upd.max_value_size.emplace_cbor(val); break;
-            case 23: upd.max_collateral_pct.emplace_cbor(val); break;
-            case 24: upd.max_collateral_inputs.emplace_cbor(val); break;
-            default: throw error(fmt::format("protocol parameter index is out of the expected range for common params: {}", idx));
-        }
-    }
-
-    param_update param_update::from_cbor(cbor::zero2::value &v)
-    {
-        param_update upd {};
-        auto &it = v.map();
-        while (!it.done()) {
-            auto &id = it.read_key();
-            const auto idx = id.uint();
-            parse_single_param_update(upd, idx, it.read_val(std::move(id)));
-        }
-        return upd;
-    }
-
-    stake_pointer stake_pointer::from_cbor(cbor::zero2::value &v)
-    {
-        auto &it = v.array();
-        return { it.read().uint(), it.read().uint(), it.read().uint() };
-    }
-
     void stake_pointer::to_cbor(era_encoder &enc) const
     {
         enc.array(3).uint(slot).uint(tx_idx).uint(cert_idx);
-    }
-
-    credential_t credential_t::from_cbor(cbor::zero2::value &v)
-    {
-        auto &it = v.array();
-        const auto script = it.read().uint() == 1;
-        return { it.read().bytes(), script };
     }
 
     credential_t credential_t::from_json(const std::string_view s)
@@ -298,29 +217,11 @@ namespace turbo::cardano {
         enc.array(2).uint(script ? 1 : 0).bytes(hash);
     }
 
-    pool_metadata pool_metadata::from_cbor(cbor::zero2::value &v)
-    {
-        auto &it = v.array();
-        return { std::string { it.read().text() }, it.read().bytes() };
-    }
-
     void pool_metadata::to_cbor(era_encoder &enc) const
     {
         enc.array(2)
             .text(url)
             .bytes(hash);
-    }
-
-    pool_voting_thresholds_t pool_voting_thresholds_t::from_cbor(cbor::zero2::value &v)
-    {
-        auto &it = v.array();
-        return {
-            decltype(motion_of_no_confidence)::from_cbor(it.read()),
-            decltype(committee_normal)::from_cbor(it.read()),
-            decltype(committee_no_confidence)::from_cbor(it.read()),
-            decltype(hard_fork_initiation)::from_cbor(it.read()),
-            decltype(security_voting_threshold)::from_cbor(it.read()),
-        };
     }
 
     pool_voting_thresholds_t pool_voting_thresholds_t::from_json(const json::value &j)
@@ -342,23 +243,6 @@ namespace turbo::cardano {
         committee_no_confidence.to_cbor(enc);
         hard_fork_initiation.to_cbor(enc);
         security_voting_threshold.to_cbor(enc);
-    }
-
-    drep_voting_thresholds_t drep_voting_thresholds_t::from_cbor(cbor::zero2::value &v)
-    {
-        auto &it = v.array();
-        return {
-            decltype(motion_no_confidence)::from_cbor(it.read()),
-            decltype(committee_normal)::from_cbor(it.read()),
-            decltype(committee_no_confidence)::from_cbor(it.read()),
-            decltype(update_constitution)::from_cbor(it.read()),
-            decltype(hard_fork_initiation)::from_cbor(it.read()),
-            decltype(pp_network_group)::from_cbor(it.read()),
-            decltype(pp_economic_group)::from_cbor(it.read()),
-            decltype(pp_technical_group)::from_cbor(it.read()),
-            decltype(pp_governance_group)::from_cbor(it.read()),
-            decltype(treasury_withdrawal)::from_cbor(it.read()),
-        };
     }
 
     drep_voting_thresholds_t drep_voting_thresholds_t::from_json(const json::value &j)
@@ -483,23 +367,6 @@ namespace turbo::cardano {
             if (datum)
                 enc.bytes(std::get<datum_hash>(datum->val));
         }
-    }
-
-    plutus_cost_model plutus_cost_model::from_cbor(const std::vector<std::string> &names, cbor::zero2::value &v)
-    {
-        plutus_cost_model::raw_value_type raw_values {};
-        if (!v.indefinite())
-            raw_values.reserve(v.special_uint());
-        auto &it = v.array();
-        while (!it.done()) {
-            auto &val = it.read();
-            switch (const auto typ = val.type(); typ) {
-                case cbor::major_type::uint: raw_values.emplace_back(numeric_cast<int64_t>(val.uint())); break;
-                case cbor::major_type::nint: raw_values.emplace_back(-numeric_cast<int64_t>(val.nint())); break;
-                default: throw error(fmt::format("unsupported plutus_cost_model value type: {}", typ));
-            }
-        }
-        return plutus_cost_model { std::move(raw_values), names };
     }
 
     plutus_cost_model plutus_cost_model::from_json(const plutus_cost_model &orig, const json::value &data)
@@ -655,151 +522,6 @@ namespace turbo::cardano {
         crypto::blake2b::digest(hash, zpp::serialize(*this));
     }
 
-    static const std::vector<std::string> &plutus_cost_model_arg_names(const uint64_t id)
-    {
-        static const std::vector<std::string> empty {};
-        switch (id) {
-            case 0: return plutus::costs::cost_arg_names_v1();
-            case 1: return plutus::costs::cost_arg_names_v2();
-            case 2: return plutus::costs::cost_arg_names_v3();
-            default: return empty;
-        }
-    }
-
-    plutus_cost_models plutus_cost_models::from_cbor(cbor::zero2::value &v)
-    {
-        plutus_cost_models res {};
-        if (!v.indefinite())
-            res.items.reserve(v.special_uint());
-        for (auto &it = v.map(); !it.done(); ) {
-            auto &key_v = it.read_key();
-            const auto typ = key_v.uint();
-            auto &val_v = it.read_val(std::move(key_v));
-            res.items.emplace(typ, plutus_cost_model::from_cbor(plutus_cost_model_arg_names(typ), val_v));
-        }
-        return res;
-    }
-
-    datum_option_t datum_option_t::from_cbor(cbor::zero2::value &v)
-    {
-        auto &it = v.array();
-        switch (const auto id = it.read().uint(); id) {
-            case 0: return { datum_hash { it.read().bytes() } };
-            case 1: return { uint8_vector { it.read().tag().read().bytes() } };
-            default: throw error(fmt::format("unsupported datum_option id: {}", id));
-        }
-    }
-
-    output_value_t output_value_t::from_cbor(cbor::zero2::value &v)
-    {
-        switch (const auto typ = v.type(); typ) {
-            case cbor::major_type::uint: return { v.uint() };
-            case cbor::major_type::array: {
-                auto &it = v.array();
-                const auto coin = it.read().uint();
-                auto &assets_v = it.read();
-                auto &a_it = assets_v.map();
-                multi_asset_map assets {};
-                if (!assets_v.indefinite())
-                    assets.reserve(assets_v.special_uint());
-                while (!a_it.done()) {
-                    auto &policy_id_v = a_it.read_key();
-                    const auto policy_id_bytes = policy_id_v.bytes();
-                    auto &p_assets_v = a_it.read_val(std::move(policy_id_v));
-                    auto &p_it = p_assets_v.map();
-                    policy_asset_map p_assets {};
-                    if (!p_assets_v.indefinite())
-                        p_assets.reserve(p_assets_v.special_uint());
-                    while (!p_it.done()) {
-                        auto &name_v = p_it.read_key();
-                        const auto name_bytes = name_v.bytes();
-                        if (const auto asset_coin = p_it.read_val(std::move(name_v)).uint(); asset_coin) [[likely]]
-                            p_assets.emplace_hint(p_assets.end(), name_bytes, asset_coin);
-                    }
-                    if (!p_assets.empty()) [[likely]]
-                        assets.emplace_hint(assets.end(), policy_id_bytes, std::move(p_assets));
-                }
-                return { coin, std::move(assets) };
-            }
-            default: throw error(fmt::format("unsupported output value type: {}", typ));
-        }
-    }
-
-    static uint8_vector addr_bytes_from_cbor(cbor::zero2::value &v)
-    {
-        switch (const auto typ = v.type(); typ) {
-            case cbor::major_type::array: return { v.array().read().tag().read().bytes() };
-            case cbor::major_type::bytes: return { v.bytes() };
-            [[unlikely]] default: throw error(fmt::format("unsupported address CBOR type: {}", typ));
-        }
-    }
-
-    tx_out_data tx_out_data::from_shelley_cbor(cbor::zero2::value &v)
-    {
-        auto &it = v.array();
-        auto addr_bytes = addr_bytes_from_cbor(it.read());
-        auto value = output_value_t::from_cbor(it.read());
-        tx_out_data txo { addr_bytes, value.coin, std::move(value.assets) };
-        if (!it.done())
-            txo.datum.emplace(datum_hash { it.read().bytes() });
-        return txo;
-    }
-
-    tx_out_data tx_out_data::from_babbage_cbor(cbor::zero2::value &v)
-    {
-        auto &it = v.map();
-        std::optional<uint8_vector> addr {};
-        std::optional<output_value_t> value {};
-        std::optional<datum_option_t> datum {};
-        std::optional<script_info> script_ref {};
-        while (!it.done()) {
-            auto &id_v = it.read_key();
-            const auto id = id_v.uint();
-            auto &val = it.read_val(std::move(id_v));
-            switch (id) {
-                case 0: addr.emplace(val.bytes()); break;
-                case 1: value.emplace(output_value_t::from_cbor(val)); break;
-                case 2: datum.emplace(datum_option_t::from_cbor(val)); break;
-                case 3: script_ref.emplace(script_info::from_cbor(val.tag().read().bytes())); break;
-                default: throw error(fmt::format("unsupported tx_output id: {}", id));
-            }
-        }
-        if (!addr) [[unlikely]]
-            throw error(fmt::format("tx_output must contain an address but got: {}", v.to_string()));
-        if (!value) [[unlikely]]
-            throw error(fmt::format("tx_output must contain a value but got: {}", v.to_string()));
-        return { *addr, value->coin, std::move(value->assets), datum, script_ref };
-    }
-
-    tx_out_data tx_out_data::from_cbor(cbor::zero2::value &v)
-    {
-        switch (const auto typ = v.type(); typ) {
-            case cbor::major_type::array: return from_shelley_cbor(v);
-            case cbor::major_type::map: return from_babbage_cbor(v);
-            default: throw error(fmt::format("unsupported cbor type in tx_output: {}", typ));
-        }
-    }
-
-    script_info script_info::from_cbor(const script_type typ, cbor::zero2::value &v)
-    {
-        switch (typ) {
-            case script_type::native: return { typ, v.data_raw() };
-            default: return { typ, v.bytes() };
-        }
-    }
-
-    script_info script_info::from_cbor(cbor::zero2::value &v)
-    {
-        auto &it = v.array();
-        const auto s_typ = script_type_from_cbor(it.read());
-        return from_cbor(s_typ, it.read());
-    }
-
-    script_info script_info::from_cbor(const buffer bytes)
-    {
-        return from_cbor(cbor::zero2::parse(bytes).get());
-    }
-
     void script_info::to_cbor(era_encoder &enc) const
     {
         enc.tag(24);
@@ -817,15 +539,6 @@ namespace turbo::cardano {
         enc.bytes(s_enc.cbor());
     }
 
-    ex_units ex_units::from_cbor(cbor::zero2::value &v)
-    {
-        auto &it = v.array();
-        return {
-            it.read().uint(),
-            it.read().uint()
-        };
-    }
-
     ex_units ex_units::from_json(const json::value &j)
     {
         return {
@@ -839,18 +552,6 @@ namespace turbo::cardano {
         enc.array(2);
         enc.uint(mem);
         enc.uint(steps);
-    }
-
-    drep_t drep_t::from_cbor(cbor::zero2::value &v)
-    {
-        auto &it = v.array();
-        switch (const auto dtyp = it.read().uint(); dtyp) {
-            case 0: return drep_t { credential_t { it.read().bytes(), false } };
-            case 1: return drep_t { credential_t { it.read().bytes(), true } };
-            case 2: return drep_t { abstain_t {} };
-            case 3: return drep_t { no_confidence_t {} };
-            default: throw error(fmt::format("unsupported drep type: {}", dtyp));
-        }
     }
 
     void drep_t::to_cbor(era_encoder &enc) const
@@ -872,12 +573,12 @@ namespace turbo::cardano {
 
     std::tuple<uint8_t, size_t> from_haskell_char(const std::string_view sv)
     {
-        static std::map<uint8_t, uint8_t> one_char_codes {
+        static const flat_map<uint8_t, uint8_t> one_char_codes {
             { '0', 0x00 }, { 'a', 0x07 }, { 'b', 0x08 }, { 'f', 0x0C },
             { 'n', 0x0A }, { 'r', 0x0D }, { 't', 0x09 }, { 'v', 0x0B },
             { '"', 0x22 }, { '\'', 0x27 }, { '\\', 0x5C }
         };
-        static std::map<std::string, uint8_t> multichar_codes {
+        static const flat_map<std::string, uint8_t> multichar_codes {
             { "BS"s, 0x08 }, { "HT"s, 0x09 }, { "LF"s, 0x0A }, { "VT"s, 0x0B },
             { "FF"s, 0x0C }, { "CR"s, 0x0D }, { "SO"s, 0x0E }, { "SI"s, 0x0F },
             { "EM"s, 0x19 }, { "FS"s, 0x1C }, { "GS"s, 0x1D }, { "RS"s, 0x1E },
@@ -976,31 +677,6 @@ namespace turbo::cardano {
         return root_hash == root() && 0 == type();
     }
 
-    vrf_cert vrf_cert::from_cbor(cbor::zero2::value &v)
-    {
-        auto &it = v.array();
-        return {
-            it.read().bytes(),
-            it.read().bytes(),
-        };
-    }
-
-    operational_cert operational_cert::from_cbor(cbor::zero2::value &v)
-    {
-        auto &it = v.array();
-        return {
-            it.read().bytes(),
-            it.read().uint(),
-            it.read().uint(),
-            it.read().bytes(),
-        };
-    }
-
-    relay_addr relay_addr::from_cbor(cbor::zero2::array_reader &it)
-    {
-        return { decltype(port)::from_cbor(it.read()), decltype(ipv4)::from_cbor(it.read()), decltype(ipv6)::from_cbor(it.read()) };
-    }
-
     void relay_addr::to_cbor(era_encoder &enc) const
     {
         enc.array(4);
@@ -1008,11 +684,6 @@ namespace turbo::cardano {
         port.to_cbor(enc);
         ipv4.to_cbor(enc);
         ipv6.to_cbor(enc);
-    }
-
-    relay_host relay_host::from_cbor(cbor::zero2::array_reader &it)
-    {
-        return { decltype(port)::from_cbor(it.read()), std::string { it.read().text() } };
     }
 
     void relay_host::to_cbor(era_encoder &enc) const
@@ -1023,27 +694,11 @@ namespace turbo::cardano {
         enc.text(host);
     }
 
-    relay_dns relay_dns::from_cbor(cbor::zero2::array_reader &it)
-    {
-        return { std::string { it.read().text() } };
-    }
-
     void relay_dns::to_cbor(era_encoder &enc) const
     {
         enc.array(2);
         enc.uint(2);
         enc.text(name);
-    }
-
-    relay_info relay_info::from_cbor(cbor::zero2::value &v)
-    {
-        auto &it = v.array();
-        switch (const auto typ = it.read().uint(); typ) {
-            case 0: return { relay_addr::from_cbor(it) };
-            case 1: return { relay_host::from_cbor(it) };
-            case 2: return { relay_dns::from_cbor(it) };
-            default: throw error(fmt::format("Unsupported relay address format {}!", typ));
-        }
     }
 
     void relay_info::to_cbor(era_encoder &enc) const
@@ -1058,21 +713,12 @@ namespace turbo::cardano {
         return val == o.val;
     }
 
-    reward_id_t reward_id_t::from_cbor(cbor::zero2::value &v)
-    {
-        return { v.bytes() };
-    }
-
-    stake_keyhash_t stake_keyhash_t::from_cbor(cbor::zero2::value &v)
-    {
-        return { v.bytes() };
-    }
-
     asset_name_t::asset_name_t(const buffer bytes)
     {
         if (bytes.size() > _data.size()) [[unlikely]]
             throw error(fmt::format("asset names must have 32 bytes max but got {}!", bytes.size()));
-        memcpy(_data.data(), bytes.data(), bytes.size());
+        if (!bytes.empty())
+            memcpy(_data.data(), bytes.data(), bytes.size());
         _size = numeric_cast<uint8_t>(bytes.size());
     }
 
@@ -1109,13 +755,6 @@ namespace turbo::cardano {
         const auto slot = it.read().uint();
         const auto height = it.read().uint();
         return { it.read().bytes(), slot, height };
-    }
-
-    point point::from_cbor(cbor::zero2::value &v)
-    {
-        auto &it = v.array();
-        const auto slot = it.read().uint();
-        return { it.read().bytes(), slot, it.read().uint() };
     }
 
     key_hash byron_addr_root_hash(const size_t typ, const buffer vk, const buffer attrs_cbor) {

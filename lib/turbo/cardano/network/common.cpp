@@ -34,7 +34,7 @@ namespace turbo::cardano::network {
             _cfg { cfg },
             _version_cfg { versions },
             _addr { addr },
-            _protocol_magic { json::value_to<uint64_t>(cfg.byron_genesis.at("protocolConsts").at("protocolMagic"))  },
+            _protocol_magic { cfg.byron_protocol_magic },
             _asio_worker { asio_worker }
         {
         }
@@ -241,7 +241,7 @@ namespace turbo::cardano::network {
         }
 
         template<typename T>
-        static boost::asio::awaitable<T> _wait_with_deadline(boost::asio::awaitable<T> action, const std::chrono::seconds deadline=std::chrono::seconds { 5 })
+        static boost::asio::awaitable<T> _wait_with_deadline(boost::asio::awaitable<T> action, const std::chrono::seconds deadline=std::chrono::seconds { 10 })
         {
             using namespace boost::asio::experimental::awaitable_operators;
             auto res = co_await (std::move(action) || _wait_for_timer(deadline));

@@ -92,7 +92,8 @@ namespace turbo::plutus {
             // inputs to be disjoint unconditionally. Haskell performs the
             // script-context check only from protocol version 11, so mirror the
             // node gate here.
-            std::set<tx_out_ref> inputs {};
+            flat_set<tx_out_ref> inputs {};
+            inputs.reserve(ctx.inputs().size());
             for (const auto &in: ctx.inputs())
                 inputs.emplace(in.id);
             for (const auto &in: ctx.ref_inputs()) {
@@ -928,11 +929,12 @@ namespace turbo::plutus {
         data signatories(const tx_base &tx)
         {
             // ensure the sorted order
-            std::set<key_hash> vkeys {};
+            signer_set vkeys {};
             tx.foreach_required_signer([&](const auto &vkey_hash) {
                 vkeys.emplace(vkey_hash);
             });
             data::list_type l { _alloc };
+            l.reserve(vkeys.size());
             for (const auto &vkey : vkeys) {
                 l.emplace_back(encode(vkey));
             }
@@ -971,6 +973,7 @@ namespace turbo::plutus {
         data proposals(const context &ctx)
         {
             data::list_type l { _alloc };
+            l.reserve(ctx.proposals().size());
             for (const auto &p: ctx.proposals()) {
                 l.emplace_back(encode(p));
             }
@@ -980,6 +983,7 @@ namespace turbo::plutus {
         data votes(const context &ctx)
         {
             data::map_type m { _alloc };
+            m.reserve(ctx.votes().size());
             const voter_t *prev_voter = nullptr;
             data::map_type votes_by_action { _alloc };
             const auto flush_voter = [&] {
@@ -1160,14 +1164,9 @@ namespace turbo::plutus {
         _tx_wits_bytes { std::move(tx_wits_data) },
         _block_info { block },
         _protocol_ver { protocol_ver_for_era(block.era) },
-        _tx { block, block.offset + block.header_offset, cbor::zero2::parse(_tx_body_bytes).get(), cbor::zero2::parse(_tx_wits_bytes).get(), 0, _cfg }
+        _tx { _block_info, _block_info.offset + _block_info.header_offset,
+              cbor::zero2::parse(_tx_body_bytes).get(), cbor::zero2::parse(_tx_wits_bytes).get(), 0, _cfg }
     {
-        _tx->foreach_redeemer([&](const auto &r) {
-            const auto [it, created] = _redeemers.try_emplace(redeemer_id { r.tag, r.ref_idx }, r);
-            // There are in fact transactions with duplicate redeemers, such as E8D403D9D2AD5F1CD4D3327F48E34E717B66AC4E4764765BA3A5843758B696E4
-            if (!created)
-                it->second = r;
-        });
     }
 
     context::context(uint8_vector &&tx_body_data, uint8_vector &&tx_wits_data, const storage::block_info &block,
@@ -1181,12 +1180,16 @@ namespace turbo::plutus {
         context { std::move(ctx.body), std::move(ctx.wits), ctx.block,
                   std::move(ctx.inputs), std::move(ctx.ref_inputs), c_cfg }
     {
+        ctx.validate_format();
+        protocol_ver(ctx.protocol_ver);
     }
 
     static stored_tx_context context_load(const std::string &path)
     {
         zpp_stream::read_stream s { path };
-        return s.read<stored_tx_context>();
+        auto ctx = s.read<stored_tx_context>();
+        ctx.validate_format();
+        return ctx;
     }
 
     context::context(const std::string &path, const cardano::config &c_cfg):
@@ -1201,6 +1204,8 @@ namespace turbo::plutus {
             throw error("transaction inputs have already been set");
         _inputs = std::move(inputs_);
         _ref_inputs = std::move(ref_inputs_);
+        _scripts.reserve(_scripts.size() + _tx->witnesses().size());
+        _datums.reserve(_datums.size() + _tx->witnesses().size());
         _tx->foreach_script([&](auto &&s) {
             _scripts.try_emplace(s.hash(), std::move(s));
         }, this);
@@ -1218,7 +1223,8 @@ namespace turbo::plutus {
             throw error("transaction inputs must be set before transaction-context preparation");
 
         const auto &pv = _require_protocol_ver();
-        for (const auto &[id, _]: _redeemers) {
+        _shared.reserve(3);
+        for (const auto &[id, _]: redeemers()) {
             const auto &script = _scripts.at(redeemer_script(id));
             const auto typ = script.type();
             if (_shared.contains(typ))
@@ -1365,12 +1371,12 @@ namespace turbo::plutus {
         return total;
     }
 
-    void context::eval_script(prepared_script &ps) const
+    ex_units context::eval_script(prepared_script &ps) const
     {
         try {
             const auto &pv = _require_protocol_ver();
             machine m { ps.alloc, cost_models().for_script(ps.typ, builtins::semantics_variant(ps.typ, pv.major)), ps.typ, ps.budget, pv.major };
-            m.evaluate_no_res(ps.expr);
+            return m.evaluate_no_res(ps.expr);
         } catch (const std::exception &ex) {
             throw error(fmt::format("script {} {}: {}", ps.typ, ps.hash, ex.what()));
         }

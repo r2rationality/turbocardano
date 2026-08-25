@@ -53,15 +53,15 @@ namespace turbo::cardano::ledger::alonzo {
 
     void state::_apply_alonzo_params(protocol_params &p) const
     {
-        const auto &al_cfg = _cfg.alonzo_genesis;
-        p.lovelace_per_utxo_byte = json::value_to<uint64_t>(al_cfg.at("lovelacePerUTxOWord"));
-        p.ex_unit_prices = decltype(p.ex_unit_prices)::from_json(al_cfg.at("executionPrices"));
-        p.max_tx_ex_units = decltype(p.max_tx_ex_units)::from_json(al_cfg.at("maxTxExUnits"));
-        p.max_block_ex_units = decltype(p.max_block_ex_units)::from_json(al_cfg.at("maxBlockExUnits"));
-        p.max_value_size = json::value_to<uint64_t>(al_cfg.at("maxValueSize"));
-        p.max_collateral_pct = json::value_to<uint64_t>(al_cfg.at("collateralPercentage"));
-        p.max_collateral_inputs = json::value_to<uint64_t>(al_cfg.at("maxCollateralInputs"));
-        p.plutus_cost_models.items.emplace(0, plutus_cost_model::from_json(_cfg.plutus_all_cost_models.at(0), al_cfg.at("costModels").at("PlutusV1")));
+        const auto &initial = _cfg.alonzo_protocol_params;
+        p.lovelace_per_utxo_byte = initial.lovelace_per_utxo_byte;
+        p.ex_unit_prices = initial.ex_unit_prices;
+        p.max_tx_ex_units = initial.max_tx_ex_units;
+        p.max_block_ex_units = initial.max_block_ex_units;
+        p.max_value_size = initial.max_value_size;
+        p.max_collateral_pct = initial.max_collateral_pct;
+        p.max_collateral_inputs = initial.max_collateral_inputs;
+        p.plutus_cost_models.items.emplace(0, initial.plutus_cost_models.at(0));
     }
 
     void state::_apply_param_update(const param_update &update)

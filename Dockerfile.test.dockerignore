@@ -1,0 +1,15 @@
+**
+!3rdparty/
+!3rdparty/**
+!src/
+!src/**
+!lib/
+!lib/**
+!etc/
+!etc/**
+!data/
+!data/**
+!test/
+!test/**
+!CMakeLists.txt
+!docker-test.sh

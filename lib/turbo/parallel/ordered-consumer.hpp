@@ -21,32 +21,12 @@ namespace turbo::parallel {
 
         bool try_push(const index_type end_idx)
         {
-            if (_error.load(std::memory_order_relaxed)) [[unlikely]]
-                throw error("One of the consumer executions has raised an error. Impossible to proceed. Please consult logs for details.");
-            if (end_idx > _next.load(std::memory_order_relaxed) && !_running.load(std::memory_order_relaxed)) {
-                bool exp = false;
-                if (_running.compare_exchange_strong(exp, true, std::memory_order_acquire, std::memory_order_relaxed)) {
-                    const auto start_idx = _next.load(std::memory_order_acquire);
-                    _sched.submit(
-                        _sched_name,
-                        _sched_prio,
-                        [&, start_idx, end_idx] {
-                            const auto ex_ptr = logger::run_log_errors([&] {
-                                for (auto idx = start_idx; idx < end_idx; ++idx) {
-                                    _consumer(idx);
-                                    _next.store(idx + 1, std::memory_order_release);
-                                }
-                            }, logger::optional_action { [&] {
-                                _running.store(false, std::memory_order_release);
-                            } });
-                            if (ex_ptr)
-                                _error.store(true, std::memory_order_release);
-                        }
-                    );
-                    return true;
-                }
+            _throw_if_error();
+            auto requested_end = _requested_end.load(std::memory_order_relaxed);
+            while (requested_end < end_idx && !_requested_end.compare_exchange_weak(
+                    requested_end, end_idx, std::memory_order_release, std::memory_order_relaxed)) {
             }
-            return false;
+            return _try_start();
         }
 
         bool cancel() const
@@ -64,7 +44,58 @@ namespace turbo::parallel {
         const int64_t _sched_prio;
         scheduler &_sched;
         std::atomic<index_type> _next { 0 };
+        std::atomic<index_type> _requested_end { 0 };
         std::atomic_bool _running { false };
         std::atomic_bool _error { false };
+
+        bool _try_start()
+        {
+            if (_requested_end.load(std::memory_order_acquire) <= _next.load(std::memory_order_relaxed)
+                    || _running.load(std::memory_order_relaxed)) {
+                return false;
+            }
+            bool exp = false;
+            if (!_running.compare_exchange_strong(exp, true, std::memory_order_acquire, std::memory_order_relaxed))
+                return false;
+            try {
+                // A failed consumer publishes the error before releasing
+                // _running. Recheck after acquiring that handoff.
+                _throw_if_error();
+            } catch (...) {
+                _running.store(false, std::memory_order_release);
+                throw;
+            }
+            _sched.submit(
+                _sched_name,
+                _sched_prio,
+                [this] {
+                    const auto ex_ptr = logger::run_log_errors([&] {
+                        for (;;) {
+                            const auto idx = _next.load(std::memory_order_relaxed);
+                            if (idx >= _requested_end.load(std::memory_order_acquire))
+                                break;
+                            _consumer(idx);
+                            _next.store(idx + 1, std::memory_order_release);
+                        }
+                    });
+                    if (ex_ptr)
+                        _error.store(true, std::memory_order_release);
+                    // Publish the final progress or error state before making
+                    // the consumer available to another producer.
+                    _running.store(false, std::memory_order_release);
+                    // A producer may have extended the requested range between
+                    // the final range check and the _running handoff.
+                    if (!ex_ptr)
+                        _try_start();
+                }
+            );
+            return true;
+        }
+
+        void _throw_if_error() const
+        {
+            if (_error.load(std::memory_order_acquire)) [[unlikely]]
+                throw error("One of the consumer executions has raised an error. Impossible to proceed. Please consult logs for details.");
+        }
     };
 }

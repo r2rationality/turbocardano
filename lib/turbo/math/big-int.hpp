@@ -23,6 +23,7 @@ namespace turbo {
     inline const cpp_rational &rational_from_storage(const cpp_rational_storage &x)
     {
         static_assert(sizeof(cpp_rational) == sizeof(cpp_rational_storage));
+        static_assert(alignof(cpp_rational) <= alignof(cpp_rational_storage));
         return *reinterpret_cast<const cpp_rational*>(x.data());
     }
 

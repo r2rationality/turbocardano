@@ -96,7 +96,6 @@ suite cardano_babbage_suite = [] {
             ccfg.shelley_start_epoch(208);
             for (const auto &path: file::files_with_ext(install_path("data/babbage"), ".zpp")) {
                 plutus::context ctx { path, ccfg };
-                ctx.protocol_ver({ 8, 0 });
                 ctx.prepare();
                 expect(boost::ut::nothrow([&] {
                     try {

@@ -12,6 +12,11 @@ using namespace turbo::plutus;
 using namespace turbo::plutus::costs;
 
 namespace {
+#if defined(__GNUC__) && !defined(__clang__) && __GNUC__ == 15
+#   pragma GCC diagnostic push
+#   pragma GCC diagnostic ignored "-Warray-bounds"
+#   pragma GCC diagnostic ignored "-Wstringop-overflow"
+#endif
     value sized_integer(allocator &alloc, const size_t words)
     {
         cpp_int n { 1 };
@@ -19,6 +24,9 @@ namespace {
             n <<= 64 * (words - 1);
         return value { alloc, std::move(n) };
     }
+#if defined(__GNUC__) && !defined(__clang__) && __GNUC__ == 15
+#   pragma GCC diagnostic pop
+#endif
 }
 
 suite plutus_costs_suite = [] {
@@ -119,6 +127,50 @@ suite plutus_costs_suite = [] {
                 cost_builtin(exp_mod, builtin_tag::exp_mod_integer, small_base, false));
             expect_equal(cardano::ex_units { 3, 4430890 },
                 cost_builtin(exp_mod, builtin_tag::exp_mod_integer, large_base, false));
+        };
+        "future builtin costs are limited to supporting semantics variants"_test = [] {
+            const std::vector<std::string> names {
+                "addInteger-cpu-arguments-intercept",
+                "insertCoin-cpu-arguments-intercept",
+                "insertCoin-cpu-arguments-slope",
+                "insertCoin-memory-arguments-intercept",
+                "insertCoin-memory-arguments-slope"
+            };
+            cardano::plutus_cost_models overrides {};
+            overrides.items.emplace(0, cardano::plutus_cost_model {
+                { 123456, 356925, 18414, 46, 22 }, names
+            });
+
+            const auto models = ingest(overrides);
+            const auto &variant_a = models.for_script(
+                cardano::script_type::plutus_v1, builtin_semantics::a);
+            const auto &variant_b = models.for_script(
+                cardano::script_type::plutus_v1, builtin_semantics::b);
+            expect_equal(uint64_t { 123456 }, variant_a.builtin_costs
+                .at(builtin_tag::add_integer).cpu.args[0]);
+            expect_equal(uint64_t { 123456 }, variant_b.builtin_costs
+                .at(builtin_tag::add_integer).cpu.args[0]);
+            expect(throws([&] {
+                static_cast<void>(variant_a.builtin_costs.at(builtin_tag::insert_coin));
+            }));
+            expect(throws([&] {
+                static_cast<void>(variant_b.builtin_costs.at(builtin_tag::insert_coin));
+            }));
+
+            const auto &insert_coin = models.for_script(
+                cardano::script_type::plutus_v1, builtin_semantics::d)
+                .builtin_costs.at(builtin_tag::insert_coin);
+            expect_equal(uint64_t { 123456 }, models.for_script(
+                cardano::script_type::plutus_v1, builtin_semantics::d)
+                .builtin_costs.at(builtin_tag::add_integer).cpu.args[0]);
+            expect(insert_coin.cpu.kind == runtime_cost_kind::linear_in_u);
+            expect(insert_coin.mem.kind == runtime_cost_kind::linear_in_u);
+            expect_equal(uint64_t { 356925 }, insert_coin.cpu.args[0]);
+            expect_equal(uint64_t { 18414 }, insert_coin.cpu.args[1]);
+            expect_equal(uint64_t { 46 }, insert_coin.mem.args[0]);
+            expect_equal(uint64_t { 22 }, insert_coin.mem.args[1]);
+            expect(insert_coin.size == runtime_size_kind::value_max_depth);
+            expect_equal(uint8_t { 3 }, insert_coin.size_index);
         };
         "custom sizing and saturation"_test = [] {
             const cardano::plutus_cost_models no_overrides {};

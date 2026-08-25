@@ -3,7 +3,14 @@
  * Copyright (c) 2024-2026 R2 Rationality OÜ (info at r2rationality dot com)
  * License: https://github.com/r2rationality/turbocardano/blob/main/LICENSE */
 
+#include <algorithm>
+#include <array>
+#include <chrono>
+#include <cstdint>
+#include <limits>
+
 #include <turbo/cardano/ledger/shelley.hpp>
+#include <turbo/cardano/ledger/cbor/decode/transaction-input.hpp>
 #include <turbo/cardano/ledger/updates.hpp>
 #include <turbo/cardano/shelley/block.hpp>
 #include <turbo/common/timer.hpp>
@@ -23,6 +30,30 @@ namespace turbo::cardano::ledger::shelley {
     {
         a.size();
     };
+
+    template<typename M>
+    void clear_partitions(M &map, scheduler &sched, const std::string &task_group) noexcept
+    {
+        if (sched.num_workers() < 4) {
+            map.clear();
+            return;
+        }
+        try {
+            sched.wait_all(task_group, [&](const auto &, const auto &submit_f) {
+                for (size_t part_idx = 0; part_idx < M::num_parts; ++part_idx) {
+                    submit_f({ 1000, task_group, [&map, part_idx] {
+                        map.clear_partition(part_idx);
+                    }});
+                }
+            });
+        } catch (const std::exception &ex) {
+            logger::warn("parallel clear {} failed, finishing sequentially: {}", task_group, ex.what());
+            map.clear();
+        } catch (...) {
+            logger::warn("parallel clear {} failed with an unknown exception, finishing sequentially", task_group);
+            map.clear();
+        }
+    }
 
     vrf_state::vrf_state(const config &cfg):
         _cfg { cfg },
@@ -175,9 +206,19 @@ namespace turbo::cardano::ledger::shelley {
         });
     }
 
-    state::state(const cardano::config &cfg, scheduler &sched):
-        _cfg { cfg }, _sched { sched }, _utxo { _cfg.byron_utxos }
+    state::state(const cardano::config &cfg, scheduler &sched, const state_init_mode mode):
+        _cfg { cfg }, _sched { sched }
     {
+        if (mode == state_init_mode::genesis)
+            _utxo = _cfg.byron_utxos;
+    }
+
+    state::~state()
+    {
+        if (!_utxo.empty())
+            clear_partitions(_utxo, _sched, "shelley-state:destroy-utxo");
+        if (!_accounts.empty())
+            clear_partitions(_accounts, _sched, "shelley-state:destroy-accounts");
     }
 
     void state::_add_encode_task(cbor_encoder &ser, const encode_cbor_func &t) const
@@ -198,8 +239,27 @@ namespace turbo::cardano::ledger::shelley {
     void state::_decode_lstate(cbor::zero2::value &v)
     {
         auto &it = v.array();
-        _node_load_delegation_state(it.read());
+        const auto ambiguous_pstate = _node_load_delegation_state(it.read());
         _node_load_utxo_state(it.read());
+        if (ambiguous_pstate) {
+            if (_params.protocol_ver.major >= 11)
+                _pool_deposits.clear();
+            else
+                _pools_retiring.clear();
+        }
+        if (_params.protocol_ver.major >= 11) {
+            // Protocol-11 StakePoolState records the active delegators, but
+            // their UTxO stake is decoded only by _node_load_utxo_state.
+            // Rebuild this derived distribution once both inputs are owned.
+            for (const auto &[pool_id, delegators]: _active_inv_delegs) {
+                for (const auto &stake_id: delegators) {
+                    const auto acc_it = _accounts.find(stake_id);
+                    if (acc_it == _accounts.end())
+                        throw error(fmt::format("pool {} references unknown delegator {}", pool_id, stake_id));
+                    _active_pool_dist.add(pool_id, acc_it->second.stake + acc_it->second.reward);
+                }
+            }
+        }
     }
 
     void state::_decode_snapshots(cbor::zero2::value &v)
@@ -296,6 +356,20 @@ namespace turbo::cardano::ledger::shelley {
         _operating_stake_dist = decltype(_operating_stake_dist)::from_cbor(it.read());
     }
 
+    void state::_decode_protocol_state(cbor::zero2::value &v)
+    {
+        auto &it = v.array();
+        _ppups = map_from_cbor<decltype(_ppups)>(it.read());
+        _ppups_future = map_from_cbor<decltype(_ppups_future)>(it.read());
+        _parse_protocol_params(_params, it.read());
+        _parse_protocol_params(_params_prev, it.read());
+    }
+
+    void state::_decode_donations(cbor::zero2::value &v)
+    {
+        static_cast<void>(v.uint());
+    }
+
     point state::from_cbor(cbor::zero2::value &v)
     {
         auto &it = v.array();
@@ -349,6 +423,7 @@ namespace turbo::cardano::ledger::shelley {
             && _future_pool_params == o._future_pool_params
             && _pools_retiring == o._pools_retiring
             && _pool_deposits == o._pool_deposits
+            && _pool_vrf_key_hashes == o._pool_vrf_key_hashes
 
             && _params == o._params
             && _params_prev == o._params_prev
@@ -366,19 +441,40 @@ namespace turbo::cardano::ledger::shelley {
             && _blocks_past_voting_deadline == o._blocks_past_voting_deadline;
     }
 
-    const std::set<key_hash> &state::genesis_signers() const
+    const signer_set &state::genesis_signers() const
     {
         return _cfg.byron_delegate_hashes;
     }
 
     void state::register_pool(const pool_reg_cert &reg)
     {
-        auto [it, created] = _active_pool_params.try_emplace(reg.pool_id, reg.params);
-        if (created) {
+        const auto active_it = _active_pool_params.find(reg.pool_id);
+        const auto pv11 = _params.protocol_ver.major >= 11;
+        if (active_it == _active_pool_params.end()) {
+            if (pv11 && _pool_vrf_key_hashes.contains(reg.params.vrf_vkey))
+                throw error(fmt::format("pool {} tried to register an already registered VRF key {}", reg.pool_id, reg.params.vrf_vkey));
+            _active_pool_params.try_emplace(reg.pool_id, reg.params);
+            if (pv11)
+                _add_pool_vrf_key_hash(reg.params.vrf_vkey);
             _pool_deposits[reg.pool_id] = _params.pool_deposit;
             _deposited += _params.pool_deposit;
         } else {
+            const auto future_it = _future_pool_params.find(reg.pool_id);
+            const auto vrf_belongs_to_pool = reg.params.vrf_vkey == active_it->second.params.vrf_vkey
+                || (future_it != _future_pool_params.end()
+                    && reg.params.vrf_vkey == future_it->second.params.vrf_vkey);
+            if (pv11 && !vrf_belongs_to_pool && _pool_vrf_key_hashes.contains(reg.params.vrf_vkey)) {
+                throw error(fmt::format("pool {} tried to re-register an already registered VRF key {}", reg.pool_id, reg.params.vrf_vkey));
+            }
             auto [f_it, f_created] = _future_pool_params.try_emplace(reg.pool_id, reg.params);
+            if (pv11) {
+                if (f_created) {
+                    _add_pool_vrf_key_hash(reg.params.vrf_vkey);
+                } else if (f_it->second.params.vrf_vkey != reg.params.vrf_vkey) {
+                    _remove_pool_vrf_key_hash(f_it->second.params.vrf_vkey);
+                    _add_pool_vrf_key_hash(reg.params.vrf_vkey);
+                }
+            }
             if (!f_created)
                 f_it->second.params = reg.params;
         }
@@ -596,20 +692,57 @@ namespace turbo::cardano::ledger::shelley {
 
     void state::_process_utxo_updates(utxo_update_list &&utxo_updates)
     {
-        const std::string task_group = fmt::format("ledger-state:apply-utxo-updates:epoch-{}", _epoch);
-        mutex::unique_lock::mutex_type all_mutex alignas(mutex::alignment) {};
-        stake_update_map all_deltas {};
-        pointer_update_map all_pointer_deltas {};
+        using account_map = partitioned_map<stake_ident, account_info>;
+        constexpr size_t num_account_parts = account_map::num_parts;
+        using diagnostic_clock = std::chrono::steady_clock;
+        struct utxo_partition_diagnostics {
+            uint64_t elapsed_ns = 0;
+            size_t updates = 0;
+            size_t stake_deltas = 0;
+            size_t pointer_deltas = 0;
+        };
+        struct stake_partition_diagnostics {
+            uint64_t elapsed_ns = 0;
+            size_t partial_deltas = 0;
+            size_t unique_deltas = 0;
+        };
+        struct destroy_diagnostics {
+            uint64_t elapsed_ns = 0;
+            size_t entries = 0;
+        };
+        struct partitioned_stake_deltas {
+            std::vector<std::pair<stake_ident, int64_t>> values {};
+            std::array<size_t, account_map::num_parts + 1> offsets {};
+        };
+        using pool_delta_map = std::map<pool_hash, int64_t>;
+        const auto elapsed_ns = [](const diagnostic_clock::time_point start) {
+            return static_cast<uint64_t>(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(diagnostic_clock::now() - start).count());
+        };
+
+        const std::string utxo_task_group = fmt::format("ledger-state:apply-utxo-updates:epoch-{}", _epoch);
+        const std::string stake_task_group = fmt::format("ledger-state:apply-stake-deltas:epoch-{}", _epoch);
+        std::array<partitioned_stake_deltas, txo_map::num_parts> stake_deltas_by_source {};
+        std::array<pointer_update_map, txo_map::num_parts> pointer_deltas_by_source {};
+        std::array<pool_delta_map, num_account_parts> pool_deltas_by_account_part {};
+        std::array<utxo_partition_diagnostics, txo_map::num_parts> utxo_part_diag {};
+        std::array<stake_partition_diagnostics, num_account_parts> stake_part_diag {};
+        const auto total_start = diagnostic_clock::now();
+        const auto utxo_phase_start = diagnostic_clock::now();
         {
             turbo::timer t { fmt::format("validator epoch {} apply utxo partitions batches: {}", _epoch, utxo_updates.size()), logger::level::trace };
-            _sched.wait_all(task_group,
+            _sched.wait_all(utxo_task_group,
                 [&](const auto &todo, const auto &submit_f) {
                     for (size_t part_idx = 0; part_idx < txo_map::num_parts; ++part_idx) {
-                        submit_f({ 1000, task_group, [this, part_idx, todo, &utxo_updates, &all_mutex, &all_deltas, &all_pointer_deltas] {
+                        submit_f({ 1000, utxo_task_group, [this, part_idx, todo, &utxo_updates, &stake_deltas_by_source,
+                                &pointer_deltas_by_source, &utxo_part_diag, &elapsed_ns] {
+                            const auto task_start = diagnostic_clock::now();
+                            size_t num_updates = 0;
                             stake_update_map deltas {};
                             pointer_update_map pointer_deltas {};
                             for (auto &&update_batch: utxo_updates) {
                                 auto &upd_part = update_batch.partition(part_idx);
+                                num_updates += upd_part.size();
                                 auto &utxo_part = _utxo.partition(part_idx);
                                 for (auto &&[txo_id, txo_data]: upd_part) {
                                     if (!txo_data.address_raw.empty()) {
@@ -636,30 +769,231 @@ namespace turbo::cardano::ledger::shelley {
                                     }
                                 }
                             }
-                            mutex::scoped_lock lk { all_mutex };
+                            auto &partitioned_deltas = stake_deltas_by_source[part_idx];
+                            for (const auto &[stake_id, delta]: deltas)
+                                ++partitioned_deltas.offsets[account_map::partition_idx(stake_id) + 1];
+                            for (size_t dest_part_idx = 1; dest_part_idx < partitioned_deltas.offsets.size(); ++dest_part_idx)
+                                partitioned_deltas.offsets[dest_part_idx] += partitioned_deltas.offsets[dest_part_idx - 1];
+                            auto positions = partitioned_deltas.offsets;
+                            partitioned_deltas.values.resize(deltas.size());
                             for (const auto &[stake_id, delta]: deltas) {
-                                const auto [it, created] = all_deltas.try_emplace(stake_id, delta);
-                                if (!created) {
-                                    it->second += delta;
-                                    if (!it->second)
-                                        all_deltas.erase(it);
-                                }
+                                const auto dest_part_idx = account_map::partition_idx(stake_id);
+                                partitioned_deltas.values[positions[dest_part_idx]++] = { stake_id, delta };
                             }
-                            for (const auto &[stake_ptr, delta]: pointer_deltas)
-                                all_pointer_deltas[stake_ptr] += delta;
+                            const auto num_pointer_deltas = pointer_deltas.size();
+                            pointer_deltas_by_source[part_idx] = std::move(pointer_deltas);
+                            utxo_part_diag[part_idx] = {
+                                .elapsed_ns=elapsed_ns(task_start),
+                                .updates=num_updates,
+                                .stake_deltas=partitioned_deltas.values.size(),
+                                .pointer_deltas=num_pointer_deltas
+                            };
                         }});
                     }
-                }
-            );
+                });
         }
+        const auto utxo_phase_ns = elapsed_ns(utxo_phase_start);
+        const auto num_utxo_update_batches = utxo_updates.size();
+        std::vector<destroy_diagnostics> destroy_diag(num_utxo_update_batches);
+        const auto stake_phase_start = diagnostic_clock::now();
         {
-            turbo::timer t { fmt::format("validator epoch {} apply stake deltas: {} pointer_deltas: {}",
-                _epoch, all_deltas.size(), all_pointer_deltas.size()), logger::level::trace };
-            for (const auto &[stake_id, delta]: all_deltas)
-                update_stake(stake_id, delta);
+            turbo::timer t { fmt::format("validator epoch {} apply stake delta partitions and destroy utxo update maps", _epoch),
+                logger::level::trace };
+            _sched.wait_all(stake_task_group,
+                [&](const auto &todo, const auto &submit_f) {
+                    for (size_t part_idx = 0; part_idx < num_account_parts; ++part_idx) {
+                        submit_f({ 1000, stake_task_group, [this, part_idx, todo, &stake_deltas_by_source,
+                                &pool_deltas_by_account_part, &stake_part_diag, &elapsed_ns] {
+                            const auto task_start = diagnostic_clock::now();
+                            size_t num_partial_deltas = 0;
+                            for (const auto &source_deltas: stake_deltas_by_source) {
+                                num_partial_deltas += source_deltas.offsets[part_idx + 1]
+                                    - source_deltas.offsets[part_idx];
+                            }
+                            stake_update_map deltas {};
+                            deltas.reserve(num_partial_deltas);
+                            for (const auto &source_deltas: stake_deltas_by_source) {
+                                for (size_t delta_idx = source_deltas.offsets[part_idx];
+                                        delta_idx < source_deltas.offsets[part_idx + 1]; ++delta_idx) {
+                                    const auto &[stake_id, delta] = source_deltas.values[delta_idx];
+                                    _update_stake_delta(deltas, stake_id, delta);
+                                }
+                            }
+                            auto &account_part = _accounts.partition(part_idx);
+                            auto &pool_deltas = pool_deltas_by_account_part[part_idx];
+                            const auto num_unique_deltas = deltas.size();
+                            for (const auto &[stake_id, delta]: deltas) {
+                                auto &acc = account_part[stake_id];
+                                if (delta >= 0) {
+                                    acc.stake += static_cast<uint64_t>(delta);
+                                } else {
+                                    const uint64_t dec = static_cast<uint64_t>(-delta);
+                                    if (acc.stake < dec) {
+                                        throw error(fmt::format("trying to remove from account {} more stake {} than it has: {}",
+                                            stake_id, dec, acc.stake));
+                                    }
+                                    acc.stake -= dec;
+                                }
+                                if (acc.deleg && _active_pool_params.contains(*acc.deleg)) {
+                                    const auto [it, created] = pool_deltas.try_emplace(*acc.deleg, delta);
+                                    if (!created) {
+                                        it->second += delta;
+                                        if (!it->second)
+                                            pool_deltas.erase(it);
+                                    }
+                                }
+                            }
+                            stake_part_diag[part_idx] = {
+                                .elapsed_ns=elapsed_ns(task_start),
+                                .partial_deltas=num_partial_deltas,
+                                .unique_deltas=num_unique_deltas
+                            };
+                        }});
+                    }
+                    // The preceding UTXO-partition barrier is the last reader of these maps.
+                    // Retire them alongside the stake-delta tasks so both operations share one wait cycle.
+                    for (size_t batch_idx = 0; batch_idx < num_utxo_update_batches; ++batch_idx) {
+                        submit_f({ 1000, stake_task_group, [batch_idx, todo, &utxo_updates, &destroy_diag, &elapsed_ns] {
+                            const auto task_start = diagnostic_clock::now();
+                            const auto num_entries = utxo_updates[batch_idx].size();
+                            utxo_updates[batch_idx].clear();
+                            destroy_diag[batch_idx] = {
+                                .elapsed_ns=elapsed_ns(task_start),
+                                .entries=num_entries
+                            };
+                        }});
+                    }
+                });
+        }
+        const auto stake_phase_ns = elapsed_ns(stake_phase_start);
+        const auto cleanup_start = diagnostic_clock::now();
+        utxo_updates.clear();
+        const auto cleanup_ns = elapsed_ns(cleanup_start);
+        size_t pool_partial_entries = 0;
+        size_t pool_merged_entries = 0;
+        size_t pointer_partial_entries = 0;
+        size_t pointer_merged_entries = 0;
+        uint64_t pool_merge_ns = 0;
+        uint64_t pointer_merge_ns = 0;
+        {
+            const auto pool_merge_start = diagnostic_clock::now();
+            pool_delta_map all_pool_deltas {};
+            for (const auto &pool_deltas: pool_deltas_by_account_part) {
+                pool_partial_entries += pool_deltas.size();
+                for (const auto &[pool_id, delta]: pool_deltas) {
+                    const auto [it, created] = all_pool_deltas.try_emplace(pool_id, delta);
+                    if (!created) {
+                        it->second += delta;
+                        if (!it->second)
+                            all_pool_deltas.erase(it);
+                    }
+                }
+            }
+            for (const auto &[pool_id, delta]: all_pool_deltas) {
+                if (delta >= 0)
+                    _active_pool_dist.add(pool_id, static_cast<uint64_t>(delta));
+                else
+                    _active_pool_dist.sub(pool_id, static_cast<uint64_t>(-delta));
+            }
+            pool_merged_entries = all_pool_deltas.size();
+            pool_merge_ns = elapsed_ns(pool_merge_start);
+
+            const auto pointer_merge_start = diagnostic_clock::now();
+            pointer_update_map all_pointer_deltas {};
+            for (const auto &pointer_deltas: pointer_deltas_by_source) {
+                pointer_partial_entries += pointer_deltas.size();
+                for (const auto &[stake_ptr, delta]: pointer_deltas) {
+                    const auto [it, created] = all_pointer_deltas.try_emplace(stake_ptr, delta);
+                    if (!created) {
+                        it->second += delta;
+                        if (!it->second)
+                            all_pointer_deltas.erase(it);
+                    }
+                }
+            }
             for (const auto &[stake_ptr, delta]: all_pointer_deltas)
                 update_pointer(stake_ptr, delta);
+            pointer_merged_entries = all_pointer_deltas.size();
+            pointer_merge_ns = elapsed_ns(pointer_merge_start);
         }
+
+        uint64_t utxo_task_sum_ns = 0;
+        uint64_t utxo_task_max_ns = 0;
+        size_t utxo_task_max_part = 0;
+        size_t total_updates = 0;
+        size_t total_stake_deltas = 0;
+        size_t total_pointer_deltas = 0;
+        for (size_t part_idx = 0; part_idx < utxo_part_diag.size(); ++part_idx) {
+            const auto &diag = utxo_part_diag[part_idx];
+            utxo_task_sum_ns += diag.elapsed_ns;
+            total_updates += diag.updates;
+            total_stake_deltas += diag.stake_deltas;
+            total_pointer_deltas += diag.pointer_deltas;
+            if (diag.elapsed_ns > utxo_task_max_ns) {
+                utxo_task_max_ns = diag.elapsed_ns;
+                utxo_task_max_part = part_idx;
+            }
+        }
+        uint64_t stake_task_sum_ns = 0;
+        uint64_t stake_task_max_ns = 0;
+        size_t stake_task_max_part = 0;
+        size_t total_partial_deltas = 0;
+        size_t total_unique_deltas = 0;
+        for (size_t part_idx = 0; part_idx < stake_part_diag.size(); ++part_idx) {
+            const auto &diag = stake_part_diag[part_idx];
+            stake_task_sum_ns += diag.elapsed_ns;
+            total_partial_deltas += diag.partial_deltas;
+            total_unique_deltas += diag.unique_deltas;
+            if (diag.elapsed_ns > stake_task_max_ns) {
+                stake_task_max_ns = diag.elapsed_ns;
+                stake_task_max_part = part_idx;
+            }
+        }
+        uint64_t destroy_task_sum_ns = 0;
+        uint64_t destroy_task_max_ns = 0;
+        size_t destroy_task_max_batch = 0;
+        for (size_t batch_idx = 0; batch_idx < destroy_diag.size(); ++batch_idx) {
+            const auto &diag = destroy_diag[batch_idx];
+            destroy_task_sum_ns += diag.elapsed_ns;
+            if (diag.elapsed_ns > destroy_task_max_ns) {
+                destroy_task_max_ns = diag.elapsed_ns;
+                destroy_task_max_batch = batch_idx;
+            }
+        }
+        logger::debug(
+            "ledger UTXO diagnostics epoch: {} batches: {} updates: {} "
+            "utxo_wall_ms: {:.3f} utxo_task_sum_ms: {:.3f} utxo_task_max_ms: {:.3f} utxo_task_max_part: {} "
+            "utxo_task_max_updates: {} utxo_task_max_stake_deltas: {} utxo_task_max_pointer_deltas: {} "
+            "stake_deltas: {} pointer_deltas: {} "
+            "stake_wall_ms: {:.3f} stake_task_sum_ms: {:.3f} stake_task_max_ms: {:.3f} stake_task_max_part: {} "
+            "stake_task_max_partial_deltas: {} stake_task_max_unique_deltas: {} partial_deltas: {} unique_deltas: {} "
+            "destroy_task_sum_ms: {:.3f} destroy_task_max_ms: {:.3f} destroy_task_max_batch: {} destroy_task_max_entries: {} "
+            "cleanup_ms: {:.3f} pool_merge_ms: {:.3f} pool_partial_entries: {} pool_merged_entries: {} "
+            "pointer_merge_ms: {:.3f} pointer_partial_entries: {} pointer_merged_entries: {} total_ms: {:.3f}",
+            _epoch, num_utxo_update_batches, total_updates,
+            static_cast<double>(utxo_phase_ns) / 1'000'000,
+            static_cast<double>(utxo_task_sum_ns) / 1'000'000,
+            static_cast<double>(utxo_task_max_ns) / 1'000'000,
+            utxo_task_max_part, utxo_part_diag[utxo_task_max_part].updates,
+            utxo_part_diag[utxo_task_max_part].stake_deltas,
+            utxo_part_diag[utxo_task_max_part].pointer_deltas,
+            total_stake_deltas, total_pointer_deltas,
+            static_cast<double>(stake_phase_ns) / 1'000'000,
+            static_cast<double>(stake_task_sum_ns) / 1'000'000,
+            static_cast<double>(stake_task_max_ns) / 1'000'000,
+            stake_task_max_part, stake_part_diag[stake_task_max_part].partial_deltas,
+            stake_part_diag[stake_task_max_part].unique_deltas,
+            total_partial_deltas, total_unique_deltas,
+            static_cast<double>(destroy_task_sum_ns) / 1'000'000,
+            static_cast<double>(destroy_task_max_ns) / 1'000'000,
+            destroy_task_max_batch,
+            destroy_diag.empty() ? 0 : destroy_diag[destroy_task_max_batch].entries,
+            static_cast<double>(cleanup_ns) / 1'000'000,
+            static_cast<double>(pool_merge_ns) / 1'000'000,
+            pool_partial_entries, pool_merged_entries,
+            static_cast<double>(pointer_merge_ns) / 1'000'000,
+            pointer_partial_entries, pointer_merged_entries,
+            static_cast<double>(elapsed_ns(total_start)) / 1'000'000);
     }
 
     void state::_process_collateral_use(tx_out_ref_list &&collected_collateral)
@@ -740,20 +1074,31 @@ namespace turbo::cardano::ledger::shelley {
         logger::trace("withdraw_reward stake_id: {} amount: {} reward: {} deposit: {} registered: {} delegated: {}",
             stake_id, cardano::amount { amount }, cardano::amount { acc.reward }, cardano::amount { acc.deposit },
             acc.ptr.has_value(), acc.deleg.has_value());
-        if (acc.reward < amount) {
-            logger::debug("withdraw_reward shortfall epoch: {} stake_id: {} amount: {} reward: {} missing: {} registered: {} ptr: {} deposit: {} stake: {} mark_stake: {} set_stake: {} go_stake: {} deleg: {} mark_deleg: {} set_deleg: {} go_deleg: {} active_pool_dist: {}",
+        if (acc.reward != amount) {
+            logger::debug("withdraw_reward mismatch epoch: {} stake_id: {} amount: {} reward: {} difference: {} registered: {} ptr: {} deposit: {} stake: {} mark_stake: {} set_stake: {} go_stake: {} deleg: {} mark_deleg: {} set_deleg: {} go_deleg: {} active_pool_dist: {}",
                 _epoch, stake_id, cardano::amount { amount }, cardano::amount { acc.reward },
-                cardano::amount { amount - acc.reward }, acc.ptr.has_value(), acc.ptr,
+                cardano::amount { amount > acc.reward ? amount - acc.reward : acc.reward - amount }, acc.ptr.has_value(), acc.ptr,
                 cardano::amount { acc.deposit }, cardano::amount { acc.stake },
                 cardano::amount { acc.mark_stake }, cardano::amount { acc.set_stake },
                 cardano::amount { acc.go_stake }, acc.deleg, acc.mark_deleg,
                 acc.set_deleg, acc.go_deleg,
                 cardano::amount { acc.deleg ? _active_pool_dist.get(*acc.deleg) : 0 });
-            throw error(fmt::format("trying to withdraw from account {} more stake {} than it has: {}", stake_id, amount, acc.reward));
+            throw error(fmt::format("withdrawal from account {} does not drain its reward balance: requested {} but available {}", stake_id, amount, acc.reward));
         }
         acc.reward -= amount;
         if (acc.deleg)
             _active_pool_dist.sub(*acc.deleg, amount);
+    }
+
+    void state::_withdraw_reward(const reward_id_t &reward_id, const uint64_t amount)
+    {
+        if (reward_id.network_id() != _cfg.shelley_network_id) {
+            throw error(fmt::format(
+                "withdrawal reward address has network id {} but expected {}",
+                reward_id.network_id(),
+                _cfg.shelley_network_id));
+        }
+        withdraw_reward(static_cast<stake_ident>(reward_id), amount);
     }
 
     void state::register_stake(const uint64_t slot, const stake_ident &stake_id, const std::optional<uint64_t> deposit, const size_t tx_idx, const size_t cert_idx)
@@ -965,52 +1310,59 @@ namespace turbo::cardano::ledger::shelley {
     void state::rotate_snapshots()
     {
         timer t { fmt::format("validator::state epoch: {} rotate_snapshots", _epoch), logger::level::trace };
+        auto retired_go = std::make_shared<std::optional<ledger_copy>>(std::in_place, std::move(_go));
+        _go = std::move(_set);
+        _set = std::move(_mark);
         {
-            timer ts { fmt::format("validator::state epoch: {} move set snapshot to go", _epoch), logger::level::trace };
-            _go = std::move(_set);
-        }
-        {
-            timer ts { fmt::format("validator::state epoch: {} move mark snapshot to set", _epoch), logger::level::trace };
-            _set = std::move(_mark);
-        }
-        timer ts { fmt::format("validator::state epoch: {} copy active snapshot to mark", _epoch), logger::level::trace };
-        const std::string task_group = fmt::format("ledger-state:rotate-snapshots:epoch-{}", _epoch);
-        _sched.wait_all(task_group, [&](const auto &todo, const auto &submit_f) {
-            submit_f({ 1000, task_group, [this] {
-                timer tsi { fmt::format("validator::state epoch: {} copy pool_dist to mark", _epoch), logger::level::trace };
-                _mark.pool_dist = _active_pool_dist;
-            }});
-            submit_f({ 1000, task_group, [this] {
-                timer tsi { fmt::format("validator::state epoch: {} copy pool_params to mark", _epoch), logger::level::trace };
-                _mark.pool_params = _active_pool_params;
-            }});
-            submit_f({ 1000, task_group, [this] {
-                timer tsi { fmt::format("validator::state epoch: {} copy inv_delegs to mark", _epoch), logger::level::trace };
-                _mark.inv_delegs = _active_inv_delegs;
-            }});
-            for (size_t pi = 0; pi < _accounts.num_parts; ++pi) {
-                submit_f({ 1000, task_group, [this, pi] {
-                    auto &part = _accounts.partition(pi);
-                    std::set<stake_ident> retired {};
-                    for (auto &[stake_id, acc]: part) {
-                        if (acc.ptr || acc.stake || acc.reward || acc.deposit || acc.go_deleg
-                                || acc.set_deleg || acc.mark_deleg || acc.deleg || acc.vote_deleg) {
-                            acc.go_deleg = acc.set_deleg;
-                            acc.go_stake = acc.set_stake;
-                            acc.set_deleg = acc.mark_deleg;
-                            acc.set_stake = acc.mark_stake;
-                            acc.mark_deleg = acc.deleg;
-                            acc.mark_stake = acc.stake + acc.reward;
-                        } else {
-                            retired.emplace(stake_id);
+            const std::string task_group = fmt::format("ledger-state:rotate-snapshots:epoch-{}", _epoch);
+            _sched.wait_all(task_group, [&](const auto &, const auto &submit_f) {
+                submit_f({ 1001, task_group, [retired_go] {
+                    retired_go->reset();
+                }});
+                retired_go.reset();
+                submit_f({ 1000, task_group, [this] {
+                    _mark.pool_dist = _active_pool_dist;
+                }});
+                submit_f({ 1000, task_group, [this] {
+                    _mark.pool_params = _active_pool_params;
+                }});
+                submit_f({ 1000, task_group, [this] {
+                    _mark.delegated_pools.clear();
+                    _mark.delegated_pools.reserve(_active_inv_delegs.size());
+                    // pool_hash ordering is lexicographic, while partitioned_map uses its first byte.
+                    // Concatenating partitions 0..255 therefore produces the sorted sequence expected
+                    // by static_map without copying the historical delegator sets.
+                    for (size_t pi = 0; pi < inv_delegation_map::num_parts; ++pi) {
+                        for (const auto &[pool_id, delegators]: _active_inv_delegs.partition(pi)) {
+                            if (!delegators.empty())
+                                _mark.delegated_pools.emplace_back(pool_id, true);
                         }
                     }
-                    for (const auto &stake_id: retired) {
-                        part.erase(stake_id);
-                    }
                 }});
-            }
-        });
+                for (size_t pi = 0; pi < _accounts.num_parts; ++pi) {
+                    submit_f({ 1000, task_group, [this, pi] {
+                        auto &part = _accounts.partition(pi);
+                        std::set<stake_ident> retired {};
+                        for (auto &[stake_id, acc]: part) {
+                            if (acc.ptr || acc.stake || acc.reward || acc.deposit || acc.go_deleg
+                                    || acc.set_deleg || acc.mark_deleg || acc.deleg || acc.vote_deleg) {
+                                acc.go_deleg = acc.set_deleg;
+                                acc.go_stake = acc.set_stake;
+                                acc.set_deleg = acc.mark_deleg;
+                                acc.set_stake = acc.mark_stake;
+                                acc.mark_deleg = acc.deleg;
+                                acc.mark_stake = acc.stake + acc.reward;
+                            } else {
+                                retired.emplace(stake_id);
+                            }
+                        }
+                        for (const auto &stake_id: retired) {
+                            part.erase(stake_id);
+                        }
+                    }});
+                }
+            });
+        }
         if (_params.protocol_ver.keep_pointers()) {
             for (const auto &[stake_ptr, coin]: _stake_pointers) {
                 if (const auto ptr_it = _ptr_to_stake.find(stake_ptr); ptr_it != _ptr_to_stake.end()) {
@@ -1113,22 +1465,22 @@ namespace turbo::cardano::ledger::shelley {
 
     void state::_apply_shelley_params(protocol_params &p) const
     {
-        const auto &shelley_params = _cfg.shelley_genesis.at("protocolParams").as_object();
-        p.min_fee_a = json::value_to<uint64_t>(shelley_params.at("minFeeA"));
-        p.min_fee_b = json::value_to<uint64_t>(shelley_params.at("minFeeB"));
-        p.max_block_body_size = json::value_to<uint64_t>(shelley_params.at("maxBlockBodySize"));
-        p.max_transaction_size = json::value_to<uint64_t>(shelley_params.at("maxTxSize"));
-        p.max_block_header_size = json::value_to<uint64_t>(shelley_params.at("maxBlockHeaderSize"));
-        p.key_deposit = json::value_to<uint64_t>(shelley_params.at("keyDeposit"));
-        p.pool_deposit = json::value_to<uint64_t>(shelley_params.at("poolDeposit"));
-        p.e_max = json::value_to<uint64_t>(shelley_params.at("eMax"));
-        p.n_opt = json::value_to<uint64_t>(shelley_params.at("nOpt"));
-        p.expansion_rate = rational_u64::from_double(json::value_to<double>(shelley_params.at("rho")));
-        p.treasury_growth_rate = rational_u64::from_double(json::value_to<double>(shelley_params.at("tau")));
-        p.pool_pledge_influence = rational_u64::from_double(json::value_to<double>(shelley_params.at("a0")));
-        p.decentralization = rational_u64::from_double(json::value_to<double>(shelley_params.at("decentralisationParam")));
-        p.min_utxo_value = json::value_to<uint64_t>(shelley_params.at("minUTxOValue"));
-        p.min_pool_cost = json::value_to<uint64_t>(shelley_params.at("minPoolCost"));
+        const auto &initial = _cfg.shelley_protocol_params;
+        p.min_fee_a = initial.min_fee_a;
+        p.min_fee_b = initial.min_fee_b;
+        p.max_block_body_size = initial.max_block_body_size;
+        p.max_transaction_size = initial.max_transaction_size;
+        p.max_block_header_size = initial.max_block_header_size;
+        p.key_deposit = initial.key_deposit;
+        p.pool_deposit = initial.pool_deposit;
+        p.e_max = initial.e_max;
+        p.n_opt = initial.n_opt;
+        p.expansion_rate = initial.expansion_rate;
+        p.treasury_growth_rate = initial.treasury_growth_rate;
+        p.pool_pledge_influence = initial.pool_pledge_influence;
+        p.decentralization = initial.decentralization;
+        p.min_utxo_value = initial.min_utxo_value;
+        p.min_pool_cost = initial.min_pool_cost;
     }
 
     protocol_params state::_default_params(const cardano::config &cfg)
@@ -1138,9 +1490,10 @@ namespace turbo::cardano::ledger::shelley {
         return p;
     }
 
-    std::set<pool_hash> state::_make_pbft_pools(const shelley_delegate_map &delegs)
+    flat_set<pool_hash> state::_make_pbft_pools(const shelley_delegate_map &delegs)
     {
-        std::set<pool_hash> pools {};
+        flat_set<pool_hash> pools {};
+        pools.reserve(delegs.size());
         for (const auto &[id, meta]: delegs)
             pools.emplace(meta.delegate);
         return pools;
@@ -1228,7 +1581,7 @@ namespace turbo::cardano::ledger::shelley {
         _operating_stake_dist.clear();
         _operating_stake_dist.total_stake = _set.pool_dist.total_stake();
         for (const auto &[pool_id, coin]: _set.pool_dist) {
-            if (!_set.inv_delegs.at(pool_id).empty()) {
+            if (_set.delegated_pools.contains(pool_id)) {
                 const auto &params = _set.pool_params.at(pool_id).params;
                 rational_u64 rel_stake { coin, _set.pool_dist.total_stake() };
                 rel_stake.normalize();
@@ -1240,9 +1593,43 @@ namespace turbo::cardano::ledger::shelley {
     void state::_apply_future_pool_params()
     {
         for (auto &&[pool_id, params]: _future_pool_params) {
-            _active_pool_params.at(pool_id) = std::move(params);
+            auto &active = _active_pool_params.at(pool_id);
+            if (_params.protocol_ver.major >= 11)
+                _remove_pool_vrf_key_hash(active.params.vrf_vkey);
+            active = std::move(params);
         }
         _future_pool_params.clear();
+    }
+
+    void state::_add_pool_vrf_key_hash(const vrf_vkey &vrf)
+    {
+        auto [it, created] = _pool_vrf_key_hashes.try_emplace(vrf, 1);
+        if (!created && it->second != std::numeric_limits<uint64_t>::max())
+            ++it->second;
+    }
+
+    void state::_remove_pool_vrf_key_hash(const vrf_vkey &vrf)
+    {
+        const auto it = _pool_vrf_key_hashes.find(vrf);
+        if (it == _pool_vrf_key_hashes.end()) [[unlikely]]
+            throw error(fmt::format("VRF key {} is missing from the registered-key occurrence map", vrf));
+        if (it->second <= 1)
+            _pool_vrf_key_hashes.erase(it);
+        else
+            --it->second;
+    }
+
+    void state::_populate_pool_vrf_key_hashes()
+    {
+        _pool_vrf_key_hashes.clear();
+        const auto add = [&](const auto &pools) {
+            for (const auto &[pool_id, info]: pools) {
+                static_cast<void>(pool_id);
+                _add_pool_vrf_key_hash(info.params.vrf_vkey);
+            }
+        };
+        add(_active_pool_params);
+        add(_future_pool_params);
     }
 
     void state::_recompute_caches() const
@@ -1428,8 +1815,7 @@ namespace turbo::cardano::ledger::shelley {
                         filtered.fetch_add(part_filtered, std::memory_order_relaxed);
                     }});
                 }
-            }
-        );
+            });
         logger::trace("epoch: {} staking_rewards total: {} filtered: {} diff: {}",
             _epoch, cardano::amount { total.load() }, cardano::amount { filtered.load() },
             cardano::balance_change { static_cast<int64_t>(filtered) - static_cast<int64_t>(total) });
@@ -1454,8 +1840,7 @@ namespace turbo::cardano::ledger::shelley {
                             _potential_rewards.partition(part_idx).clear();
                         }});
                     }
-                }
-            );
+                });
         }
     }
 
@@ -1487,8 +1872,7 @@ namespace turbo::cardano::ledger::shelley {
                                 }
                             }});
                         }
-                    }
-                );
+                    });
                 _apply_shelley_params(_params);
                 _apply_shelley_params(_params_prev);
                 _params_prev.protocol_ver = *update.protocol_ver;
@@ -1561,22 +1945,32 @@ namespace turbo::cardano::ledger::shelley {
         const bool force_active = !aggregated || forgo_prefilter;
         static constexpr uint64_t diagnostic_reward_threshold = 1'000'000'000'000;
         timer t { fmt::format("validator::state epoch: {} transfer_potential_rewards aggregated forgo_prefilter: {}", _epoch, forgo_prefilter), logger::level::debug };
-        using pool_update_map = std::unordered_map<cardano::pool_hash, uint64_t>;
+        using pool_index_map = std::unordered_map<cardano::pool_hash, size_t>;
         const std::string task_group = fmt::format("ledger-state:transfer-rewards:epoch-{}", _epoch);
-        std::atomic_uint64_t treasury_update = 0;
-        std::vector<pool_update_map> part_updates(_potential_rewards.num_parts);
+        const auto num_active_pools = _active_pool_dist.size();
+        pool_index_map active_pool_indices {};
+        std::vector<uint64_t> part_pool_updates {};
+        active_pool_indices.reserve(num_active_pools);
+        size_t active_pool_idx = 0;
+        for (const auto &[pool_id, stake]: _active_pool_dist) {
+            static_cast<void>(stake);
+            active_pool_indices.try_emplace(pool_id, active_pool_idx++);
+        }
+        part_pool_updates.resize(_potential_rewards.num_parts * num_active_pools);
+        const pool_index_map &pool_indices = active_pool_indices;
+        std::array<uint64_t, partitioned_reward_update_dist::num_parts> treasury_updates {};
         // all rewards must be already created to ensure no allocation is necessary
         _sched.wait_all(task_group,
             [&](const auto &, const auto &submit_f) {
                 for (size_t part_idx = 0; part_idx < _potential_rewards.num_parts; ++part_idx) {
-                    submit_f({ 1000, task_group, [this, &part_updates, &treasury_update, part_idx, aggregated, force_active] {
+                    submit_f({ 1000, task_group, [this, &pool_indices, &part_pool_updates, &treasury_updates,
+                            num_active_pools, part_idx, aggregated, force_active] {
                         partitioned_reward_update_dist::partition_type reward_part {};
                         reward_part.swap(_potential_rewards.partition(part_idx));
                         // relies on reward_part, _accounts, and _pulsing_snapshot being ordered containers!
                         auto acc_it = _accounts.partition(part_idx).begin();
                         const auto acc_end = _accounts.partition(part_idx).end();
-                        pool_update_map pool_dist_updates {};
-                        pool_dist_updates.reserve(_go.pool_params.size());
+                        const auto pool_update_offset = part_idx * num_active_pools;
                         uint64_t part_treasury_update = 0;
                         for (const auto &[stake_id, reward_list]: reward_part) {
                             uint64_t total_reward = 0;
@@ -1595,24 +1989,38 @@ namespace turbo::cardano::ledger::shelley {
                                         acc_it != acc_end && acc_it->first == stake_id && acc_it->second.deleg.has_value(),
                                         reward_list.size());
                                 }
+                                const bool to_reward_account = acc_it != acc_end && acc_it->first == stake_id && acc_it->second.ptr;
+                                uint64_t account_reward = 0;
                                 for (auto &&ri: reward_list) {
                                     if (ri.amount) {
-                                        const bool to_reward_account = acc_it != acc_end && acc_it->first == stake_id && acc_it->second.ptr;
                                         if (total_reward >= diagnostic_reward_threshold || ri.amount >= diagnostic_reward_threshold) {
                                             logger::debug("epoch: {} potential_reward_transfer stake_id: {} type: {} pool_id: {} amount: {} destination: {} delegated_pool_id: {}",
                                                 _epoch, stake_id, ri.type, ri.pool_id, cardano::amount { ri.amount },
                                                 to_reward_account ? "reward-account" : "treasury", ri.delegated_pool_id);
                                         }
-                                        if (to_reward_account) {
-                                            acc_it->second.reward += ri.amount;
-                                            if (ri.delegated_pool_id) {
-                                                pool_dist_updates[*ri.delegated_pool_id] += ri.amount;
-                                            }
-                                        } else {
+                                        if (to_reward_account)
+                                            account_reward += ri.amount;
+                                        else
                                             part_treasury_update += ri.amount;
-                                        }
                                         if (!aggregated)
                                             break;
+                                    }
+                                }
+                                if (account_reward) {
+                                    acc_it->second.reward += account_reward;
+                                    // Rewards become part of the stake snapshot at the epoch boundary,
+                                    // so they must follow the account's delegation at that boundary. The
+                                    // delegation captured while calculating the reward can be stale after
+                                    // a late-epoch redelegation.
+                                    if (acc_it->second.deleg
+                                            && _active_pool_params.contains(*acc_it->second.deleg)) {
+                                        const auto pool_it = pool_indices.find(*acc_it->second.deleg);
+                                        if (pool_it == pool_indices.end()) {
+                                            throw error(fmt::format(
+                                                "active reward delegation pool {} is missing from the stake distribution",
+                                                *acc_it->second.deleg));
+                                        }
+                                        part_pool_updates[pool_update_offset + pool_it->second] += account_reward;
                                     }
                                 }
                             } else if (total_reward >= diagnostic_reward_threshold) {
@@ -1620,21 +2028,25 @@ namespace turbo::cardano::ledger::shelley {
                                     _epoch, stake_id, cardano::amount { total_reward });
                             }
                         }
-                        part_updates[part_idx] = std::move(pool_dist_updates);
-                        treasury_update.fetch_add(part_treasury_update, std::memory_order_relaxed);
+                        treasury_updates[part_idx] = part_treasury_update;
                     }});
                 }
-            }
-        );
-        logger::debug("epoch {} transfer_potential_rewards treasury_update: {}", _epoch, treasury_update.load());
+            });
+        uint64_t treasury_update = 0;
+        for (const auto amount: treasury_updates)
+            treasury_update += amount;
+        logger::debug("epoch {} transfer_potential_rewards treasury_update: {}", _epoch, treasury_update);
         _treasury += treasury_update;
         {
-            timer t2 { fmt::format("epoch: {} transfer_potential_rewards sequential application of updates", _epoch), logger::level::trace };
-            // updates are applied in the same order as if they were computed sequentially
-            for (const auto &pool_dist_updates: part_updates) {
-                for (const auto &[pool_id, amount]: pool_dist_updates)
-                    _active_pool_dist.add(pool_id, amount);
+            std::vector<uint64_t> pool_updates(num_active_pools, 0);
+            for (size_t part_idx = 0; part_idx < _potential_rewards.num_parts; ++part_idx) {
+                const auto pool_update_offset = part_idx * num_active_pools;
+                for (size_t pool_idx = 0; pool_idx < num_active_pools; ++pool_idx)
+                    pool_updates[pool_idx] += part_pool_updates[pool_update_offset + pool_idx];
             }
+            size_t pool_idx = 0;
+            for (auto pool_it = _active_pool_dist.begin(); pool_it != _active_pool_dist.end(); ++pool_it)
+                _active_pool_dist.add(pool_it, pool_updates[pool_idx++]);
         }
     }
 
@@ -1690,6 +2102,8 @@ namespace turbo::cardano::ledger::shelley {
                     throw error("trying to remove a deposit while having insufficient deposits");
                 _deposited -= pool_deposit;
                 _active_pool_dist.retire(it->first);
+                if (_params.protocol_ver.major >= 11)
+                    _remove_pool_vrf_key_hash(pool_info.params.vrf_vkey);
                 _active_pool_params.erase(pool_id);
                 it = _pools_retiring.erase(it);
             } else {
@@ -1699,17 +2113,173 @@ namespace turbo::cardano::ledger::shelley {
         return std::make_pair(refunds_user, refunds_treasury);
     }
 
-    void state::_node_load_delegation_state(cbor::zero2::value &v)
+    bool state::_node_load_delegation_state(cbor::zero2::value &v)
     {
+        enum class pstate_format {
+            unknown,
+            legacy,
+            pv11
+        };
+
         auto &it = v.array();
         it.skip(1);
+        auto format = pstate_format::unknown;
         {
             auto &pstate_v = it.read();
             auto &pstate_it = pstate_v.array();
-            _active_pool_params = map_from_cbor<decltype(_active_pool_params)>(pstate_it.read());
-            _future_pool_params = map_from_cbor<decltype(_future_pool_params)>(pstate_it.read());
-            _pools_retiring = map_from_cbor<decltype(_pools_retiring)>(pstate_it.read());
-            _pool_deposits = map_from_cbor<decltype(_pool_deposits)>(pstate_it.read());
+
+            _active_pool_params.clear();
+            _future_pool_params.clear();
+            _pools_retiring.clear();
+            _pool_deposits.clear();
+            _pool_vrf_key_hashes.clear();
+            _active_inv_delegs.clear();
+            _active_pool_dist.clear();
+
+            const auto store_pool_state = [this](const pool_hash &pool_id, cbor::zero2::array_reader &state_it, const vrf_vkey &vrf) {
+                pool_params params {};
+                params.vrf_vkey = vrf;
+                params.pledge = state_it.read().uint();
+                params.cost = state_it.read().uint();
+                params.margin = decltype(params.margin)::from_cbor(state_it.read());
+                const auto reward_credential = stake_ident::from_cbor(state_it.read());
+                params.reward_id.at(0) = (reward_credential.script ? 0xF0 : 0xE0) | _cfg.shelley_network_id;
+                memcpy(params.reward_id.data() + 1, reward_credential.hash.data(), reward_credential.hash.size());
+                params.owners = decltype(params.owners)::from_cbor(state_it.read());
+                params.relays = decltype(params.relays)::from_cbor(state_it.read());
+                params.metadata = decltype(params.metadata)::from_cbor(state_it.read());
+                const auto deposit = state_it.read().uint();
+                const auto delegators = set_t<stake_ident>::from_cbor(state_it.read());
+                _active_pool_params.try_emplace(pool_id, std::move(params));
+                _pool_deposits.try_emplace(pool_id, deposit);
+                _active_pool_dist.create(pool_id);
+                auto &inv_delegs = _active_inv_delegs[pool_id];
+                inv_delegs.insert(delegators.begin(), delegators.end());
+            };
+            const auto load_pool_state = [&](cbor::zero2::map_reader &map_it) {
+                auto &key = map_it.read_key();
+                const pool_hash pool_id { key.bytes() };
+                auto &value = map_it.read_val(std::move(key));
+                auto &state_it = value.array();
+                const vrf_vkey vrf { state_it.read().bytes() };
+                store_pool_state(pool_id, state_it, vrf);
+            };
+            const auto load_pool_params = [](cbor::zero2::map_reader &map_it, pool_info_map &dst) {
+                auto &key = map_it.read_key();
+                const pool_hash pool_id { key.bytes() };
+                auto &value = map_it.read_val(std::move(key));
+                dst.try_emplace(pool_id, pool_info::from_cbor(value));
+            };
+            const auto load_pool_uint = [](cbor::zero2::map_reader &map_it, auto &dst) {
+                auto &key = map_it.read_key();
+                const pool_hash pool_id { key.bytes() };
+                dst.try_emplace(pool_id, map_it.read_val(std::move(key)).uint());
+            };
+
+            // Legacy PState starts with active pool parameters (28-byte keys),
+            // while PV11 starts with VRF-key occurrences (32-byte keys).
+            {
+                auto &map_it = pstate_it.read().map();
+                if (!map_it.done()) {
+                    auto &key = map_it.read_key();
+                    const auto key_bytes = key.bytes();
+                    if (key_bytes.size() == sizeof(vrf_vkey)) {
+                        format = pstate_format::pv11;
+                        const vrf_vkey vrf { key_bytes };
+                        _pool_vrf_key_hashes.try_emplace(vrf, map_it.read_val(std::move(key)).uint());
+                        while (!map_it.done()) {
+                            auto &next_key = map_it.read_key();
+                            const vrf_vkey next_vrf { next_key.bytes() };
+                            _pool_vrf_key_hashes.try_emplace(next_vrf, map_it.read_val(std::move(next_key)).uint());
+                        }
+                    } else if (key_bytes.size() == sizeof(pool_hash)) {
+                        format = pstate_format::legacy;
+                        const pool_hash pool_id { key_bytes };
+                        auto &value = map_it.read_val(std::move(key));
+                        _active_pool_params.try_emplace(pool_id, pool_info::from_cbor(value));
+                        while (!map_it.done())
+                            load_pool_params(map_it, _active_pool_params);
+                    } else {
+                        throw error(fmt::format("unsupported PState key size: {}", key_bytes.size()));
+                    }
+                }
+            }
+
+            // If the first map was empty, the first field in a value from the
+            // second map discriminates PoolParams (pool id) from StakePoolState (VRF).
+            {
+                auto &map_it = pstate_it.read().map();
+                if (format == pstate_format::pv11) {
+                    while (!map_it.done())
+                        load_pool_state(map_it);
+                } else if (format == pstate_format::legacy) {
+                    while (!map_it.done())
+                        load_pool_params(map_it, _future_pool_params);
+                } else if (!map_it.done()) {
+                    auto &key = map_it.read_key();
+                    const pool_hash pool_id { key.bytes() };
+                    auto &value = map_it.read_val(std::move(key));
+                    auto &value_it = value.array();
+                    const auto first_field = value_it.read().bytes();
+                    if (first_field.size() == sizeof(vrf_vkey)) {
+                        format = pstate_format::pv11;
+                        store_pool_state(pool_id, value_it, vrf_vkey { first_field });
+                        while (!map_it.done())
+                            load_pool_state(map_it);
+                    } else if (first_field.size() == sizeof(pool_hash)) {
+                        format = pstate_format::legacy;
+                        _future_pool_params.try_emplace(pool_id, pool_info { pool_params::from_cbor(value_it) });
+                        while (!map_it.done())
+                            load_pool_params(map_it, _future_pool_params);
+                    } else {
+                        throw error(fmt::format("unsupported PState value discriminator size: {}", first_field.size()));
+                    }
+                }
+            }
+
+            // With two empty leading maps, field three is either PoolParams
+            // (PV11) or an epoch number (legacy), so its value type is sufficient.
+            {
+                auto &map_it = pstate_it.read().map();
+                if (format == pstate_format::pv11) {
+                    while (!map_it.done())
+                        load_pool_params(map_it, _future_pool_params);
+                } else if (format == pstate_format::legacy) {
+                    while (!map_it.done())
+                        load_pool_uint(map_it, _pools_retiring);
+                } else if (!map_it.done()) {
+                    auto &key = map_it.read_key();
+                    const pool_hash pool_id { key.bytes() };
+                    auto &value = map_it.read_val(std::move(key));
+                    if (value.type() == cbor::major_type::array) {
+                        format = pstate_format::pv11;
+                        _future_pool_params.try_emplace(pool_id, pool_info::from_cbor(value));
+                        while (!map_it.done())
+                            load_pool_params(map_it, _future_pool_params);
+                    } else if (value.type() == cbor::major_type::uint) {
+                        format = pstate_format::legacy;
+                        _pools_retiring.try_emplace(pool_id, value.uint());
+                        while (!map_it.done())
+                            load_pool_uint(map_it, _pools_retiring);
+                    } else {
+                        throw error(fmt::format("unsupported PState third-field value type: {}", value.type()));
+                    }
+                }
+            }
+
+            {
+                auto &fourth = pstate_it.read();
+                if (format == pstate_format::pv11) {
+                    _pools_retiring = map_from_cbor<decltype(_pools_retiring)>(fourth);
+                } else if (format == pstate_format::legacy) {
+                    _pool_deposits = map_from_cbor<decltype(_pool_deposits)>(fourth);
+                } else {
+                    // All preceding maps are empty. Preserve the only ambiguous
+                    // field as owned values until protocol parameters are decoded.
+                    _pool_deposits = map_from_cbor<decltype(_pool_deposits)>(fourth);
+                    _pools_retiring = _pool_deposits;
+                }
+            }
         }
         {
             auto &dstate_v = it.read();
@@ -1757,7 +2327,9 @@ namespace turbo::cardano::ledger::shelley {
                 _instant_rewards_reserves = map_from_cbor<decltype(_instant_rewards_reserves)>(r_it.read());
                 _instant_rewards_treasury = map_from_cbor<decltype(_instant_rewards_treasury)>(r_it.read());
             }
+
         }
+        return format == pstate_format::unknown;
     }
 
     void state::_node_load_utxo_state(cbor::zero2::value &v)
@@ -1767,14 +2339,7 @@ namespace turbo::cardano::ledger::shelley {
         _utxo = map_from_cbor<decltype(_utxo)>(it.read());
         _deposited = it.read().uint();
         _fees_utxo = it.read().uint();
-        {
-            auto &props_v = it.read();
-            auto &props_it = props_v.array();
-            _ppups = map_from_cbor<decltype(_ppups)>(props_it.read());
-            _ppups_future = map_from_cbor<decltype(_ppups_future)>(props_it.read());
-            _parse_protocol_params(_params, props_it.read());
-            _parse_protocol_params(_params_prev, props_it.read());
-        }
+        _decode_protocol_state(it.read());
         {
             auto &acc_v = it.read();
             auto &acc_it = acc_v.array();
@@ -1789,6 +2354,8 @@ namespace turbo::cardano::ledger::shelley {
             }
             _stake_pointers = map_from_cbor<decltype(_stake_pointers)>(acc_it.read());
         }
+        if (!it.done())
+            _decode_donations(it.read());
     }
 
     void state::_params_to_cbor(era_encoder &enc, const protocol_params &params) const
@@ -1953,30 +2520,74 @@ namespace turbo::cardano::ledger::shelley {
             _delegation_gov_to_cbor(enc);
             // poolState
             enc.array(4);
-            enc.map_compact(_active_pool_params.size(), [&] {
-                for (const auto &[pool_id, info]: _active_pool_params) {
-                    enc.bytes(pool_id);
-                    info.params.to_cbor(enc, pool_id);
-                }
-            });
-            enc.map_compact(_future_pool_params.size(), [&] {
-                for (const auto &[pool_id, info]: _future_pool_params) {
-                    enc.bytes(pool_id);
-                    info.params.to_cbor(enc, pool_id);
-                }
-            });
-            enc.map_compact(_pools_retiring.size(), [&] {
-                for (const auto &[pool_id, epoch]: _pools_retiring) {
-                    enc.bytes(pool_id);
-                    enc.uint(epoch);
-                }
-            });
-            enc.map_compact(_pool_deposits.size(), [&] {
-                for (const auto &[pool_id, coin]: _pool_deposits) {
-                    enc.bytes(pool_id);
-                    enc.uint(coin);
-                }
-            });
+            if (_params.protocol_ver.major >= 11) {
+                enc.map_compact(_pool_vrf_key_hashes.size(), [&] {
+                    for (const auto &[vrf, occurrences]: _pool_vrf_key_hashes) {
+                        enc.bytes(vrf);
+                        enc.uint(occurrences);
+                    }
+                });
+                const auto encode_pool_states = [this, &enc](const pool_info_map &pools) {
+                    enc.map_compact(pools.size(), [&] {
+                        for (const auto &[pool_id, info]: pools) {
+                            const auto &p = info.params;
+                            enc.bytes(pool_id);
+                            enc.array(10);
+                            enc.bytes(p.vrf_vkey);
+                            enc.uint(p.pledge);
+                            enc.uint(p.cost);
+                            p.margin.to_cbor(enc);
+                            static_cast<stake_ident>(p.reward_id).to_cbor(enc);
+                            p.owners.to_cbor(enc);
+                            p.relays.to_cbor(enc);
+                            p.metadata.to_cbor(enc);
+                            enc.uint(_pool_deposits.at(pool_id));
+                            set_t<stake_ident> delegators {};
+                            if (const auto it = _active_inv_delegs.find(pool_id); it != _active_inv_delegs.end())
+                                delegators.insert(it->second.begin(), it->second.end());
+                            delegators.to_cbor(enc);
+                        }
+                    });
+                };
+                encode_pool_states(_active_pool_params);
+                enc.map_compact(_future_pool_params.size(), [&] {
+                    for (const auto &[pool_id, info]: _future_pool_params) {
+                        enc.bytes(pool_id);
+                        info.params.to_cbor(enc, pool_id);
+                    }
+                });
+                enc.map_compact(_pools_retiring.size(), [&] {
+                    for (const auto &[pool_id, epoch]: _pools_retiring) {
+                        enc.bytes(pool_id);
+                        enc.uint(epoch);
+                    }
+                });
+            } else {
+                enc.map_compact(_active_pool_params.size(), [&] {
+                    for (const auto &[pool_id, info]: _active_pool_params) {
+                        enc.bytes(pool_id);
+                        info.params.to_cbor(enc, pool_id);
+                    }
+                });
+                enc.map_compact(_future_pool_params.size(), [&] {
+                    for (const auto &[pool_id, info]: _future_pool_params) {
+                        enc.bytes(pool_id);
+                        info.params.to_cbor(enc, pool_id);
+                    }
+                });
+                enc.map_compact(_pools_retiring.size(), [&] {
+                    for (const auto &[pool_id, epoch]: _pools_retiring) {
+                        enc.bytes(pool_id);
+                        enc.uint(epoch);
+                    }
+                });
+                enc.map_compact(_pool_deposits.size(), [&] {
+                    for (const auto &[pool_id, coin]: _pool_deposits) {
+                        enc.bytes(pool_id);
+                        enc.uint(coin);
+                    }
+                });
+            }
 
         });
         _add_encode_task(ser, [this] (auto &enc) {
@@ -2283,6 +2894,7 @@ namespace turbo::cardano::ledger::shelley {
         v(_future_pool_params);
         v(_pools_retiring);
         v(_pool_deposits);
+        v(_pool_vrf_key_hashes);
 
         v(_params);
         v(_params_prev);

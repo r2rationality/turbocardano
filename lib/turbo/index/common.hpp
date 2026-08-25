@@ -393,7 +393,9 @@ namespace turbo::index {
                             }
                         }
                         parallel::atomic_max(*new_max_offset, max_offset + sizeof(item));
-                        const auto new_done = done->fetch_add(1, std::memory_order_relaxed) + 1;
+                        // The last partition commits data written by every worker, so this
+                        // counter is also the publication barrier for those writes.
+                        const auto new_done = done->fetch_add(1, std::memory_order_acq_rel) + 1;
                         if (new_done == num_parts) {
                             reader->close();
                             writer->set_meta("max_offset", buffer::from(new_max_offset->load(std::memory_order_relaxed)));

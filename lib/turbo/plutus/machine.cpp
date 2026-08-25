@@ -28,9 +28,10 @@ namespace turbo::plutus {
         {
         }
 
-        void evaluate_no_res(const term &expr)
+        cardano::ex_units evaluate_no_res(const term &expr)
         {
             _eval(expr);
+            return _cost;
         }
 
         result evaluate(const term &expr)
@@ -82,9 +83,13 @@ namespace turbo::plutus {
         {
             if (_budget) {
                 if (_cost.steps > _budget->steps) [[unlikely]]
-                    throw error(fmt::format("plutus program CPU cost has exceeded it's budget: {}", _budget->steps));
+                    throw error(fmt::format(
+                        "plutus program CPU cost has exceeded its budget: consumed {} allowed {}",
+                        _cost.steps, _budget->steps));
                 if (_cost.mem > _budget->mem) [[unlikely]]
-                    throw error(fmt::format("plutus program memory has exceeded it's budget: {}", _budget->mem));
+                    throw error(fmt::format(
+                        "plutus program memory has exceeded its budget: consumed {} allowed {}",
+                        _cost.mem, _budget->mem));
             }
         }
 
@@ -676,9 +681,9 @@ namespace turbo::plutus {
         return _impl->evaluate(expr);
     }
 
-    void machine::evaluate_no_res(const term &expr)
+    cardano::ex_units machine::evaluate_no_res(const term &expr)
     {
-        _impl->evaluate_no_res(expr);
+        return _impl->evaluate_no_res(expr);
     }
 }
 

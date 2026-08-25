@@ -16,10 +16,13 @@ namespace turbo {
 
 namespace turbo::cardano::ledger {
     struct state {
-        explicit state(const cardano::config &cfg=cardano::config::get(), scheduler &sched=scheduler::get());
+        using init_mode = shelley::state_init_mode;
+
+        explicit state(const cardano::config &cfg=cardano::config::get(), scheduler &sched=scheduler::get(),
+            init_mode mode=init_mode::genesis);
 
         bool operator==(const state &o) const;
-        void clear();
+        void clear(init_mode mode=init_mode::genesis);
 
         void load_zpp(const std::string &path);
         void save_zpp(const std::string &path, std::unique_ptr<subchain_list> tmp_sc={});
@@ -191,6 +194,46 @@ namespace turbo::cardano::ledger {
             return _state->_params_prev;
         }
 
+        struct container_size_info {
+            size_t utxos = 0;
+            size_t accounts = 0;
+            size_t pointers = 0;
+            size_t snapshot_entries = 0;
+            size_t reward_entries = 0;
+            size_t delegation_entries = 0;
+            size_t pool_entries = 0;
+        };
+
+        container_size_info container_sizes() const
+        {
+            return {
+                .utxos=_state->_utxo.size(),
+                .accounts=_state->_accounts.size(),
+                .pointers=_state->_ptr_to_stake.size() + _state->_stake_pointers.size(),
+                .snapshot_entries=_state->_reward_pulsing_snapshot.size()
+                    + _state->_active_pool_dist.size()
+                    + _state->_mark.size()
+                    + _state->_set.size()
+                    + _state->_go.size(),
+                .reward_entries=_state->_instant_rewards_reserves.size()
+                    + _state->_instant_rewards_treasury.size()
+                    + _state->_potential_rewards.size()
+                    + _state->_nonmyopic.size()
+                    + _state->_nonmyopic_next.size(),
+                .delegation_entries=_state->_active_inv_delegs.size()
+                    + _state->_future_shelley_delegs.size()
+                    + _state->_shelley_delegs.size(),
+                .pool_entries=_state->_blocks_current.size()
+                    + _state->_blocks_before.size()
+                    + _state->_active_pool_params.size()
+                    + _state->_future_pool_params.size()
+                    + _state->_pools_retiring.size()
+                    + _state->_pool_deposits.size()
+                    + _state->_pool_vrf_key_hashes.size()
+                    + _state->_operating_stake_dist.size()
+            };
+        }
+
         cardano::slot last_slot() const
         {
             return cardano::slot::from_epoch(_state->_epoch, _state->_epoch_slot, _cfg);
@@ -201,7 +244,7 @@ namespace turbo::cardano::ledger {
             return _state->_end_offset;
         }
 
-        const std::set<pool_hash> &pbft_pools() const
+        const flat_set<pool_hash> &pbft_pools() const
         {
             return _state->_pbft_pools;
         }

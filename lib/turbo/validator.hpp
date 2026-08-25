@@ -13,7 +13,7 @@ namespace turbo::cardano::ledger {
 namespace turbo::validator {
     static constexpr std::string_view validate_task{"validate"};
     static constexpr std::string_view validate_leaders_task{"validate-epoch"};
-    static constexpr uint64_t snapshot_format_version = 2;
+    static constexpr uint64_t snapshot_format_version = 4;
 
     struct snapshot {
         uint64_t epoch;
@@ -55,7 +55,7 @@ namespace turbo::validator {
     extern indexer::indexer_map default_indexers(const std::string &data_dir, scheduler &sched=scheduler::get());
 
     struct incremental {
-        incremental(chunk_registry &cr);
+        explicit incremental(chunk_registry &cr, bool validate_vrf=true);
         ~incremental();
         [[nodiscard]] cardano::amount unspent_reward(const cardano::stake_ident &id) const;
         [[nodiscard]] cardano::tail_relative_stake_map tail_relative_stake() const;

@@ -21,12 +21,34 @@ namespace turbo::cardano::mary {
         using shelley::block_base::block_base;
     };
 
+    struct mint_t: multi_mint_map {
+        using multi_mint_map::multi_mint_map;
+        static mint_t from_cbor(cbor::zero2::value &);
+    };
+
+    struct transaction_output_t {
+        tx_out_data value {};
+
+        static transaction_output_t from_cbor(cbor::zero2::value &);
+    };
+
+    struct transaction_outputs_t {
+        tx_output_list value {};
+
+        static transaction_outputs_t from_cbor(cbor::zero2::value &);
+    };
+
+    struct transaction_body_t: shelley::transaction_body_t {
+        std::optional<uint64_t> validity_start {};
+        mint_t mints {};
+
+        static transaction_body_t from_cbor(cbor::zero2::value &);
+    };
+
     struct tx_base: shelley::tx_base {
         using shelley::tx_base::tx_base;
         virtual const multi_mint_map &mints() const =0;
         size_t foreach_mint(const mint_observer_t &) const override;
-    protected:
-        static multi_mint_map parse_mints(cbor::zero2::value &v);
     };
 
     struct tx: tx_base {
@@ -43,17 +65,12 @@ namespace turbo::cardano::mary {
         const multi_mint_map &mints() const override;
         std::optional<uint64_t> validity_start() const override;
     private:
-        input_set _inputs {};
-        tx_output_list _outputs {};
-        uint64_t _fee;
-        std::optional<uint64_t> _validity_end;
-        cert_list _certs {};
-        withdrawal_map _withdrawals {};
-        param_update_proposal_list _updates {};
-        std::optional<uint64_t> _validity_start {};
-        multi_mint_map _mints {};
-        buffer _raw;
-        mutable std::optional<tx_hash> _hash {};
+        transaction_body_t _body;
+    };
+
+    struct block_transactions_t: block_tx_list<tx> {
+        using block_tx_list<tx>::block_tx_list;
+        static block_transactions_t from_cbor(const block_base &, const uint8_t *block_begin, cbor::zero2::array_reader &);
     };
 
     struct block: block_base {
@@ -64,7 +81,7 @@ namespace turbo::cardano::mary {
         const tx_list &txs() const override;
     private:
         block_header _hdr;
-        block_tx_list<tx> _txs;
+        block_transactions_t _txs;
         block_meta_map _meta;
         mutable std::optional<block_hash> _body_hash {};
         const buffer _raw;

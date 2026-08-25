@@ -47,6 +47,17 @@ suite plutus_types_suite = [] {
             expect_equal(66, static_cast<int>(builtin_tag::bls12_381_g2_uncompress));
             expect_equal(67, static_cast<int>(builtin_tag::bls12_381_g2_hash_to_group));
         };
+        "empty byte-string buffer operations"_test = [] {
+            allocator alloc {};
+            const buffer empty {};
+            const bstr_type value { alloc, empty };
+            expect(value->empty());
+
+            bstr_type::value_type bytes { alloc, empty };
+            bytes = empty;
+            bytes << empty;
+            expect(bytes.empty());
+        };
         "builtin arguments use immutable fixed-capacity storage"_test = [] {
             allocator alloc {};
             const auto unit = value::unit(alloc);

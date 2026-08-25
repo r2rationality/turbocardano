@@ -30,7 +30,7 @@ namespace turbo::plutus {
                 const optional_budget &budget={}, uint64_t protocol_major=builtin_case_protocol_major);
         ~machine();
         result evaluate(const term &expr);
-        void evaluate_no_res(const term &expr);
+        cardano::ex_units evaluate_no_res(const term &expr);
     private:
         struct impl;
         std::unique_ptr<impl> _impl;

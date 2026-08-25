@@ -22,4 +22,10 @@ suite crypto_crc32_suite = [] {
             expect(hash == exp_hash) << buffer { input } << fmt::format("{:08X}", hash);
         }
     };
+    "crypto::crc32 unaligned input"_test = [] {
+        uint8_vector storage(257, 0xA5);
+        const buffer aligned { storage.data(), 256 };
+        const buffer unaligned { storage.data() + 1, 256 };
+        expect_equal(crc32::digest(unaligned), crc32::digest(aligned));
+    };
 };

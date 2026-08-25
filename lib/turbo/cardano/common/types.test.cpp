@@ -77,6 +77,8 @@ suite cardano_type_test = [] {
         "slot"_test = [] {
             const configs_dir cfgs { "etc/sanchonet" };
             const cardano::config c_cfg { cfgs };
+            expect(c_cfg.conway_protocol_params.plutus_cost_models.at(2).size() == 233);
+            expect(!c_cfg.conway_constitution.policy_id.has_value());
             const slot s1 { 86300, c_cfg };
             const slot s2 { 86400, c_cfg };
             expect(s1.epoch() != s2.epoch());

@@ -54,8 +54,15 @@ namespace turbo::cli::txwit_prep {
                             ++num_redeemers;
                         });
                         if (num_redeemers) {
-                            stored_tx_context ctx { tx.hash(), num_redeemers, uint8_vector { tx.raw() },
-                                uint8_vector { tx.witness_raw() }, block_info };
+                            stored_tx_context ctx {
+                                .tx_id=tx.hash(),
+                                .num_redeemers=num_redeemers,
+                                .body=uint8_vector { tx.raw() },
+                                .wits=uint8_vector { tx.witness_raw() },
+                                .block=block_info,
+                                .protocol_ver=blk->protocol_ver()
+                            };
+                            ctx.validate_format();
                             bool complete = true;
                             tx.foreach_input([&](const auto &txi) {
                                 auto &txo = ctx.inputs.emplace_back(txi);
@@ -243,7 +250,9 @@ namespace turbo::cli::txwit_prep {
                     timer t1 { fmt::format("load-unres-ctx-{}", epoch), logger::level::info };
                     zpp_stream::read_stream tx_unres_s { unres_path };
                     while (!tx_unres_s.eof()) {
-                        unres_ctxs.emplace_back(tx_unres_s.read<stored_tx_context>());
+                        auto ctx = tx_unres_s.read<stored_tx_context>();
+                        ctx.validate_format();
+                        unres_ctxs.emplace_back(std::move(ctx));
                     }
                 }
                 std::filesystem::remove(unres_path);

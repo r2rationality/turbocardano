@@ -6,12 +6,17 @@
 #include <turbo/base64.hpp>
 #include <turbo/cardano/common/config.hpp>
 #include <turbo/common/test.hpp>
+#include <concepts>
+#include <type_traits>
 
 using namespace turbo;
 using namespace turbo::cardano;
 
 suite cardano_config_suite = [] {
     "cardano::config"_test = [] {
+        static_assert(std::is_nothrow_move_constructible_v<cardano::config>);
+        static_assert(std::is_nothrow_move_assignable_v<cardano::config>);
+        static_assert(std::movable<cardano::config>);
         const cardano::config cfg {};
         "mainnet genesis hashes"_test = [&] {
             expect(cfg.byron_genesis_hash == block_hash::from_hex("5f20df933584822601f9e3f8c024eb5eb252fe8cefb24d1317dc3d432e940ebb"));
@@ -29,6 +34,8 @@ suite cardano_config_suite = [] {
         };
         "plutus cost models"_test = [&] {
             expect(cfg.plutus_all_cost_models.at(0).size() == 166);
+            expect(cfg.conway_protocol_params.plutus_cost_models.at(2).size() == 251);
+            expect(cfg.conway_constitution.policy_id.has_value());
         };
         "byron issuers"_test = [&] {
             static std::set<vkey> orig_issuers {
@@ -43,6 +50,24 @@ suite cardano_config_suite = [] {
             expect_equal(orig_issuers.size(), cfg.byron_issuers.size());
             for (const auto &vk: orig_issuers)
                 expect(cfg.byron_issuers.contains(vk));
+        };
+        "shared immutable data"_test = [&] {
+            cardano::config copy { cfg };
+            expect(&copy.byron_utxos == &cfg.byron_utxos);
+            expect(&copy.shelley_protocol_params == &cfg.shelley_protocol_params);
+            copy.shelley_start_epoch(123);
+            expect_equal(uint64_t { 123 }, copy.shelley_start_epoch());
+            expect(copy.shelley_start_epoch() != cfg.shelley_start_epoch());
+
+            cardano::config moved { std::move(copy) };
+            expect(&moved.byron_utxos == &cfg.byron_utxos);
+            expect_equal(uint64_t { 123 }, moved.shelley_start_epoch());
+            expect(&copy.byron_utxos == &cfg.byron_utxos);
+
+            cardano::config assigned { cfg };
+            assigned = std::move(moved);
+            expect(&assigned.byron_utxos == &cfg.byron_utxos);
+            expect_equal(uint64_t { 123 }, assigned.shelley_start_epoch());
         };
     };
 };

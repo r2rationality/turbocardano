@@ -59,7 +59,8 @@ namespace turbo {
             return *this;
         }
 
-        static_map<K, V> &operator=(const partitioned_map<K, V> &src)
+        template<typename Partition>
+        static_map<K, V> &operator=(const partitioned_map<K, V, Partition> &src)
         {
             _data.clear();
             _data.reserve(src.size());

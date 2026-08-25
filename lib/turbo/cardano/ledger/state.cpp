@@ -18,9 +18,9 @@
 #endif
 
 namespace turbo::cardano::ledger {
-    state::state(const cardano::config &cfg, scheduler &sched):
+    state::state(const cardano::config &cfg, scheduler &sched, const init_mode mode):
         _cfg { cfg }, _sched { sched },
-        _state { std::make_unique<shelley::state>(_cfg, _sched) },
+        _state { std::make_unique<shelley::state>(_cfg, _sched, mode) },
         _vrf_state { std::make_unique<shelley::vrf_state>(_cfg) }
     {
     }
@@ -223,11 +223,11 @@ namespace turbo::cardano::ledger {
         ser.save(path, true);
     }
 
-    void state::clear()
+    void state::clear(const init_mode mode)
     {
         _subchains.clear();
         _eras.clear();
-        _state = std::make_unique<shelley::state>(_cfg, _sched);
+        _state = std::make_unique<shelley::state>(_cfg, _sched, mode);
         _vrf_state = std::make_unique<shelley::vrf_state>(_cfg);
     }
 

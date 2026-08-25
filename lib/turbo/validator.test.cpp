@@ -74,7 +74,19 @@ suite validator_suite = [] {
             });
             expect(static_cast<bool>(ex_ptr));
             expect(cr.num_blocks() == failure_height) << cr.num_blocks();
+            size_t expected_size = 0;
+            for (size_t i = 0; i < failure_height; ++i)
+                expected_size += chain1.blocks.at(i)->blk.raw().size();
+            const auto expected_data = static_cast<buffer>(chain1.data).subbuf(0, expected_size);
+            expect_equal(expected_size, cr.valid_end_offset());
             expect(cr.valid_end_offset() < chain1.data.size()) << cr.valid_end_offset();
+            expect(!cr.chunks().empty());
+            if (!cr.chunks().empty()) {
+                const auto &stored_chunk = cr.chunks().begin()->second;
+                expect_equal(expected_size, stored_chunk.data_size);
+                expect_equal(crypto::blake2b::digest<cardano::block_hash>(expected_data), stored_chunk.data_hash);
+                expect(zstd::read(cr.full_path(stored_chunk.rel_path())) == expected_data);
+            }
         };
         "excessive snapshot"_test = [&] {
             validator::snapshot_set s {};

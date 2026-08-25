@@ -107,6 +107,7 @@ suite cardano_common_bench_suite = [] {
                     for (const auto &obj : d_objs)
                         sum += obj->m1();
                 }
+                ankerl::nanobench::doNotOptimizeAway(sum);
             }, num_iter * d_objs.size());
         };
         "tx ranges::view"_test = [] {

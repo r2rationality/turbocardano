@@ -4,6 +4,7 @@
  * Copyright (c) 2024-2026 R2 Rationality OÜ (info at r2rationality dot com)
  * License: https://github.com/r2rationality/turbocardano/blob/main/LICENSE */
 
+#include <cstddef>
 #include <functional>
 #include <map>
 #include <optional>
@@ -15,6 +16,7 @@
 #include <turbo/cardano/common/types.hpp>
 #include <turbo/common/bytes.hpp>
 #include <turbo/common/format.hpp>
+#include <turbo/common/variant.hpp>
 #include <turbo/file.hpp>
 #include <turbo/math/rational.hpp>
 #include <variant>
@@ -45,14 +47,14 @@ namespace turbo::cardano {
         inline json::value to_json() const;
     };
 
-    struct multi_balance: std::map<std::string, uint64_t> {
-        using base_type = std::map<std::string, uint64_t>;
-        using map::map;
+    struct multi_balance: flat_map<std::string, uint64_t> {
+        using base_type = flat_map<std::string, uint64_t>;
+        using base_type::base_type;
 
         json::object to_json(size_t offset=0, size_t max_items=1000) const;
     };
 
-    using multi_balance_change = std::map<std::string, int64_t>;
+    using multi_balance_change = flat_map<std::string, int64_t>;
 
     struct tx_size {
         constexpr static auto serialize(auto &archive, auto &self)
@@ -116,11 +118,9 @@ namespace turbo::cardano {
         spend, mint, cert, reward, vote, propose
     };
 
-    extern redeemer_tag redeemer_tag_from_cbor(cbor::zero2::value &v);
-
     struct redeemer_id {
         redeemer_tag tag;
-        uint16_t ref_idx;
+        uint32_t ref_idx;
 
         bool operator<(const redeemer_id &o) const
         {
@@ -137,18 +137,16 @@ namespace turbo::cardano {
 
     struct tx_redeemer {
         redeemer_tag tag;
-        uint16_t ref_idx;
+        uint32_t ref_idx;
         uint8_vector data;
         ex_units budget;
-
-        static tx_redeemer from_cbor(cbor::zero2::array_reader &it);
-        static tx_redeemer from_cbor(cbor::zero2::map_reader &it);
 
         redeemer_id id() const
         {
             return { tag, ref_idx };
         }
     };
+    using tx_redeemer_map = flat_map<redeemer_id, tx_redeemer>;
 
     struct block_kes_signature {
         const buffer vkey_hot;
@@ -232,7 +230,7 @@ namespace turbo::cardano {
         buffer raw;
 
         invalid_tx_set() =default;
-        invalid_tx_set(cbor::zero2::value &v);
+        static invalid_tx_set from_cbor(cbor::zero2::value &);
     };
 
     template<typename TX>
@@ -409,7 +407,7 @@ namespace turbo::cardano {
     struct tx_wit_shelley_bootstrap {
         crypto::ed25519::vkey vkey {};
         crypto::ed25519::signature sig {};
-        crypto::ed25519::vkey chain_code {};
+        uint8_vector chain_code {};
         uint8_vector attrs {};
 
         static tx_wit_shelley_bootstrap from_cbor(cbor::zero2::value &);
@@ -425,23 +423,19 @@ namespace turbo::cardano {
     using tx_wit_base_t = std::variant<
         tx_wit_byron_vkey, tx_wit_byron_redeemer,
         tx_wit_shelley_vkey, tx_wit_shelley_bootstrap,
-        tx_redeemer, tx_wit_datum,
-        script_info>;
+        tx_wit_datum, script_info>;
     struct tx_wit: tx_wit_base_t {
         using tx_wit_base_t::tx_wit_base_t;
     };
     using tx_wit_list = std::vector<tx_wit>;
 
     struct block_meta_map {
-        buffer raw;
+        buffer raw {};
 
-        block_meta_map(cbor::zero2::value &v):
-            raw { v.data_raw() }
-        {
-        }
+        static block_meta_map from_cbor(cbor::zero2::value &);
     };
 
-    using tail_relative_stake_map = std::map<point, double>;
+    using tail_relative_stake_map = flat_map<point, double>;
 
     struct wit_cnt {
         size_t vkey = 0;
@@ -485,7 +479,6 @@ namespace turbo::cardano {
     using shelley_vkey_observer_t = std::function<void(const tx_wit_shelley_vkey &)>;
     using shelley_bootstrap_observer_t = std::function<void(const tx_wit_shelley_bootstrap &)>;
     using script_observer_t = std::function<void(const script_info &)>;
-    using set_observer_t = std::function<void(cbor::zero2::value &)>;
     using input_observer_t = std::function<void(const tx_input &)>;
     using output_observer_t = std::function<void(const tx_output &)>;
     using mint_observer_t = std::function<void(const script_hash &, const policy_mint_map &)>;
@@ -551,10 +544,7 @@ namespace turbo::cardano {
         block_container() =delete;
         block_container(const block_container &) =delete;
 
-        block_container(const uint64_t offset, cbor::zero2::value &v, const config &cfg=cardano::config::get()):
-            block_container { offset, v.array(), v, cfg }
-        {
-        }
+        block_container(uint64_t offset, cbor::zero2::value &v, const config &cfg=cardano::config::get());
 
         //block_container(block_container &&o);
         block_container(uint64_t offset, const block_info &meta, const config &cfg=cardano::config::get());
@@ -615,14 +605,11 @@ namespace turbo::cardano {
         storage_type _val alignas(64);
         std::optional<buffer> _raw;
 
-        static storage_type _make(uint8_t era, uint64_t offset, cbor::zero2::value &block_tuple, cbor::zero2::value &block, const config &cfg);
+        static void _make(storage_type &storage, uint8_t era, uint64_t offset,
+            cbor::zero2::value &block_tuple, cbor::zero2::value &block, const config &cfg);
 
-        block_container(const uint64_t offset, cbor::zero2::array_reader &it, cbor::zero2::value &block_tuple, const config &cfg=cardano::config::get()):
-            _era { numeric_cast<uint8_t>(it.read().uint()) },
-            _val { _make(_era, offset, block_tuple, it.read(), cfg) },
-            _raw { block_tuple.data_raw() }
-        {
-        }
+        block_container(uint64_t offset, cbor::zero2::array_reader &it,
+            cbor::zero2::value &block_tuple, const config &cfg=cardano::config::get());
     };
 
     struct tx_base {
@@ -672,8 +659,8 @@ namespace turbo::cardano {
         void foreach_redeemer(const redeemer_observer_t &observer) const;
 
         wit_cnt witnesses_ok(const plutus::context *ctx=nullptr) const;
-        wit_cnt witnesses_ok_vkey(std::set<key_hash> &) const;
-        wit_cnt witnesses_ok_native(const std::set<key_hash> &vkeys) const;
+        wit_cnt witnesses_ok_vkey(signer_set &) const;
+        wit_cnt witnesses_ok_native(const signer_set &vkeys) const;
         wit_cnt witnesses_ok_plutus(const plutus::context &) const;
 
         virtual const cert_list &certs() const =0;
@@ -684,7 +671,6 @@ namespace turbo::cardano {
         virtual uint64_t fee() const =0;
         virtual buffer raw() const =0;
 
-        virtual void foreach_set(cbor::zero2::value &set_raw, const set_observer_t &observer) const;
         virtual void foreach_referenced_input(const input_observer_t &) const {}
         virtual size_t foreach_mint(const mint_observer_t &) const { return 0; }
         virtual void foreach_withdrawal(const withdrawal_observer_t &) const {}
@@ -732,6 +718,24 @@ namespace turbo::cardano {
             throw error(fmt::format("transaction witnesses have not been parsed for TX #{}", hash()));
         }
 
+        const tx_redeemer_map &redeemers() const
+        {
+            if (_wits_raw) [[likely]] {
+                if (const auto *items = redeemer_items())
+                    return *items;
+                static const tx_redeemer_map empty {};
+                return empty;
+            }
+            throw error(fmt::format("transaction witnesses have not been parsed for TX #{}", hash()));
+        }
+
+        buffer redeemers_raw() const
+        {
+            if (_wits_raw) [[likely]]
+                return redeemer_bytes();
+            throw error(fmt::format("transaction witnesses have not been parsed for TX #{}", hash()));
+        }
+
         json::object to_json(const tail_relative_stake_map &) const;
     protected:
         friend block_base;
@@ -745,6 +749,16 @@ namespace turbo::cardano {
         tx_wit_list _wits {};
         std::optional<buffer> _wits_raw {};
 
+        virtual const tx_redeemer_map *redeemer_items() const
+        {
+            return nullptr;
+        }
+
+        virtual buffer redeemer_bytes() const
+        {
+            return {};
+        }
+
         static uint16_t tx_idx_cast(const size_t idx)
         {
             if (idx < (1 << 15)) [[likely]]
@@ -757,32 +771,6 @@ namespace turbo::cardano {
             _invalid = 1;
         }
 
-        template <typename T>
-        void parse_witnesses_type(cbor::zero2::value &v)
-        {
-            set_t<T>::foreach_item(
-                v,
-                [&](auto &iv) {
-                    _wits.emplace_back(T::from_cbor(iv));
-                },
-                [&](const auto sz) {
-                    _wits.reserve(_wits.size() + sz);
-                }
-            );
-        }
-
-        void parse_witnesses_script(const script_type typ, cbor::zero2::value &v)
-        {
-            set_t<script_info>::foreach_item(
-                v,
-                [&](auto &iv) {
-                    _wits.emplace_back(script_info::from_cbor(typ, iv));
-                },
-                [&](const auto sz) {
-                    _wits.reserve(_wits.size() + sz);
-                }
-            );
-        }
     };
 
     inline void block_base::mark_invalid_tx(const size_t idx)
@@ -791,7 +779,7 @@ namespace turbo::cardano {
     }
 
     struct tx_container {
-        using impl_storage = byte_array<768>;
+        using impl_storage = byte_array<808>; // MS VC++ requires more storage space than GCC and Clang!
 
         tx_container(const block_info &meta, uint64_t tx_abs_off, cbor::zero2::value &tx, size_t idx, const config &cfg);
         tx_container(const block_info &meta, uint64_t tx_abs_off, cbor::zero2::value &tx, cbor::zero2::value &wits, size_t idx, const config &cfg);
@@ -802,7 +790,7 @@ namespace turbo::cardano {
     private:
         struct impl;
 
-        impl_storage _impl;
+        alignas(std::max_align_t) impl_storage _impl;
     };
 }
 

@@ -38,7 +38,7 @@ namespace {
             if (!ec) [[likely]] {
                 _func();
             } else {
-                logger::debug(boost::stacktrace::to_string(boost::stacktrace::stacktrace {}));
+                logger::debug("{}", boost::stacktrace::to_string(boost::stacktrace::stacktrace {}));
                 logger::debug("timer cancelled or failed: {}", ec.message());
             }
         }
@@ -102,6 +102,7 @@ suite cardano_network_server_suite = [] {
                     iow->io_context().stop();
                 });
                 iow->io_context().run();
+                iow->io_context().restart();
             }
             expect(!timer_stop.load(std::memory_order_relaxed));
             if (tip_resp.has_value() && std::holds_alternative<intersection_info_t>(tip_resp->res)) {
@@ -205,7 +206,7 @@ suite cardano_network_server_suite = [] {
                     auto client = client_manager_async::get().connect(listen_addr, v14, cr->config(), iow);
                     const point2 from { 74044592, block_hash::from_hex("9903904F8A09D48FDAF19646D0907403536AFD6BE85C9BD7038A58BF0267A1AA") };
                     const point2 to { 74044785, block_hash::from_hex("43D6618AC1DC787EBCFEB99032109EBDA7A478723AA764A205773AE21C3EF743") };
-                    client->fetch_blocks(from, to, [&](auto resp) {
+                    client->fetch_blocks(from, to, [&, to](auto resp) {
                         return std::visit([&](auto &&rv) -> bool {
                             using T = std::decay_t<decltype(rv)>;
                             if constexpr (std::is_same_v<T, client::error_msg>) {
@@ -213,7 +214,6 @@ suite cardano_network_server_suite = [] {
                                 num_errs.fetch_add(1, std::memory_order_relaxed);
                                 iow->io_context().post([&] {
                                     timer->cancel();
-                                    iow->io_context().stop();
                                 });
                                 return false;
                             } else if constexpr (std::is_same_v<T, client::msg_block_t>) {
@@ -222,7 +222,6 @@ suite cardano_network_server_suite = [] {
                                 if (blk->blk->point2() == to) {
                                     iow->io_context().post([&] {
                                         timer->cancel();
-                                        iow->io_context().stop();
                                     });
                                     return false;
                                 }
@@ -257,7 +256,7 @@ suite cardano_network_server_suite = [] {
                     auto client = client_manager_async::get().connect(listen_addr, v14v15, cr->config(), iow);
                     const point2 from { 74044592, block_hash::from_hex("9903904F8A09D48FDAF19646D0907403536AFD6BE85C9BD7038A58BF0267A1AA") };
                     const point2 to { 74044785, block_hash::from_hex("43D6618AC1DC787EBCFEB99032109EBDA7A478723AA764A205773AE21C3EF743") };
-                    client->fetch_blocks(from, to, [&](auto &&resp) {
+                    client->fetch_blocks(from, to, [&, to](auto &&resp) {
                         return std::visit([&](auto &&rv) -> bool {
                             using T = std::decay_t<decltype(rv)>;
                             if constexpr (std::is_same_v<T, client::error_msg>) {
@@ -274,7 +273,6 @@ suite cardano_network_server_suite = [] {
                                 if (blk->blk->point2() == to) {
                                     iow->io_context().post([&] {
                                         timer->cancel();
-                                        iow->io_context().stop();
                                     });
                                     return false;
                                 }
@@ -288,7 +286,6 @@ suite cardano_network_server_suite = [] {
                                     if (blk->blk->point2() == to) {
                                         iow->io_context().post([&] {
                                             timer->cancel();
-                                            iow->io_context().stop();
                                         });
                                         return false;
                                     }

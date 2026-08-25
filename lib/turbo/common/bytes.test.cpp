@@ -33,10 +33,10 @@ suite turbo_common_bytes_suite = [] {
             expect_equal(0x04U, static_cast<buffer>(tmp).subbuf(3).to<uint8_t>());
             expect_equal(0U, static_cast<buffer>(tmp).subbuf(4).size());
             expect_equal(0U, static_cast<buffer>(tmp).subbuf(4, 0).size());
-            expect(throws([&] { static_cast<buffer>(tmp).to<uint64_t>(); }));
-            expect(throws([&] { static_cast<buffer>(tmp).at(4); }));
-            expect(throws([&] { static_cast<buffer>(tmp).subbuf(5); }));
-            expect(throws([&] { static_cast<buffer>(tmp).subbuf(5, 0); }));
+            expect(throws([&] { (void)static_cast<buffer>(tmp).to<uint64_t>(); }));
+            expect(throws([&] { (void)static_cast<buffer>(tmp).at(4); }));
+            expect(throws([&] { (void)static_cast<buffer>(tmp).subbuf(5); }));
+            expect(throws([&] { (void)static_cast<buffer>(tmp).subbuf(5, 0); }));
         };
         "byte_array contruct"_test = [] {
             expect(throws([] { const byte_array<4> tmp { 5, 4, 3, 2, 5 }; }));
@@ -69,7 +69,7 @@ suite turbo_common_bytes_suite = [] {
             expect_equal(false, a.bit(13));
             expect_equal(false, a.bit(14));
             expect_equal(false, a.bit(15));
-            expect(throws([&] { a.bit(16); }));
+            expect(throws([&] { (void)a.bit(16); }));
         };
         "do not initialize"_test = [] {
             using my_array_t = byte_array<4>;

@@ -23,7 +23,7 @@ namespace turbo::cli::txwit_plutus {
             cmd.opts.try_emplace("epoch", "evaluate only the given epoch");
             cmd.opts.try_emplace("file", "evaluate only the given file");
             cmd.opts.try_emplace("tx", "evaluate only the given transaction");
-            cmd.opts.try_emplace("protocol", "protocol major version for stored Conway-era contexts");
+            cmd.opts.try_emplace("protocol", "override the protocol major version stored in each context");
             cmd.opts.try_emplace("workers", "force the scheduler to use a given number of wokers");
         }
 
@@ -123,6 +123,7 @@ namespace turbo::cli::txwit_plutus {
             eval_result res {};
             while (!rs.eof()) {
                 auto stored_ctx = rs.read<stored_tx_context>();
+                stored_ctx.validate_format();
                 const auto tx_id = stored_ctx.tx_id;
                 if (cfg.tx && tx_id != *cfg.tx)
                     continue;

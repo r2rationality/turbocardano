@@ -12,6 +12,11 @@ namespace turbo {
     extern std::string install_path(std::string_view rel_path);
 
     struct config {
+        config() =default;
+        config(const config &) =default;
+        config(config &&) noexcept =default;
+        config &operator=(const config &) =default;
+        config &operator=(config &&) noexcept =default;
         virtual ~config() =default;
 
         [[nodiscard]] const json::value &at(const std::string_view &name) const
@@ -44,8 +49,8 @@ namespace turbo {
         {
         }
     private:
-        const json::object _json;
-        const uint8_vector _bytes;
+        json::object _json;
+        uint8_vector _bytes;
 
         const json::value &_at_impl(const std::string_view &name) const override
         {
@@ -84,6 +89,11 @@ namespace turbo {
     };
 
     struct configs {
+        configs() =default;
+        configs(const configs &) =default;
+        configs(configs &&) noexcept =default;
+        configs &operator=(const configs &) =default;
+        configs &operator=(configs &&) noexcept =default;
         virtual ~configs() =default;
 
         [[nodiscard]] const config &at(const std::string &name) const
@@ -103,7 +113,7 @@ namespace turbo {
         {
         }
     private:
-        const map_type _map;
+        map_type _map;
 
         const config &_at_impl(const std::string &name) const override
         {

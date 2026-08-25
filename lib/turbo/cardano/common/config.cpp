@@ -17,11 +17,13 @@ namespace turbo::cardano {
     shelley_delegate_map config::_shelley_prep_delegates(const turbo::config &shelley_genesis)
     {
         shelley_delegate_map delegs {};
-        for (const auto &[id, meta]: shelley_genesis.at("genDelegs").as_object()) {
-            delegs[key_hash::from_hex(id)] = shelley_delegate {
+        const auto &genesis_delegs = shelley_genesis.at("genDelegs").as_object();
+        delegs.reserve(genesis_delegs.size());
+        for (const auto &[id, meta]: genesis_delegs) {
+            delegs.try_emplace(key_hash::from_hex(id), shelley_delegate {
                 pool_hash::from_hex(meta.at("delegate").as_string()),
                 vrf_vkey::from_hex(meta.at("vrf").as_string())
-            };
+            });
         }
         return delegs;
     }
@@ -39,18 +41,21 @@ namespace turbo::cardano {
         return txos;
     }
 
-    std::set<vkey> config::_byron_prep_heavy(const turbo::config &genesis, const std::string_view key)
+    vkey_set config::_byron_prep_heavy(const turbo::config &genesis, const std::string_view key)
     {
-        std::set<vkey> issuers {};
-        for (const auto &[deleg_id, deleg_info]: genesis.at("heavyDelegation").as_object()) {
+        vkey_set issuers {};
+        const auto &heavy_delegation = genesis.at("heavyDelegation").as_object();
+        issuers.reserve(heavy_delegation.size());
+        for (const auto &[deleg_id, deleg_info]: heavy_delegation) {
             issuers.emplace(static_cast<buffer>(base64::decode(json::value_to<std::string_view>(deleg_info.at(key)))).subbuf(0, 32));
         }
         return issuers;
     }
 
-    std::set<key_hash> config::_byron_prep_hashes(const std::set<vkey> &vkeys)
+    signer_set config::_byron_prep_hashes(const vkey_set &vkeys)
     {
-        std::set<key_hash> hashes {};
+        signer_set hashes {};
+        hashes.reserve(vkeys.size());
         for (const auto &vk: vkeys) {
             hashes.emplace(crypto::blake2b::digest<key_hash>(vk));
         }
@@ -122,39 +127,253 @@ namespace turbo::cardano {
         return res;
     }
 
-    config::config(const configs &cfg)
-        : byron_genesis { cfg.at(std::filesystem::path { json::value_to<std::string>(cfg.at("config").at("ByronGenesisFile")) }.stem().string()) },
-        byron_genesis_hash { _verify_hash_byron(cfg.at("config").at("ByronGenesisHash").as_string(), byron_genesis) },
-        byron_protocol_magic { json::value_to<uint32_t>(byron_genesis.at("protocolConsts").at("protocolMagic")) },
-        byron_start_time { json::value_to<uint64_t>(byron_genesis.at("startTime")) },
-        byron_epoch_length { 21600 },
-        byron_slot_duration { std::stoull(json::value_to<std::string>(byron_genesis.at("blockVersionData").as_object().at("slotDuration"))) / 1000 },
-        byron_utxos { _byron_prep_utxos(byron_genesis) },
-        byron_issuers { _byron_prep_heavy(byron_genesis, "issuerPk") },
-        byron_delegate_hashes { _byron_prep_hashes(_byron_prep_heavy(byron_genesis, "delegatePk")) },
-        shelley_genesis { cfg.at(std::filesystem::path { json::value_to<std::string>(cfg.at("config").at("ShelleyGenesisFile")) }.stem().string()) },
-        shelley_genesis_hash { _verify_hash(cfg.at("config").at("ShelleyGenesisHash").as_string(), shelley_genesis) },
-        shelley_epoch_length { json::value_to<uint64_t>(shelley_genesis.at("epochLength")) },
-        shelley_update_quorum { json::value_to<uint64_t>(shelley_genesis.at("updateQuorum")) },
-        shelley_max_lovelace_supply { json::value_to<uint64_t>(shelley_genesis.at("maxLovelaceSupply")) },
-        shelley_network_id { shelley_genesis.at("networkId").as_string() == "Mainnet" ? uint8_t { 1 } : uint8_t { 0 } },
-        shelley_active_slots { json::value_to<double>(shelley_genesis.at("activeSlotsCoeff")) },
-        shelley_security_param { json::value_to<uint64_t>(shelley_genesis.at("securityParam")) },
-        shelley_epoch_blocks { static_cast<uint64_t>(shelley_active_slots * shelley_epoch_length) },
-        shelley_rewards_ready_slot { shelley_epoch_length - static_cast<uint64_t>(std::ceil(2 * shelley_security_param / shelley_active_slots)) },
-        shelley_stability_window { static_cast<uint64_t>(std::ceil(3 * shelley_security_param / shelley_active_slots)) },
-        shelley_randomness_stabilization_window { static_cast<uint64_t>(std::ceil(4 * shelley_security_param / shelley_active_slots)) },
-        shelley_voting_deadline { static_cast<uint64_t>(std::ceil(4 * shelley_security_param / shelley_active_slots)) },
-        shelley_delegates { _shelley_prep_delegates(shelley_genesis) },
-        alonzo_genesis { cfg.at(std::filesystem::path { json::value_to<std::string>(cfg.at("config").at("AlonzoGenesisFile")) }.stem().string()) },
-        alonzo_genesis_hash { _verify_hash(cfg.at("config").at("AlonzoGenesisHash").as_string(), alonzo_genesis) },
-        conway_genesis { cfg.at(std::filesystem::path { json::value_to<std::string>(cfg.at("config").at("ConwayGenesisFile")) }.stem().string()) },
-        conway_genesis_hash { _verify_hash(cfg.at("config").at("ConwayGenesisHash").as_string(), conway_genesis) },
-        plutus_all_cost_models { _prep_plutus_cost_models(alonzo_genesis) },
-        conway_pool_voting_thresholds { decltype(conway_pool_voting_thresholds)::from_json(conway_genesis.at("poolVotingThresholds").as_object()) },
-        conway_drep_voting_thresholds { decltype(conway_drep_voting_thresholds)::from_json(conway_genesis.at("dRepVotingThresholds").as_object()) }
+    static protocol_params _prep_shelley_protocol_params(const turbo::config &genesis)
+    {
+        const auto &params = genesis.at("protocolParams").as_object();
+        protocol_params p {};
+        p.min_fee_a = json::value_to<uint64_t>(params.at("minFeeA"));
+        p.min_fee_b = json::value_to<uint64_t>(params.at("minFeeB"));
+        p.max_block_body_size = json::value_to<uint64_t>(params.at("maxBlockBodySize"));
+        p.max_transaction_size = json::value_to<uint64_t>(params.at("maxTxSize"));
+        p.max_block_header_size = json::value_to<uint64_t>(params.at("maxBlockHeaderSize"));
+        p.key_deposit = json::value_to<uint64_t>(params.at("keyDeposit"));
+        p.pool_deposit = json::value_to<uint64_t>(params.at("poolDeposit"));
+        p.e_max = json::value_to<uint64_t>(params.at("eMax"));
+        p.n_opt = json::value_to<uint64_t>(params.at("nOpt"));
+        p.expansion_rate = rational_u64::from_double(json::value_to<double>(params.at("rho")));
+        p.treasury_growth_rate = rational_u64::from_double(json::value_to<double>(params.at("tau")));
+        p.pool_pledge_influence = rational_u64::from_double(json::value_to<double>(params.at("a0")));
+        p.decentralization = rational_u64::from_double(json::value_to<double>(params.at("decentralisationParam")));
+        p.min_utxo_value = json::value_to<uint64_t>(params.at("minUTxOValue"));
+        p.min_pool_cost = json::value_to<uint64_t>(params.at("minPoolCost"));
+        return p;
+    }
+
+    static protocol_params _prep_alonzo_protocol_params(
+            const turbo::config &genesis,
+            const plutus_cost_models &all_cost_models)
+    {
+        protocol_params p {};
+        p.lovelace_per_utxo_byte = json::value_to<uint64_t>(genesis.at("lovelacePerUTxOWord"));
+        p.ex_unit_prices = decltype(p.ex_unit_prices)::from_json(genesis.at("executionPrices"));
+        p.max_tx_ex_units = decltype(p.max_tx_ex_units)::from_json(genesis.at("maxTxExUnits"));
+        p.max_block_ex_units = decltype(p.max_block_ex_units)::from_json(genesis.at("maxBlockExUnits"));
+        p.max_value_size = json::value_to<uint64_t>(genesis.at("maxValueSize"));
+        p.max_collateral_pct = json::value_to<uint64_t>(genesis.at("collateralPercentage"));
+        p.max_collateral_inputs = json::value_to<uint64_t>(genesis.at("maxCollateralInputs"));
+        p.plutus_cost_models.items.emplace(0, plutus_cost_model::from_json(
+            all_cost_models.at(0), genesis.at("costModels").at("PlutusV1")));
+        return p;
+    }
+
+    static protocol_params _prep_conway_protocol_params(
+            const turbo::config &genesis,
+            const plutus_cost_models &all_cost_models)
+    {
+        protocol_params p {};
+        const auto &v3_json = genesis.at("plutusV3CostModel");
+        const auto &v3_defaults = all_cost_models.at(2);
+        if (v3_json.is_array() && v3_json.as_array().size() < v3_defaults.raw_values().size()) {
+            // Older Conway genesis files (notably SanchoNet) contain the original
+            // 233-entry Plutus V3 model. Cost-model arrays are ordered prefixes, so
+            // retain that historical size instead of manufacturing values for
+            // parameters introduced by later protocol versions.
+            auto legacy_raw = v3_defaults.raw_values();
+            legacy_raw.resize(v3_json.as_array().size());
+            const plutus_cost_model legacy_defaults {
+                std::move(legacy_raw), plutus::costs::cost_arg_names_v3()
+            };
+            p.plutus_cost_models.items.emplace(2,
+                plutus_cost_model::from_json(legacy_defaults, v3_json));
+        } else {
+            p.plutus_cost_models.items.emplace(2,
+                plutus_cost_model::from_json(v3_defaults, v3_json));
+        }
+        p.pool_voting_thresholds = decltype(p.pool_voting_thresholds)::from_json(
+            genesis.at("poolVotingThresholds").as_object());
+        p.drep_voting_thresholds = decltype(p.drep_voting_thresholds)::from_json(
+            genesis.at("dRepVotingThresholds").as_object());
+        p.committee_min_size = json::value_to<uint64_t>(genesis.at("committeeMinSize"));
+        p.committee_max_term_length = json::value_to<uint64_t>(genesis.at("committeeMaxTermLength"));
+        p.gov_action_lifetime = json::value_to<uint64_t>(genesis.at("govActionLifetime"));
+        p.gov_action_deposit = json::value_to<uint64_t>(genesis.at("govActionDeposit"));
+        p.drep_deposit = json::value_to<uint64_t>(genesis.at("dRepDeposit"));
+        p.drep_activity = json::value_to<uint64_t>(genesis.at("dRepActivity"));
+        p.min_fee_ref_script_cost_per_byte = decltype(p.min_fee_ref_script_cost_per_byte)::from_json(
+            json::value_to<double>(genesis.at("minFeeRefScriptCostPerByte")));
+        return p;
+    }
+
+    struct config::immutable {
+        block_hash byron_genesis_hash {};
+        uint32_t byron_protocol_magic = 0;
+        uint64_t byron_start_time = 0;
+        uint64_t byron_epoch_length = 21600;
+        uint64_t byron_slot_duration = 0;
+        txo_map byron_utxos {};
+        vkey_set byron_issuers {};
+        signer_set byron_delegate_hashes {};
+        uint64_t byron_slots_per_chunk = 21600;
+        block_hash shelley_genesis_hash {};
+        uint64_t shelley_epoch_length = 0;
+        uint64_t shelley_update_quorum = 0;
+        uint64_t shelley_max_lovelace_supply = 0;
+        uint8_t shelley_network_id = 0;
+        double shelley_active_slots = 0;
+        uint64_t shelley_security_param = 0;
+        uint64_t shelley_epoch_blocks = 0;
+        uint64_t shelley_rewards_ready_slot = 0;
+        uint64_t shelley_stability_window = 0;
+        uint64_t shelley_randomness_stabilization_window = 0;
+        uint64_t shelley_voting_deadline = 0;
+        uint64_t shelley_chunks_per_epoch = 0;
+        shelley_delegate_map shelley_delegates {};
+        block_hash alonzo_genesis_hash {};
+        block_hash conway_genesis_hash {};
+        plutus_cost_models plutus_all_cost_models {};
+        pool_voting_thresholds_t conway_pool_voting_thresholds {};
+        drep_voting_thresholds_t conway_drep_voting_thresholds {};
+        protocol_params shelley_protocol_params {};
+        protocol_params alonzo_protocol_params {};
+        protocol_params conway_protocol_params {};
+        committee_member_map conway_committee_members {};
+        rational_u64 conway_committee_threshold {};
+        constitution_t conway_constitution {};
+
+        explicit immutable(const configs &cfg)
+        {
+            const auto &node_config = cfg.at("config");
+            const auto genesis = [&](const std::string_view name) -> const turbo::config & {
+                return cfg.at(std::filesystem::path {
+                    json::value_to<std::string>(node_config.at(name))
+                }.stem().string());
+            };
+
+            const auto &byron = genesis("ByronGenesisFile");
+            byron_genesis_hash = config::_verify_hash_byron(
+                node_config.at("ByronGenesisHash").as_string(), byron);
+            byron_protocol_magic = json::value_to<uint32_t>(byron.at("protocolConsts").at("protocolMagic"));
+            byron_start_time = json::value_to<uint64_t>(byron.at("startTime"));
+            byron_slot_duration = std::stoull(
+                json::value_to<std::string>(byron.at("blockVersionData").as_object().at("slotDuration"))) / 1000;
+            byron_utxos = config::_byron_prep_utxos(byron);
+            byron_issuers = config::_byron_prep_heavy(byron, "issuerPk");
+            byron_delegate_hashes = config::_byron_prep_hashes(config::_byron_prep_heavy(byron, "delegatePk"));
+
+            const auto &shelley = genesis("ShelleyGenesisFile");
+            shelley_genesis_hash = config::_verify_hash(
+                node_config.at("ShelleyGenesisHash").as_string(), shelley);
+            shelley_epoch_length = json::value_to<uint64_t>(shelley.at("epochLength"));
+            shelley_update_quorum = json::value_to<uint64_t>(shelley.at("updateQuorum"));
+            shelley_max_lovelace_supply = json::value_to<uint64_t>(shelley.at("maxLovelaceSupply"));
+            shelley_network_id = shelley.at("networkId").as_string() == "Mainnet" ? uint8_t { 1 } : uint8_t { 0 };
+            shelley_active_slots = json::value_to<double>(shelley.at("activeSlotsCoeff"));
+            shelley_security_param = json::value_to<uint64_t>(shelley.at("securityParam"));
+            shelley_epoch_blocks = static_cast<uint64_t>(shelley_active_slots * shelley_epoch_length);
+            shelley_rewards_ready_slot = shelley_epoch_length
+                - static_cast<uint64_t>(std::ceil(2 * shelley_security_param / shelley_active_slots));
+            shelley_stability_window = static_cast<uint64_t>(
+                std::ceil(3 * shelley_security_param / shelley_active_slots));
+            shelley_randomness_stabilization_window = static_cast<uint64_t>(
+                std::ceil(4 * shelley_security_param / shelley_active_slots));
+            shelley_voting_deadline = static_cast<uint64_t>(
+                std::ceil(4 * shelley_security_param / shelley_active_slots));
+            shelley_chunks_per_epoch = shelley_epoch_length / byron_slots_per_chunk;
+            shelley_delegates = config::_shelley_prep_delegates(shelley);
+            shelley_protocol_params = _prep_shelley_protocol_params(shelley);
+
+            const auto &alonzo = genesis("AlonzoGenesisFile");
+            alonzo_genesis_hash = config::_verify_hash(
+                node_config.at("AlonzoGenesisHash").as_string(), alonzo);
+            plutus_all_cost_models = config::_prep_plutus_cost_models(alonzo);
+            alonzo_protocol_params = _prep_alonzo_protocol_params(alonzo, plutus_all_cost_models);
+
+            const auto &conway = genesis("ConwayGenesisFile");
+            conway_genesis_hash = config::_verify_hash(
+                node_config.at("ConwayGenesisHash").as_string(), conway);
+            conway_protocol_params = _prep_conway_protocol_params(conway, plutus_all_cost_models);
+            conway_pool_voting_thresholds = conway_protocol_params.pool_voting_thresholds;
+            conway_drep_voting_thresholds = conway_protocol_params.drep_voting_thresholds;
+            const auto &committee = conway.at("committee");
+            const auto &committee_members = committee.at("members").as_object();
+            conway_committee_members.reserve(committee_members.size());
+            for (const auto &[cred, epoch]: committee_members) {
+                conway_committee_members.try_emplace(
+                    credential_t::from_json(cred), json::value_to<uint64_t>(epoch));
+            }
+            conway_committee_threshold = decltype(conway_committee_threshold)::from_json(
+                committee.at("threshold"));
+            conway_constitution = constitution_t::from_json(conway.at("constitution"));
+        }
+    };
+
+    config::config(
+            std::shared_ptr<const immutable> immutable_,
+            const std::optional<uint64_t> shelley_start_slot_) noexcept:
+        _immutable { std::move(immutable_) },
+        byron_genesis_hash { _immutable->byron_genesis_hash },
+        byron_protocol_magic { _immutable->byron_protocol_magic },
+        byron_start_time { _immutable->byron_start_time },
+        byron_epoch_length { _immutable->byron_epoch_length },
+        byron_slot_duration { _immutable->byron_slot_duration },
+        byron_utxos { _immutable->byron_utxos },
+        byron_issuers { _immutable->byron_issuers },
+        byron_delegate_hashes { _immutable->byron_delegate_hashes },
+        byron_slots_per_chunk { _immutable->byron_slots_per_chunk },
+        shelley_genesis_hash { _immutable->shelley_genesis_hash },
+        shelley_epoch_length { _immutable->shelley_epoch_length },
+        shelley_update_quorum { _immutable->shelley_update_quorum },
+        shelley_max_lovelace_supply { _immutable->shelley_max_lovelace_supply },
+        shelley_network_id { _immutable->shelley_network_id },
+        shelley_active_slots { _immutable->shelley_active_slots },
+        shelley_security_param { _immutable->shelley_security_param },
+        shelley_epoch_blocks { _immutable->shelley_epoch_blocks },
+        shelley_rewards_ready_slot { _immutable->shelley_rewards_ready_slot },
+        shelley_stability_window { _immutable->shelley_stability_window },
+        shelley_randomness_stabilization_window { _immutable->shelley_randomness_stabilization_window },
+        shelley_voting_deadline { _immutable->shelley_voting_deadline },
+        shelley_chunks_per_epoch { _immutable->shelley_chunks_per_epoch },
+        shelley_delegates { _immutable->shelley_delegates },
+        alonzo_genesis_hash { _immutable->alonzo_genesis_hash },
+        conway_genesis_hash { _immutable->conway_genesis_hash },
+        plutus_all_cost_models { _immutable->plutus_all_cost_models },
+        conway_pool_voting_thresholds { _immutable->conway_pool_voting_thresholds },
+        conway_drep_voting_thresholds { _immutable->conway_drep_voting_thresholds },
+        shelley_protocol_params { _immutable->shelley_protocol_params },
+        alonzo_protocol_params { _immutable->alonzo_protocol_params },
+        conway_protocol_params { _immutable->conway_protocol_params },
+        conway_committee_members { _immutable->conway_committee_members },
+        conway_committee_threshold { _immutable->conway_committee_threshold },
+        conway_constitution { _immutable->conway_constitution },
+        _mutable { shelley_start_slot_ }
+    {
+    }
+
+    config::config(const configs &cfg):
+        config { std::make_shared<immutable>(cfg), std::nullopt }
     {
         shelley_start_epoch({});
+    }
+
+    config::config(const config &o):
+        config { o._immutable, o._mutable.shelley_start_slot }
+    {
+    }
+
+    config::config(config &&o) noexcept:
+        // Keep the source's reference facade valid as well. Sharing the
+        // immutable payload is still constant-time and avoids every deep copy.
+        config { o._immutable, o._mutable.shelley_start_slot }
+    {
+    }
+
+    config &config::operator=(config &&o) noexcept
+    {
+        if (this != &o) {
+            this->~config();
+            std::construct_at(this, std::move(o));
+        }
+        return *this;
     }
 
     void config::shelley_start_epoch(std::optional<uint64_t> epoch) const
@@ -163,8 +382,8 @@ namespace turbo::cardano {
         if (!epoch && conway_genesis_hash == mainnet_hash)
             epoch = 208;
         if (epoch)
-            _shelley_start_slot.emplace(*epoch * byron_epoch_length);
+            _mutable.shelley_start_slot.emplace(*epoch * byron_epoch_length);
         else
-            _shelley_start_slot.reset();
+            _mutable.shelley_start_slot.reset();
     }
 }

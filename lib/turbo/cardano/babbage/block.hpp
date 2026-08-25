@@ -97,8 +97,8 @@ namespace turbo::cardano::babbage {
         }
     private:
         struct body_t {
-            uint32_t block_number;
-            uint32_t slot;
+            uint64_t block_number;
+            uint64_t slot;
             block_hash prev_hash;
             vkey issuer_vkey;
             cardano::vrf_vkey vrf_vkey;
@@ -123,6 +123,54 @@ namespace turbo::cardano::babbage {
 
     struct block_base: alonzo::block_base {
         using alonzo::block_base::block_base;
+    };
+
+    struct script_t {
+        script_info value;
+
+        static script_t from_cbor(cbor::zero2::value &);
+    };
+
+    struct cost_models_t {
+        plutus_cost_models value {};
+
+        static cost_models_t from_cbor(cbor::zero2::value &);
+    };
+
+    struct transaction_output_t {
+        tx_out_data value {};
+
+        static transaction_output_t from_cbor(cbor::zero2::value &);
+    };
+
+    struct transaction_outputs_t {
+        tx_output_list value {};
+
+        static transaction_outputs_t from_cbor(cbor::zero2::value &);
+    };
+
+    struct protocol_param_update_t {
+        param_update value {};
+
+        static protocol_param_update_t from_cbor(cbor::zero2::value &);
+    };
+
+    struct update_t {
+        param_update_proposal_list value {};
+
+        static update_t from_cbor(cbor::zero2::value &);
+    };
+
+    struct transaction_body_t: alonzo::transaction_body_t {
+        shelley::transaction_inputs_t ref_inputs {};
+        std::optional<tx_output> collateral_return {};
+        std::optional<uint64_t> collateral_value {};
+
+        static transaction_body_t from_cbor(cbor::zero2::value &);
+    };
+
+    struct transaction_witness_set_t: alonzo::transaction_witness_set_t {
+        static transaction_witness_set_t from_cbor(cbor::zero2::value &);
     };
 
     struct tx_base: alonzo::tx_base {
@@ -153,22 +201,12 @@ namespace turbo::cardano::babbage {
         const std::optional<tx_output> &collateral_return() const override;
         const std::optional<uint64_t> &collateral_value() const override;
     private:
-        input_set _inputs {};
-        tx_output_list _outputs {};
-        uint64_t _fee;
-        std::optional<uint64_t> _validity_end;
-        cert_list _certs {};
-        withdrawal_map _withdrawals {};
-        param_update_proposal_list _updates {};
-        std::optional<uint64_t> _validity_start {};
-        multi_mint_map _mints {};
-        signer_set _required_signers {};
-        input_set _collateral_inputs {};
-        input_set _ref_inputs {};
-        std::optional<tx_output> _collateral_return {};
-        std::optional<uint64_t> _collateral_value {};
-        buffer _raw;
-        mutable std::optional<tx_hash> _hash {};
+        transaction_body_t _body;
+    };
+
+    struct block_transactions_t: block_tx_list<tx> {
+        using block_tx_list<tx>::block_tx_list;
+        static block_transactions_t from_cbor(const block_base &, const uint8_t *block_begin, cbor::zero2::array_reader &);
     };
 
     struct block: block_base {
@@ -180,7 +218,7 @@ namespace turbo::cardano::babbage {
         const invalid_tx_set &invalid_txs() const override;
     private:
         block_header _hdr;
-        block_tx_list<tx> _txs;
+        block_transactions_t _txs;
         block_meta_map _meta;
         invalid_tx_set _invalid_txs;
         mutable std::optional<block_hash> _body_hash {};

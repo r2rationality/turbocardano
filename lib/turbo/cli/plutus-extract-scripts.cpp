@@ -26,7 +26,7 @@ namespace turbo::cli::plutus_extract_scripts {
             cmd.args.expect({ "<ctx-dir>", "<tx-list-path|tx-hash>", "<output-dir>" });
             cmd.opts.try_emplace("uplc", "extract scripts in UPLC format");
             cmd.opts.try_emplace("file", "consider only files starting with a given prefix");
-            cmd.opts.try_emplace("protocol", "protocol major version for stored Conway-era contexts");
+            cmd.opts.try_emplace("protocol", "override the protocol major version stored in each context");
         }
 
         void run(const arguments &args, const options &opts) const override {
@@ -130,6 +130,7 @@ namespace turbo::cli::plutus_extract_scripts {
             extract_res res {};
             while (!rs.eof()) {
                 auto stored_ctx = rs.read<stored_tx_context>();
+                stored_ctx.validate_format();
                 const auto &tx_id = stored_ctx.tx_id;
                 if (cfg.tx_list && !cfg.tx_list->contains(tx_id))
                     continue;

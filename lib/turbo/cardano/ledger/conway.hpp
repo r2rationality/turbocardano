@@ -7,7 +7,14 @@
 #include <turbo/cardano/conway/block.hpp>
 #include <turbo/cardano/ledger/babbage.hpp>
 
+namespace turbo::index::timed_update {
+    struct conway_tx_prelude;
+}
+
 namespace turbo::cardano::ledger::conway {
+    // Public ledger-state facade. Formal-rule entry points live in
+    // conway/{certs,gov,ratify,enact}.hpp and deliberately use the constructor
+    // names from the Agda Conway specification.
     using namespace cardano::conway;
 
     struct vrf_state: babbage::vrf_state {
@@ -26,8 +33,23 @@ namespace turbo::cardano::ledger::conway {
             return archive(self.deposited, self.anchor, self.expire_epoch, self.delegs);
         }
 
-        static uint64_t compute_expire_epoch(const protocol_params &pp, uint64_t current_epoch, uint64_t dormant_epochs=0);
-        static uint64_t compute_reg_expire_epoch(const protocol_params &pp, uint64_t current_epoch, uint64_t dormant_epochs=0);
+        static uint64_t compute_expire_epoch(
+            const protocol_params &pp,
+            const uint64_t current_epoch,
+            const uint64_t dormant_epochs=0)
+        {
+            return current_epoch + pp.drep_activity - dormant_epochs;
+        }
+
+        static uint64_t compute_reg_expire_epoch(
+            const protocol_params &pp,
+            const uint64_t current_epoch,
+            const uint64_t dormant_epochs=0)
+        {
+            if (pp.protocol_ver.bootstrap_phase())
+                return current_epoch + pp.drep_activity;
+            return compute_expire_epoch(pp, current_epoch, dormant_epochs);
+        }
         void to_cbor(era_encoder &) const;
     };
 
@@ -66,8 +88,8 @@ namespace turbo::cardano::ledger::conway {
             void to_cbor(era_encoder &) const;
         };
 
-        using member_map = std::map<credential_t, uint64_t>;
-        using member_key_map = std::map<credential_t, hot_key_t>;
+        using member_map = flat_map<credential_t, uint64_t>;
+        using member_key_map = flat_map<credential_t, hot_key_t>;
 
         member_map members {};
         rational_u64 threshold { 2, 3 };
@@ -79,7 +101,19 @@ namespace turbo::cardano::ledger::conway {
 
         static committee_t from_json(const json::value &);
         void to_cbor(era_encoder &) const;
-        size_t active_size(const member_key_map &hot_key, uint64_t current_epoch) const;
+        size_t active_size(const member_key_map &hot_keys, const uint64_t current_epoch) const
+        {
+            size_t size = 0;
+            for (const auto &[cold_id, expire_epoch]: members) {
+                const auto hot_it = hot_keys.find(cold_id);
+                if (current_epoch <= expire_epoch
+                        && hot_it != hot_keys.end()
+                        && std::holds_alternative<credential_t>(hot_it->second.val)) {
+                    ++size;
+                }
+            }
+            return size;
+        }
     };
 
     using prev_gov_action_id_t = array_optional_t<gov_action_id_t>;
@@ -249,10 +283,14 @@ namespace turbo::cardano::ledger::conway {
         bool _can_vote(const gov_action_t &, voter_t::type_t) const;
         bool _committee_member_active(const committee_t::member_key_map &, const credential_t &, uint64_t expire_epoch) const;
         void _prune_committee_hot_keys();
+        void _process_tx_prelude(const index::timed_update::conway_tx_prelude &, const cert_loc_t &);
 
         void _account_to_cbor(const account_info &acc, era_encoder &enc) const override;
         void _delegation_gov_to_cbor(era_encoder &enc) const override;
         void _donations_to_cbor(era_encoder &) const override;
+        void _decode_donations(cbor::zero2::value &) override;
+        void _decode_protocol_state(cbor::zero2::value &) override;
+        void _parse_protocol_params(protocol_params &, cbor::zero2::value &) const override;
         void _params_to_cbor(era_encoder &enc, const protocol_params &params) const override;
         void _protocol_state_to_cbor(era_encoder &) const override;
         void _stake_pointers_to_cbor(era_encoder &) const override;
@@ -280,7 +318,7 @@ namespace turbo::cardano::ledger::conway {
         // state modifying methods
 
         void _transfer_treasury_withdrawals(const stake_distribution &rewards);
-        static void _enact_proposal(enact_state_t &st, const gov_action_id_t &gid, const gov_action_t &ga);
+        void _enact_proposal(enact_state_t &st, const gov_action_id_t &gid, const gov_action_t &ga);
         void _gov_remove_proposal(const gov_action_id_t &gid);
         void _gov_remove_with_descendants(const gov_action_id_t &gid);
         void _gov_finalize();

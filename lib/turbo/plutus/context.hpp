@@ -19,13 +19,34 @@ namespace turbo::plutus {
     using stored_txo_list = std::vector<stored_txo>;
 
     struct stored_tx_context {
+        // Version 1 was the original unversioned layout. It is intentionally unsupported.
+        static constexpr uint64_t current_format_version = 2;
+
+        uint64_t format_version = current_format_version;
         tx_hash tx_id {};
         size_t num_redeemers = 0;
         uint8_vector body {};
         uint8_vector wits {};
         storage::block_info block {};
+        // The enacted ledger protocol version, not the version advertised in the block header.
+        protocol_version protocol_ver { 0, 0 };
         stored_txo_list inputs {};
         stored_txo_list ref_inputs {};
+
+        static constexpr auto serialize(auto &archive, auto &self)
+        {
+            return archive(self.format_version, self.tx_id, self.num_redeemers, self.body, self.wits,
+                self.block, self.protocol_ver, self.inputs, self.ref_inputs);
+        }
+
+        void validate_format() const
+        {
+            if (format_version != current_format_version) [[unlikely]]
+                throw error(fmt::format("unsupported stored transaction context format version: {}; expected: {}",
+                    format_version, current_format_version));
+            if (!protocol_ver.major) [[unlikely]]
+                throw error("the stored transaction context has no protocol version");
+        }
 
         bool operator<(const stored_tx_context &o) const
         {
@@ -43,10 +64,10 @@ namespace turbo::plutus {
     };
 
     struct context {
-        using datum_map = std::map<datum_hash, data>;
+        using datum_map = flat_map<datum_hash, data>;
         using policy_list = std::vector<script_hash>;
         using cert_list = std::vector<cert_t>;
-        using redeemer_map = std::map<redeemer_id, tx_redeemer>;
+        using redeemer_map = tx_redeemer_map;
 
         context(const std::string &, const cardano::config &c_cfg=cardano::config::get());
         context(stored_tx_context &&, const cardano::config &c_cfg=cardano::config::get());
@@ -83,11 +104,11 @@ namespace turbo::plutus {
 
         prepared_script apply_script(allocator &&script_alloc, const script_info &script, std::initializer_list<term> args, const std::optional<ex_units> &budget) const;
         prepared_script prepare_script(const tx_redeemer &r) const;
-        void eval_script(prepared_script &ps) const;
+        ex_units eval_script(prepared_script &ps) const;
         static ex_units validate_redeemer_budgets(const redeemer_map &, const ex_units &limit);
         ex_units validate_redeemer_budgets(const ex_units &limit) const
         {
-            return validate_redeemer_budgets(_redeemers, limit);
+            return validate_redeemer_budgets(redeemers(), limit);
         }
 
         cardano::slot slot() const
@@ -112,7 +133,7 @@ namespace turbo::plutus {
 
         const redeemer_map &redeemers() const
         {
-            return _redeemers;
+            return _tx->redeemers();
         }
     private:
         struct parsed_script {
@@ -133,10 +154,9 @@ namespace turbo::plutus {
         stored_txo_list _ref_inputs {};
         datum_map _datums {};
         script_info_map _scripts {};
-        redeemer_map _redeemers {};
         std::reference_wrapper<const costs::runtime_models> _cost_models = costs::defaults();
         allocator _alloc {};
-        std::map<script_type, plutus::data> _shared {};
+        flat_map<script_type, plutus::data> _shared {};
         bool _inputs_set = false;
         bool _prepared = false;
 
@@ -191,8 +211,9 @@ namespace fmt {
         auto format(const auto &v, FormatContext &ctx) const -> decltype(ctx.out())
         {
             using namespace turbo;
-            return fmt::format_to(ctx.out(), "txo-id: {} body: {} wits: {} block at slot: {} inputs: {} ref_inputs: {}",
-                v.tx_id, crypto::blake2b::digest(v.body), crypto::blake2b::digest(v.wits), v.block.slot, v.inputs, v.ref_inputs);
+            return fmt::format_to(ctx.out(), "format: {} tx-id: {} body: {} wits: {} block at slot: {} protocol: {} inputs: {} ref_inputs: {}",
+                v.format_version, v.tx_id, crypto::blake2b::digest(v.body), crypto::blake2b::digest(v.wits), v.block.slot,
+                v.protocol_ver, v.inputs, v.ref_inputs);
         }
     };
 }

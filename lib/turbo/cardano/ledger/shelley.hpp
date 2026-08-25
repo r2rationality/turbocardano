@@ -15,6 +15,11 @@
 namespace turbo::cardano::ledger::shelley {
     using namespace cardano::shelley;
 
+    enum class state_init_mode {
+        genesis,
+        empty
+    };
+
     struct vrf_state {
         using pool_update_map = map_t<pool_hash, uint64_t>;
 
@@ -97,8 +102,9 @@ namespace turbo::cardano::ledger::shelley {
     };
 
     struct state {
-        state(const cardano::config &cfg, scheduler &sched);
-        virtual ~state() =default;
+        state(const cardano::config &cfg, scheduler &sched, state_init_mode mode=state_init_mode::genesis);
+        state(state &&) =default;
+        virtual ~state();
 
         virtual point from_cbor(cbor::zero2::value &v);
         virtual void to_cbor(cbor_encoder &) const;
@@ -108,7 +114,7 @@ namespace turbo::cardano::ledger::shelley {
         virtual bool operator==(const state &o) const;
         virtual void clear();
 
-        virtual const std::set<key_hash> &genesis_signers() const;
+        virtual const signer_set &genesis_signers() const;
 
         virtual void run_pulser_if_ready();
         virtual void process_updates(updates_t &&);
@@ -211,6 +217,7 @@ namespace turbo::cardano::ledger::shelley {
         pool_info_map _future_pool_params {};
         pool_retiring_map _pools_retiring {};
         pool_deposit_map _pool_deposits {};
+        pool_vrf_key_hash_map _pool_vrf_key_hashes {};
 
         // protocol params
         protocol_params _params = _default_params(_cfg);
@@ -231,7 +238,7 @@ namespace turbo::cardano::ledger::shelley {
         uint64_t _blocks_past_voting_deadline = 0;
 
         // non-serializable cache entries
-        mutable std::set<pool_hash> _pbft_pools = _make_pbft_pools(_shelley_delegs);
+        mutable flat_set<pool_hash> _pbft_pools = _make_pbft_pools(_shelley_delegs);
 
         template<std::integral T>
         static size_t _param_to_cbor(era_encoder &enc, const size_t idx, const std::optional<T> &val)
@@ -284,14 +291,18 @@ namespace turbo::cardano::ledger::shelley {
         virtual void _decode_likelihoods(cbor::zero2::value &);
         virtual void _decode_state_before(cbor::zero2::value &);
         virtual void _decode_snapshot(cbor::zero2::value &);
+        virtual void _decode_protocol_state(cbor::zero2::value &);
+        virtual void _decode_donations(cbor::zero2::value &);
+        void _populate_pool_vrf_key_hashes();
+        void _withdraw_reward(const reward_id_t &, uint64_t amount);
     private:
         static protocol_params _default_params(const cardano::config &cfg);
-        static std::set<pool_hash> _make_pbft_pools(const shelley_delegate_map &delegs);
+        static flat_set<pool_hash> _make_pbft_pools(const shelley_delegate_map &delegs);
 
         template<typename VISITOR>
         void _visit(const VISITOR &v) const;
 
-        void _node_load_delegation_state(cbor::zero2::value &);
+        bool _node_load_delegation_state(cbor::zero2::value &);
         void _node_load_utxo_state(cbor::zero2::value &);
         void _node_load_vrf_state(cbor::zero2::value &);
 
@@ -312,6 +323,8 @@ namespace turbo::cardano::ledger::shelley {
         std::optional<stake_ident> _extract_stake_id(const address &addr) const;
         void _prep_op_stake_dist();
         void _apply_future_pool_params();
+        void _add_pool_vrf_key_hash(const vrf_vkey &);
+        void _remove_pool_vrf_key_hash(const vrf_vkey &);
         void _recompute_caches() const;
         uint64_t _total_stake(uint64_t reserves) const;
         void _rewards_prepare_pool_params(uint64_t &total, uint64_t &filtered, const rational_u64 &z0,

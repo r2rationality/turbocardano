@@ -13,14 +13,12 @@ namespace turbo::cardano::byron {
             uint8_vector padded(data.size() + 2);
             padded[0] = 0x82;
             padded[1] = magic;
-            memcpy(padded.data() + 2, data.data(), data.size());
+            if (!data.empty())
+                memcpy(padded.data() + 2, data.data(), data.size());
             return crypto::blake2b::digest<block_hash>(padded);
         }
 
-        boundary_block_header(const uint64_t era, cbor::zero2::value &hdr, const cardano::config &cfg):
-            boundary_block_header(era, hdr.array(), hdr, cfg)
-        {
-        }
+        boundary_block_header(uint64_t era, cbor::zero2::value &hdr, const cardano::config &cfg);
 
         const buffer &data_raw() const override
         {
@@ -63,21 +61,11 @@ namespace turbo::cardano::byron {
         const block_hash _hash;
         const buffer _hdr_raw;
 
-        boundary_block_header(const uint64_t era, cbor::zero2::array_reader &it, cbor::zero2::value &hdr, const cardano::config &cfg):
-            block_header_base { era, cfg },
-            _prev_hash { it.skip(1).read().bytes() },
-            _slot { it.skip(1).read().array().read().uint() * cfg.byron_epoch_length },
-            _hash { padded_hash(0x00, hdr.data_raw()) },
-            _hdr_raw { hdr.data_raw() }
-        {
-        }
+        boundary_block_header(uint64_t era, cbor::zero2::array_reader &it, cbor::zero2::value &hdr, const cardano::config &cfg);
     };
 
     struct boundary_block: cardano::block_base {
-        boundary_block(const uint64_t era, const uint64_t offset, const uint64_t hdr_offset, cbor::zero2::value &block, const cardano::config &cfg):
-            boundary_block(era, offset, hdr_offset, block.array(), block, cfg)
-        {
-        }
+        boundary_block(uint64_t era, uint64_t offset, uint64_t hdr_offset, cbor::zero2::value &block, const cardano::config &cfg);
 
         uint32_t body_size() const override
         {
@@ -114,11 +102,7 @@ namespace turbo::cardano::byron {
             block_hash tx_merkle_root;
             block_hash tx_wits_hash;
 
-            static tx_proof_t from_cbor(cbor::zero2::value &v)
-            {
-                auto &it = v.array();
-                return { it.read().uint(), it.read().bytes(), it.read().bytes() };
-            }
+            static tx_proof_t from_cbor(cbor::zero2::value &);
         };
 
         tx_proof_t tx_proof;
@@ -137,10 +121,7 @@ namespace turbo::cardano::byron {
     };
 
     struct block_header: block_header_base {
-        block_header(uint64_t era, cbor::zero2::value &hdr, const cardano::config &cfg):
-            block_header { era, hdr.array(), hdr, cfg }
-        {
-        }
+        block_header(uint64_t era, cbor::zero2::value &hdr, const cardano::config &cfg);
 
         const buffer &data_raw() const override
         {
@@ -209,20 +190,13 @@ namespace turbo::cardano::byron {
             const uint64_t magic;
             const buffer magic_raw;
 
-            protocol_magic_t(cbor::zero2::value &v):
-                magic { v.uint() },
-                magic_raw { v.data_raw() }
-            {
-            }
+            static protocol_magic_t from_cbor(cbor::zero2::value &);
         };
 
         struct extra_t {
             const buffer raw;
 
-            extra_t(cbor::zero2::value &v):
-                raw { v.data_raw() }
-            {
-            }
+            static extra_t from_cbor(cbor::zero2::value &);
         };
 
         struct slot_id_t {
@@ -230,11 +204,7 @@ namespace turbo::cardano::byron {
             uint64_t epoch_slot;
             buffer raw;
 
-            static slot_id_t from_cbor(cbor::zero2::value &v)
-            {
-                auto &it = v.array();
-                return { it.read().uint(), it.read().uint(), v.data_raw() };
-            }
+            static slot_id_t from_cbor(cbor::zero2::value &);
 
             uint64_t slot(const cardano::config &cfg=cardano::config::get()) const noexcept
             {
@@ -245,10 +215,7 @@ namespace turbo::cardano::byron {
         struct byron_vkey_t {
             crypto::ed25519::vkey_full vkey_full;
 
-            static byron_vkey_t from_cbor(cbor::zero2::value &v)
-            {
-                return { v.bytes() };
-            }
+            static byron_vkey_t from_cbor(cbor::zero2::value &);
 
             buffer vkey() const
             {
@@ -264,19 +231,7 @@ namespace turbo::cardano::byron {
                 crypto::ed25519::signature cert;
                 crypto::ed25519::signature sig;
 
-                static delegate_sig_t from_cbor(cbor::zero2::value &v)
-                {
-                    auto &it = v.array();
-                    auto &dlg = it.read();
-                    auto &d_it = dlg.array();
-                    return {
-                        d_it.read().uint(),
-                        { d_it.read().bytes() },
-                        { d_it.read().bytes() },
-                        d_it.read().bytes(),
-                        it.read().bytes()
-                    };
-                }
+                static delegate_sig_t from_cbor(cbor::zero2::value &);
             };
 
             using value_type = std::variant<crypto::ed25519::signature, delegate_sig_t>;
@@ -302,16 +257,7 @@ namespace turbo::cardano::byron {
             byron_block_sig_t sig;
             const buffer raw;
 
-            static consensus_t from_cbor(cbor::zero2::value &v) {
-                auto &it = v.array();
-                return {
-                    decltype(slotid)::from_cbor(it.read()),
-                    decltype(vkey)::from_cbor(it.read()),
-                    it.read().array().read().uint(),
-                    decltype(sig)::from_cbor(it.read()),
-                    v.data_raw()
-                };
-            }
+            static consensus_t from_cbor(cbor::zero2::value &);
         };
 
         protocol_magic_t _protocol_magic;
@@ -327,6 +273,37 @@ namespace turbo::cardano::byron {
         uint8_vector _make_signed_data() const;
     };
 
+    struct transaction_inputs_t: std::vector<tx_input> {
+        using std::vector<tx_input>::vector;
+        static transaction_inputs_t from_cbor(cbor::zero2::value &);
+    };
+
+    struct transaction_output_t {
+        tx_out_data value {};
+
+        static transaction_output_t from_cbor(cbor::zero2::value &);
+    };
+
+    struct transaction_outputs_t: tx_output_list {
+        using tx_output_list::tx_output_list;
+        static transaction_outputs_t from_cbor(cbor::zero2::value &);
+    };
+
+    struct transaction_body_t {
+        transaction_inputs_t inputs {};
+        transaction_outputs_t outputs {};
+        buffer raw {};
+
+        static transaction_body_t from_cbor(cbor::zero2::value &);
+    };
+
+    struct transaction_witness_set_t {
+        tx_wit_list items {};
+        buffer raw {};
+
+        static transaction_witness_set_t from_cbor(cbor::zero2::value &);
+    };
+
     struct tx: tx_base {
         tx(const cardano::block_base &blk, uint64_t blk_off, cbor::zero2::value &tx_raw, size_t idx=0, bool invalid=false);
         void foreach_input(const input_observer_t &) const override; // needs to be virtual since byron inputs are unordered and need special handling
@@ -338,15 +315,8 @@ namespace turbo::cardano::byron {
         uint64_t fee() const override;
         buffer raw() const override;
     private:
-        using input_list = std::vector<tx_input>;
-        // Byron inputs must be kept as is to match the witnesses!
-        input_list _inputs;
-        tx_output_list _outputs;
-        buffer _raw;
+        transaction_body_t _body;
         mutable std::optional<tx_hash> _hash {};
-
-        static input_list parse_inputs(cbor::zero2::value &);
-        static tx_output_list parse_outputs(cbor::zero2::value &);
     };
 
     struct block: cardano::block_base {
@@ -363,25 +333,19 @@ namespace turbo::cardano::byron {
             std::vector<tx> txs;
             cardano::tx_list txs_view;
 
-            static tx_list parse_txs(const block &, const uint8_t *block_begin, cbor::zero2::value &v);
+            static tx_list from_cbor(const block &, const uint8_t *block_begin, cbor::zero2::value &);
 
             tx_list(std::vector<tx> &&txs);
         };
 
         struct ssc_payload_t {
             const buffer raw;
-            ssc_payload_t(cbor::zero2::value &v):
-                raw { v.data_raw() }
-            {
-            }
+            static ssc_payload_t from_cbor(cbor::zero2::value &);
         };
 
         struct dlg_payload_t {
             const buffer raw;
-            dlg_payload_t(cbor::zero2::value &v):
-                raw { v.data_raw() }
-            {
-            }
+            static dlg_payload_t from_cbor(cbor::zero2::value &);
         };
 
         struct upd_payload_t {
@@ -389,7 +353,7 @@ namespace turbo::cardano::byron {
             std::vector<param_update_vote> votes {};
             buffer raw;
 
-            upd_payload_t(const block &blk, cbor::zero2::value &v);
+            static upd_payload_t from_cbor(const block &, cbor::zero2::value &);
         };
 
         struct body_t {

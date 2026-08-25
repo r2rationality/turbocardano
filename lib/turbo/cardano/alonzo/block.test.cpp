@@ -69,13 +69,6 @@ suite cardano_alonzo_suite = [] {
             for (const auto &path: file::files_with_ext(install_path("data/alonzo"), ".zpp")) {
                 try {
                     plutus::context ctx { path, ccfg };
-                    // These legacy fixtures predate storing the protocol version in the context.
-                    // Preserve the protocol assumptions that were previously implicit in the era fallback.
-                    switch (ctx.tx().block().era()) {
-                        case 6: ctx.protocol_ver({ 8, 0 }); break;
-                        case 7: ctx.protocol_ver({ 9, 0 }); break;
-                        default: break;
-                    }
                     ctx.prepare();
                     expect(ctx.tx().witnesses_ok(&ctx)) << path;
                 } catch (const error &err) {

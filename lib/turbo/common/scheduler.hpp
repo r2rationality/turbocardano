@@ -82,6 +82,8 @@ namespace turbo {
         [[nodiscard]] bool process_ok(bool report_status=true, const std::source_location &loc=std::source_location::current());
         void process(bool report_status=true, const std::source_location &loc=std::source_location::current());
         void process_once(bool report_statues=true);
+        // A worker calling wait_all helps execute tasks in this barrier and
+        // sleeps when all remaining barrier tasks are already running.
         void wait_all(const std::string &task_group, const wait_all_submit_func_t &submit_func);
     private:
         struct impl;

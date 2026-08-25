@@ -33,5 +33,14 @@ suite plutus_context_suite = [] {
             };
             expect(throws([&] { context::validate_redeemer_budgets(redeemers, { max, max }); }));
         };
+        "stored context validation"_test = [] {
+            stored_tx_context stored_ctx {};
+            expect_equal(stored_tx_context::current_format_version, stored_ctx.format_version);
+            expect(throws([&] { stored_ctx.validate_format(); }));
+            stored_ctx.protocol_ver = { 10, 2 };
+            expect(nothrow([&] { stored_ctx.validate_format(); }));
+            --stored_ctx.format_version;
+            expect(throws([&] { stored_ctx.validate_format(); }));
+        };
     };
 };

@@ -4,6 +4,7 @@
  * License: https://github.com/r2rationality/turbocardano/blob/main/LICENSE */
 
 #include <cstdlib>
+#include <concepts>
 #include <turbo/common/test.hpp>
 #include <turbo/config.hpp>
 
@@ -27,6 +28,10 @@ namespace {
 }
 
 suite config_suite = [] {
+    static_assert(std::movable<config_json>);
+    static_assert(std::movable<config_file>);
+    static_assert(std::movable<configs_mock>);
+    static_assert(std::movable<configs_dir>);
     "config"_test = [] {
         "path_absolute"_test = [] {
 #ifdef _WIN32

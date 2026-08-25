@@ -50,9 +50,11 @@ suite turbo_common_zstd_suite = [] {
             memcpy(compressed.data(), &orig_size, sizeof(orig_size));
             expect(throws([&] { zstd::decompress(out, compressed); }));
             zstd::compress(compressed, orig);
-            *reinterpret_cast<uint64_t *>(compressed.data()) = orig.size() + 10;
+            const uint64_t invalid_size = orig.size() + 10;
+            std::memcpy(compressed.data(), &invalid_size, sizeof(invalid_size));
             expect(throws([&] { zstd::decompress(out, compressed); }));
-            *reinterpret_cast<uint64_t *>(compressed.data()) = orig.size();
+            const uint64_t valid_size = orig.size();
+            std::memcpy(compressed.data(), &valid_size, sizeof(valid_size));
              byte_array<11> buf_too_small {};
             expect(throws([&] { zstd::decompress(buf_too_small, compressed); }));
              byte_array<13> buf_too_big {};

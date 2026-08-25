@@ -22,4 +22,10 @@ suite crypto_sha3_suite = [] {
             expect(hash == exp_hash_bin) << hash;
         }
     };
+    "crypto::sha3 unaligned input"_test = [] {
+        uint8_vector storage(257, 0xA5);
+        const buffer aligned { storage.data(), 256 };
+        const buffer unaligned { storage.data() + 1, 256 };
+        expect_equal(sha3::digest(unaligned), sha3::digest(aligned));
+    };
 };

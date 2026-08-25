@@ -4,12 +4,15 @@
  * Copyright (c) 2024-2026 R2 Rationality OÜ (info at r2rationality dot com)
  * License: https://github.com/r2rationality/turbocardano/blob/main/LICENSE */
 
+#include <cstddef>
 #include <turbo/cbor/fwd.hpp>
 #include <turbo/common/format.hpp>
 #include <turbo/json-fwd.hpp>
 
 namespace turbo {
-    using cpp_rational_storage = byte_array<64>;
+    struct alignas(std::max_align_t) cpp_rational_storage: byte_array<64> {
+        using byte_array<64>::byte_array;
+    };
 
     struct rational_u64 {
         uint64_t numerator = 0;

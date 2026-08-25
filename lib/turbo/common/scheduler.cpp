@@ -1,10 +1,13 @@
 /* Copyright (c) 2022-2023 Alex Sierkov (alex dot sierkov at gmail dot com)
  * Copyright (c) 2024-2025 R2 Rationality OÜ (info at r2rationality dot com) */
 
+#include <algorithm>
 #include <atomic>
 #include <condition_variable>
 #include <cstdlib>
+#include <cstdint>
 #include <list>
+#include <memory>
 #include <queue>
 #include <source_location>
 #include <unordered_map>
@@ -109,6 +112,7 @@ namespace turbo {
                 }
             }
             _tasks = std::move(new_tasks);
+            _finish_tasks(num_cancelled);
             // no need to notify since cancel does not add new tasks
             return num_cancelled;
         }
@@ -122,6 +126,10 @@ namespace turbo {
                 ++it->second.queued;
             }
             _tasks.emplace(std::move(task));
+            {
+                mutex::scoped_lock process_lock { _process_mutex };
+                _num_outstanding.fetch_add(1, std::memory_order_relaxed);
+            }
             tasks_lock.unlock();
             _tasks_cv.notify_one();
         }
@@ -196,36 +204,76 @@ namespace turbo {
                 throw error("concurrent wait_all_done calls are not allowed!");
             if (_num_workers < 4)
                 throw error(fmt::format("wait_all_done relies on a high worker count but got {} worker threads!", _num_workers));
-            std::atomic_size_t errors = 0;
+            auto state = std::make_shared<wait_all_state>();
             try {
                 static constexpr std::chrono::milliseconds report_period{10000};
-                const auto wait_start = std::chrono::system_clock::now();
+                const auto wait_start = std::chrono::steady_clock::now();
                 auto next_warn = wait_start + report_period;
-                on_error(task_group, [&errors](const auto &) {
-                    errors.fetch_add(1, std::memory_order_relaxed);
-;                }, true);
-                auto todo = std::make_shared<std::atomic<size_t>>(0);
+                // The observer remains registered until process() finishes. Retain
+                // the state it updates rather than referring to this stack frame.
+                on_error(task_group, [state](const auto &) {
+                    // A failed task does not decrement todo, so this counter is also
+                    // part of the wait barrier. Publish the task's preceding writes.
+                    state->errors.fetch_add(1, std::memory_order_acq_rel);
+                    state->report_progress();
+                }, true);
+                scheduler::todo_count_t todo { state, &state->todo };
                 submit_func(todo, [&](auto task) {
-                    todo->fetch_add(1, std::memory_order_relaxed);
-                    task.task = [prev_action=task.task, todo] {
+                    state->todo.fetch_add(1, std::memory_order_relaxed);
+                    task.task = [prev_action=task.task, state] {
                         prev_action();
-                        todo->fetch_sub(1, std::memory_order_relaxed);
+                        // wait_all is a synchronization barrier for task writes.
+                        state->todo.fetch_sub(1, std::memory_order_acq_rel);
+                        state->report_progress();
                     };
                     post(std::move(task));
                 });
                 const auto process_results = !_process_running.load();
+                const auto worker_id = _get_worker_id();
+                auto next_report = wait_start + default_update_interval;
                 for (;;) {
-                    auto num_todo = todo->load(std::memory_order_relaxed) - errors.load(std::memory_order_relaxed);
-                    if (num_todo == 0)
+                    auto num_todo = state->todo.load(std::memory_order_relaxed) - state->errors.load(std::memory_order_relaxed);
+                    if (num_todo == 0) {
+                        // Pair with both successful and failed task completion. Keep
+                        // relaxed polling above; acquire only on the return path.
+                        static_cast<void>(state->todo.load(std::memory_order_acquire));
+                        static_cast<void>(state->errors.load(std::memory_order_acquire));
                         break;
-                    if (const auto now = std::chrono::system_clock::now(); now >= next_warn) {
+                    }
+                    const auto now = std::chrono::steady_clock::now();
+                    if (now >= next_warn) {
                         next_warn = now + report_period;
                         logger::warn(
                             "wait_all_done takes longer than expected task: {} todo: {} errors: {} process_results: {} waiting for: {} secs",
-                            task_group, num_todo, errors.load(), process_results,
+                            task_group, num_todo, state->errors.load(), process_results,
                             std::chrono::duration_cast<std::chrono::seconds>(now - wait_start).count());
                     }
-                    _process_once(true, false, process_results);
+                    if (now >= next_report) {
+                        next_report = now + default_update_interval;
+                        _report_status();
+                    }
+                    // A worker waiting at a barrier can safely help only that
+                    // barrier. Executing unrelated work here can introduce a
+                    // recursive wait_all or priority inversion.
+                    if (worker_id && _worker_try_execute_group(*worker_id, task_group))
+                        continue;
+
+                    // All remaining barrier tasks are already running, or are
+                    // temporarily behind other work. Sleep until one completes
+                    // instead of occupying the caller's CPU with atomic polling.
+                    const auto observed_progress = state->progress.load(std::memory_order_acquire);
+                    mutex::unique_lock progress_lock { state->progress_mutex };
+                    state->waiting.store(true, std::memory_order_release);
+                    if (state->progress.load(std::memory_order_acquire) == observed_progress
+                            && state->todo.load(std::memory_order_relaxed)
+                                != state->errors.load(std::memory_order_relaxed)) {
+                        state->progress_cv.wait_until(progress_lock, std::min(next_warn, next_report), [&] {
+                            return state->progress.load(std::memory_order_acquire) != observed_progress
+                                || state->todo.load(std::memory_order_relaxed)
+                                    == state->errors.load(std::memory_order_relaxed);
+                        });
+                    }
+                    state->waiting.store(false, std::memory_order_release);
                 }
                 _wait_all_done_running = false;
             } catch (const std::exception &ex) {
@@ -237,7 +285,7 @@ namespace turbo {
                 _wait_all_done_running = false;
                 throw;
             }
-            if (errors > 0) [[unlikely]]
+            if (state->errors.load(std::memory_order_acquire) > 0) [[unlikely]]
                 throw scheduler_error(fmt::format("wait_all_done {} - there were failed tasks; cannot continue", task_group));
         }
     private:
@@ -256,10 +304,32 @@ namespace turbo {
         };
         using task_stats_map = std::unordered_map<std::string, task_stat>;
 
+        struct wait_all_state {
+            std::atomic_size_t todo = 0;
+            std::atomic_size_t errors = 0;
+            std::atomic_size_t progress = 0;
+            std::atomic_bool waiting = false;
+            mutex::unique_lock::mutex_type progress_mutex {};
+            std::condition_variable progress_cv {};
+
+            void report_progress()
+            {
+                progress.fetch_add(1, std::memory_order_release);
+                if (waiting.load(std::memory_order_acquire)) {
+                    mutex::scoped_lock progress_lock { progress_mutex };
+                    progress_cv.notify_one();
+                }
+            }
+        };
+
         mutable mutex::unique_lock::mutex_type _tasks_mutex alignas(mutex::alignment) {};
         std::condition_variable_any _tasks_cv alignas(mutex::alignment) {};
         task_queue _tasks {};
         task_stats_map _task_stats {};
+
+        mutable mutex::unique_lock::mutex_type _process_mutex alignas(mutex::alignment) {};
+        std::condition_variable_any _process_cv alignas(mutex::alignment) {};
+        std::atomic_size_t _num_outstanding = 0;
 
         using observer_map = std::unordered_map<std::string, error_observer_t>;
         mutable mutex::unique_lock::mutex_type _observers_mutex alignas(mutex::alignment) {};
@@ -295,6 +365,19 @@ namespace turbo {
             return {};
         }
 
+        void _finish_tasks(const size_t num_tasks=1)
+        {
+            if (num_tasks == 0)
+                return;
+            bool all_done = false;
+            {
+                mutex::scoped_lock process_lock { _process_mutex };
+                all_done = _num_outstanding.fetch_sub(num_tasks, std::memory_order_acq_rel) == num_tasks;
+            }
+            if (all_done)
+                _process_cv.notify_all();
+        }
+
         void _report_status()
         {
             const auto now = std::chrono::system_clock::now();
@@ -302,21 +385,88 @@ namespace turbo {
             if (now >= prev_next_time) {
                 const auto next_next_time = now + default_update_interval;
                 if (_report_next_time.compare_exchange_strong(prev_next_time, next_next_time)) {
-                    size_t num_tasks = 0;
+                    const auto num_tasks = _num_outstanding.load(std::memory_order_relaxed);
                     std::map<std::string, size_t> active_tasks {};
                     {
                         mutex::scoped_lock tasks_lk { _tasks_mutex };
-                        for (const auto &[task_name, stats]: _task_stats)
-                            num_tasks += stats.queued;
                         for (const auto &task_name: _worker_tasks) {
                             if (task_name)
                                 ++active_tasks[*task_name];
                         }
                     }
-                    logger::debug("scheduler tasks total: {} active: {}", num_tasks, active_tasks);
+                    logger::debug("scheduler tasks total: {} active: {} rss_mb: {} peak_rss_mb: {}",
+                        num_tasks, active_tasks, memory::my_usage_mb(), memory::max_usage_mb());
                     progress::get().inform();
                 }
             }
+        }
+
+        void _worker_execute(const size_t worker_idx, mutex::unique_lock &lock)
+        {
+            auto &worker_task = _worker_tasks[worker_idx];
+            const auto prev_task = worker_task;
+            if (!prev_task)
+                ++_num_active;
+            // need to create copies since the task will be destroyed before reporting its result.
+            std::optional<scheduled_task_error> task_err {};
+            std::string task_group {};
+            const auto start_time = std::chrono::system_clock::now();
+            // ensure that the task instance is destroyed before its results are reported
+            {
+                auto task = _tasks.top();
+                _tasks.pop();
+                task_group = task.task_group;
+                if (prev_task)
+                    worker_task = fmt::format("{}/{}", *prev_task, task.task_group);
+                else
+                    worker_task = task.task_group;
+                lock.unlock();
+                try {
+                    task.task();
+                } catch (const std::exception &ex) {
+                    _success = false;
+                    logger::warn("worker-{} task {} std::exception: {}", worker_idx, task.task_group, ex.what());
+                    task_err.emplace(std::source_location::current(), std::move(task), "task: '{}' error: '{}' of type: '{}'!", task.task_group, ex.what(), typeid(ex).name());
+                } catch (...) {
+                    _success = false;
+                    logger::warn("worker-{} task {} unknown exception", worker_idx, task.task_group);
+                    task_err.emplace(std::source_location::current(), std::move(task), "task: '{}' unknown exception", task.task_group);
+                }
+            }
+            const auto cpu_time = std::chrono::duration<double> { std::chrono::system_clock::now() - start_time }.count();
+            {
+                mutex::scoped_lock tasks_lock { _tasks_mutex };
+                if (auto it = _task_stats.find(task_group); it != _task_stats.end()) [[unlikely]] {
+                    --it->second.queued;
+                    ++it->second.completed;
+                    it->second.cpu_time += cpu_time;
+                } else {
+                    logger::error("internal error: unknown task: {}", task_group);
+                }
+            }
+            if (task_err) [[unlikely]] {
+                std::scoped_lock o_lk { _observers_mutex };
+                if (auto it = _observers.find(task_group); it != _observers.end()) {
+                    logger::run_log_errors([&] {
+                        it->second(*task_err);
+                    });
+                }
+            }
+            lock.lock();
+            worker_task = prev_task;
+            lock.unlock();
+            if (!prev_task)
+                --_num_active;
+            _finish_tasks();
+        }
+
+        bool _worker_try_execute_group(const size_t worker_idx, const std::string &task_group)
+        {
+            mutex::unique_lock lock { _tasks_mutex };
+            if (_destroy || _tasks.empty() || _tasks.top().task_group != task_group)
+                return false;
+            _worker_execute(worker_idx, lock);
+            return true;
         }
 
         bool _worker_try_execute(size_t worker_idx, const std::optional<std::chrono::milliseconds> wait_interval_ms)
@@ -330,62 +480,8 @@ namespace turbo {
             _task_stats[wait_task_name].cpu_time += std::chrono::duration<double> { std::chrono::system_clock::now() - sleep_start_time }.count();
             if (_destroy) [[unlikely]]
                 return false;
-            if (!_tasks.empty()) {
-                auto &worker_task = _worker_tasks[worker_idx];
-                const auto prev_task = worker_task;
-                if (!prev_task)
-                    ++_num_active;
-                // need to create copies since the task will be destroyed before reporting its result.
-                std::optional<scheduled_task_error> task_err {};
-                std::string task_group {};
-                const auto start_time = std::chrono::system_clock::now();
-                // ensure that the task instance is destroyed before its results are reported
-                {
-                    auto task = _tasks.top();
-                    _tasks.pop();
-                    task_group = task.task_group;
-                    if (prev_task)
-                        worker_task = fmt::format("{}/{}", *prev_task, task.task_group);
-                    else
-                        worker_task = task.task_group;
-                    lock.unlock();
-                    try {
-                        task.task();
-                    } catch (const std::exception &ex) {
-                        _success = false;
-                        logger::warn("worker-{} task {} std::exception: {}", worker_idx, task.task_group, ex.what());
-                        task_err.emplace(std::source_location::current(), std::move(task), "task: '{}' error: '{}' of type: '{}'!", task.task_group, ex.what(), typeid(ex).name());
-                    } catch (...) {
-                        _success = false;
-                        logger::warn("worker-{} task {} unknown exception", worker_idx, task.task_group);
-                        task_err.emplace(std::source_location::current(), std::move(task), "task: '{}' unknown exception", task.task_group);
-                    }
-                }
-                const auto cpu_time = std::chrono::duration<double> { std::chrono::system_clock::now() - start_time }.count();
-                {
-                    mutex::scoped_lock tasks_lock { _tasks_mutex };
-                    if (auto it = _task_stats.find(task_group); it != _task_stats.end()) [[unlikely]] {
-                        --it->second.queued;
-                        ++it->second.completed;
-                        it->second.cpu_time += cpu_time;
-                    } else {
-                        logger::error("internal error: unknown task: {}", task_group);
-                    }
-                }
-                if (task_err) [[unlikely]] {
-                    std::scoped_lock o_lk { _observers_mutex };
-                    if (auto it = _observers.find(task_group); it != _observers.end()) {
-                        logger::run_log_errors([&] {
-                            it->second(*task_err);
-                        });
-                    }
-                }
-                lock.lock();
-                worker_task = prev_task;
-                lock.unlock();
-                if (!prev_task)
-                    --_num_active;
-            }
+            if (!_tasks.empty())
+                _worker_execute(worker_idx, lock);
             return true;
         }
 
@@ -411,16 +507,20 @@ namespace turbo {
 
         void _process(const bool report_status)
         {
-            for (;;) {
-                {
-                    mutex::scoped_lock tasks_lk { _tasks_mutex };
-                    size_t num_tasks = 0;
-                    for (const auto &[task_name, stats]: _task_stats)
-                        num_tasks += stats.queued;
-                    if (num_tasks == 0 && _num_active.load(std::memory_order_relaxed) == 0)
-                        break;
+            if (_num_workers == 1) {
+                while (_num_outstanding.load(std::memory_order_acquire) != 0)
+                    _process_once(report_status, true, true);
+            } else {
+                mutex::unique_lock process_lock { _process_mutex };
+                while (_num_outstanding.load(std::memory_order_acquire) != 0) {
+                    _process_cv.wait_for(process_lock, default_update_interval, [&] {
+                        return _num_outstanding.load(std::memory_order_acquire) == 0;
+                    });
+                    process_lock.unlock();
+                    if (report_status)
+                        _report_status();
+                    process_lock.lock();
                 }
-                _process_once(report_status, _num_workers == 1, true);
             }
             if (report_status)
                 progress::get().inform();

@@ -3,6 +3,7 @@
  * Copyright (c) 2024-2026 R2 Rationality OÜ (info at r2rationality dot com)
  * License: https://github.com/r2rationality/turbocardano/blob/main/LICENSE */
 
+#include <limits>
 #include <turbo/sync/p2p.hpp>
 #include "common.hpp"
 
@@ -21,6 +22,8 @@ namespace turbo::cli::sync_p2p {
             cmd.opts.emplace("peer-host", "a Cardano Network host to connect to");
             cmd.opts.try_emplace("peer-port", "a TCP port to use for connecting to a Cardano Network peer", "3001");
             cmd.opts.try_emplace("validation", "validation mode to use: none, turbo, full", "turbo");
+            cmd.opts.emplace("no-vrf-validation", "trust block VRF proofs and leader eligibility without validating them");
+            cmd.opts.emplace("max-inflight-mib", "maximum estimated memory for queued and active sync chunks; defaults to 256 MiB per scheduler worker");
             cmd.opts.emplace("version-min", "a minimum Cardano protocol version to request");
             cmd.opts.emplace("version-max", "a maximum Cardano protocol version to request");
         }
@@ -39,14 +42,22 @@ namespace turbo::cli::sync_p2p {
                 versions.min = std::stoull(*opt_it->second);
             if (const auto opt_it = opts.find("version-max"); opt_it != opts.end() && opt_it->second)
                 versions.max = std::stoull(*opt_it->second);
+            auto max_inflight_bytes = sync::p2p::syncer::auto_max_inflight_bytes;
+            if (const auto opt_it = opts.find("max-inflight-mib"); opt_it != opts.end() && opt_it->second) {
+                const auto max_inflight_mib = std::stoull(*opt_it->second);
+                if (!max_inflight_mib || max_inflight_mib > (std::numeric_limits<size_t>::max() >> 20U))
+                    throw error(fmt::format("invalid max-inflight-mib value: {}", max_inflight_mib));
+                max_inflight_bytes = static_cast<size_t>(max_inflight_mib) << 20U;
+            }
             if (const auto opt_it = opts.find("peer-host"); opt_it != opts.end() && opt_it->second)
                 addr.emplace(*opt_it->second, *opts.at("peer-port"));
             if (max_slot)
                 logger::info("max_slot: {}", slot{*max_slot, cardano::config::get()});
             if (addr)
                 logger::info("addr: {}", *addr);
-            chunk_registry cr{data_dir};
-            sync::p2p::syncer syncer{cr};
+            chunk_registry cr { data_dir, chunk_registry::mode::validate, cardano::config::get(),
+                scheduler::get(), file_remover::get(), true, !opts.contains("no-vrf-validation") };
+            sync::p2p::syncer syncer{cr, max_inflight_bytes};
             const auto peer = syncer.find_peer(addr, versions);
             syncer.sync(peer, max_slot, sync::validation_mode_from_text(opts.at("validation").value()));
         }

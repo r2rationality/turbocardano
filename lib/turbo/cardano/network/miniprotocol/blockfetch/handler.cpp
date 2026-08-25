@@ -115,9 +115,12 @@ namespace turbo::cardano::network::miniprotocol::blockfetch {
                 for (auto it = first_it; it != last_it; ) {
                     cbor::encoder enc {};
                     if (block_compression) {
-                        auto [chunk_rem_data, next_it] = it.chunk_remaining_data(last_it);
+                        auto [chunk_rem_data, next_it, compression_level] = it.chunk_remaining_data(last_it);
                         logger::info("blockfetch msg_compressed_blocks from {} to {}", it->slot, next_it != end_it ? std::optional{next_it->slot} : std::nullopt);
-                        msg_compressed_blocks_t { 1ULL, std::move(chunk_rem_data) }.to_cbor(enc);
+                        msg_compressed_blocks_t {
+                            msg_compressed_blocks_t::encoding_for_compression_level(compression_level),
+                            std::move(chunk_rem_data)
+                        }.to_cbor(enc);
                         it = next_it;
                     } else {
                         msg_block_t { it.block_data() }.to_cbor(enc);

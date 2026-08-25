@@ -15,7 +15,6 @@ namespace {
     uint64_t lazy_process_chunks(const std::string_view &db_path)
     {
         size_t total_size = 0;
-        size_t i = 0;
         uint8_vector chunk {};
         for (const auto &entry : std::filesystem::directory_iterator(db_path)) {
             if (entry.path().extension() != ".chunk") continue;

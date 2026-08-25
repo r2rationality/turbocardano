@@ -3,58 +3,167 @@
  * Copyright (c) 2024-2026 R2 Rationality OÜ (info at r2rationality dot com)
  * License: https://github.com/r2rationality/turbocardano/blob/main/LICENSE */
 
+#include <chrono>
+#include <numeric>
 #include <turbo/cardano.hpp>
 #include <turbo/cardano/ledger/state.hpp>
 #include <turbo/chunk-registry.hpp>
 
 namespace turbo {
+    namespace {
+        using compression_level_list_t = std::vector<int32_t>;
+
+        // Chunk metadata supplies this relative path from its data hash, so no
+        // containment or filesystem canonicalization is needed here.
+        std::string trusted_chunk_path(const std::filesystem::path &db_dir, const storage::chunk_info &chunk)
+        {
+            auto path = db_dir / chunk.rel_path();
+            path.make_preferred();
+            return path.string();
+        }
+
+        void load_chunk_registry_state(storage::chunk_map &chunks, const std::string &path)
+        {
+            const auto state_data = file::read(path);
+            ::zpp::bits::in in { static_cast<buffer>(state_data) };
+            storage::chunk_map loaded_chunks {};
+            in(loaded_chunks).or_throw();
+            if (in.position() < state_data.size()) {
+                compression_level_list_t compression_levels {};
+                in(compression_levels).or_throw();
+                if (compression_levels.size() != loaded_chunks.size()) {
+                    throw error(fmt::format(
+                        "chunk registry state has {} chunks but {} compression levels",
+                        loaded_chunks.size(), compression_levels.size()));
+                }
+                auto level_it = compression_levels.begin();
+                for (auto &[last_byte_offset, chunk]: loaded_chunks)
+                    chunk.compression_level = *level_it++;
+            }
+            chunks = std::move(loaded_chunks);
+        }
+
+        void save_chunk_registry_state(const std::string &path, const storage::chunk_map &chunks)
+        {
+            compression_level_list_t compression_levels {};
+            compression_levels.reserve(chunks.size());
+            for (const auto &[last_byte_offset, chunk]: chunks)
+                compression_levels.emplace_back(chunk.compression_level);
+            uint8_vector state_data {};
+            ::zpp::bits::out out { state_data };
+            out(chunks, compression_levels).or_throw();
+            file::write(path, state_data);
+        }
+    }
+
     chunk_registry::chunk_registry(const std::string &data_dir, const mode mode,
-        cardano::config ccfg, scheduler &sched, file_remover &fr, const bool auto_maintenance)
+        cardano::config ccfg, scheduler &sched, file_remover &fr, const bool auto_maintenance, const bool validate_vrf)
         : _data_dir { data_dir }, _db_dir { init_db_dir((_data_dir / "compressed").string()) },
             _cardano_cfg { std::move(ccfg) }, _sched { sched }, _file_remover { fr },
             _state_path { (_db_dir / "state.bin").string() },
             _state_path_pre { (_db_dir / "state-pre.bin").string() }
     {
         timer t { "chunk-registry construct" };
+        std::unique_ptr<indexer::incremental> loaded_indexer {};
+        std::unique_ptr<validator::incremental> loaded_validator {};
+        chunk_map chunks {};
+        size_t init_task_idx = 0;
         switch (mode) {
-            case mode::validate:
-                _indexer = std::make_unique<indexer::incremental>(*this, validator::default_indexers(_data_dir.string(), _sched));
-                _validator = std::make_unique<validator::incremental>(*this);
+            case mode::validate: {
+                _sched.submit("chunk-registry-init:indexer", static_cast<int64_t>(init_task_idx++), [&] {
+                    loaded_indexer = std::make_unique<indexer::incremental>(
+                        *this, validator::default_indexers(_data_dir.string(), _sched));
+                });
+                _sched.submit("chunk-registry-init:validator", static_cast<int64_t>(init_task_idx++), [&] {
+                    loaded_validator = std::make_unique<validator::incremental>(*this, validate_vrf);
+                });
                 break;
-            case mode::index:
-                _indexer = std::make_unique<indexer::incremental>(*this, indexer::default_list(_data_dir.string(), _sched));
+            }
+            case mode::index: {
+                _sched.submit("chunk-registry-init:indexer", static_cast<int64_t>(init_task_idx++), [&] {
+                    loaded_indexer = std::make_unique<indexer::incremental>(
+                        *this, indexer::default_list(_data_dir.string(), _sched));
+                });
                 break;
+            }
             case mode::store:
                 // do nothing
                 break;
             default:
                 throw error(fmt::format("unsupported mode: {}", static_cast<int>(mode)));
         }
-        file_set known_chunks {}, deletable_chunks {};
-        chunk_map chunks {};
-        if (std::filesystem::exists(_state_path))
-            zpp::load(chunks, _state_path);
-        for (auto &&[last_byte_offset, chunk]: chunks) {
-            const auto path = full_path(chunk.rel_path());
+        const auto load_registry_state = [&] {
+            if (std::filesystem::exists(_state_path))
+                load_chunk_registry_state(chunks, _state_path);
+        };
+        if (init_task_idx > 0) {
+            _sched.submit("chunk-registry-init:state", static_cast<int64_t>(init_task_idx++), load_registry_state);
+            _sched.process(true);
+        } else {
+            load_registry_state();
+        }
+        _indexer = std::move(loaded_indexer);
+        _validator = std::move(loaded_validator);
+
+        file_set known_chunks {};
+
+        size_t num_mismatches = 0;
+        for (auto chunk_it = chunks.begin(); chunk_it != chunks.end(); ++chunk_it) {
+            auto &chunk = chunk_it->second;
+            const auto path = trusted_chunk_path(_db_dir, chunk);
             std::error_code ec {};
-            uint64_t file_size = std::filesystem::file_size(path, ec);
+            const uint64_t file_size = std::filesystem::file_size(path, ec);
             if (ec) {
                 logger::info("load_state: file access error for {}: {} - ignoring it and the following chunks!",
                     chunk.rel_path(), ec.message());
+                chunks.erase(chunk_it, chunks.end());
                 break;
             }
             if (file_size != chunk.compressed_size) {
-                logger::info("load_state: file size mismatch for {}: recorded: {} vs actual: {}: ignoring it and the following chunks!",
+                logger::warn(
+                    "load_state: validating stale compression metadata for {}: recorded size: {} actual size: {}",
                     chunk.rel_path(), chunk.compressed_size, file_size);
-                break;
+                const auto expected_size = chunk.data_size;
+                const auto expected_hash = chunk.data_hash;
+                _sched.submit("chunk-registry-check", -static_cast<int64_t>(num_mismatches),
+                    [path, expected_size, expected_hash] {
+                        const auto uncompressed = zstd::read(path);
+                        if (uncompressed.size() != expected_size) {
+                            throw error(fmt::format(
+                                "chunk {} decompressed to {} bytes instead of the recorded {}",
+                                path, uncompressed.size(), expected_size));
+                        }
+                        cardano::block_hash data_hash {};
+                        crypto::blake2b::digest(data_hash, uncompressed);
+                        if (data_hash != expected_hash) {
+                            throw error(fmt::format(
+                                "chunk {} has uncompressed data hash {} instead of the recorded {}",
+                                path, data_hash, expected_hash));
+                        }
+                    });
+                ++num_mismatches;
+                chunk.compressed_size = file_size;
+                chunk.compression_level = 0;
             }
+        }
+        if (num_mismatches > 0) {
+            _sched.process(true);
+            logger::warn("load_state: repaired stale compression metadata for {} chunks; compression levels are now unknown",
+                num_mismatches);
+        }
+        for (auto &&[last_byte_offset, chunk]: chunks) {
+            auto path = trusted_chunk_path(_db_dir, chunk);
             _add(std::move(chunk), false);
             known_chunks.emplace(std::move(path));
         }
+        if (num_mismatches > 0)
+            _save_state(_state_path);
         for (const auto &entry: std::filesystem::recursive_directory_iterator { _db_dir }) {
-            auto path = full_path(entry.path().string());
-            if (entry.is_regular_file() && entry.path().extension() == ".zstd" && !known_chunks.contains(path))
-                _file_remover.mark(path);
+            auto path = entry.path();
+            path.make_preferred();
+            auto path_str = path.string();
+            if (entry.is_regular_file() && entry.path().extension() == ".zstd" && !known_chunks.contains(path_str))
+                _file_remover.mark(path_str);
         }
         logger::info("chunk_registry has data up to offset {}", num_bytes());
         if (auto_maintenance)
@@ -65,11 +174,13 @@ namespace turbo {
 
     void chunk_registry::register_processor(const chunk_processor &p)
     {
+        mutex::scoped_lock lk { _processors_mutex };
         _processors.emplace(&p);
     }
 
     void chunk_registry::remove_processor(const chunk_processor &p)
     {
+        mutex::scoped_lock lk { _processors_mutex };
         _processors.erase(&p);
     }
 
@@ -114,6 +225,211 @@ namespace turbo {
             _file_remover.remove();
         } else {
             logger::info("the local chain is in a consistent state");
+        }
+    }
+
+    chunk_registry::repack_stats_t chunk_registry::repack()
+    {
+        if (_transaction)
+            throw error("repack cannot run while a chunk_registry transaction is active!");
+
+        static constexpr auto target_compression_level = zstd::default_compression_level;
+        const auto compression_sufficient = [](const chunk_info &chunk) {
+            return chunk.compression_level >= target_compression_level;
+        };
+
+        struct repack_item_t {
+            chunk_info chunk {};
+            std::vector<chunk_map::const_iterator> sources {};
+            std::optional<std::string> new_path {};
+            uint64_t compressed_size_before = 0;
+        };
+        using repack_item_map_t = std::map<uint64_t, repack_item_t>;
+
+        const auto repack_id = std::chrono::high_resolution_clock::now().time_since_epoch().count();
+        const auto tmp_root = _db_dir / "repack";
+        const auto tmp_dir = tmp_root / fmt::format("{}", repack_id);
+        const auto cleanup_tmp = [&] {
+            const auto remove_path = [](const std::filesystem::path &path) {
+                std::error_code ec {};
+                std::filesystem::remove_all(path, ec);
+                if (ec)
+                    logger::warn("failed to remove repack temporary path {}: {}", path, ec.message());
+            };
+            remove_path(tmp_root);
+            std::error_code iter_ec {};
+            std::filesystem::directory_iterator it { _db_dir, iter_ec };
+            const std::filesystem::directory_iterator end {};
+            while (!iter_ec && it != end) {
+                std::error_code entry_ec {};
+                const auto path = it->path();
+                const bool is_old_repack_dir = it->is_directory(entry_ec)
+                    && path.filename().string().starts_with(".repack-");
+                it.increment(iter_ec);
+                if (is_old_repack_dir)
+                    remove_path(path);
+            }
+            if (iter_ec)
+                logger::warn("failed to enumerate old repack temporary paths in {}: {}", _db_dir, iter_ec.message());
+        };
+
+        cleanup_tmp();
+        bool needs_work = false;
+        for (auto group_begin = _chunks.cbegin(); group_begin != _chunks.cend();) {
+            const auto chunk_id = make_slot(group_begin->second.first_slot).chunk_id();
+            auto group_end = std::next(group_begin);
+            while (group_end != _chunks.cend()
+                && make_slot(group_end->second.first_slot).chunk_id() == chunk_id) {
+                ++group_end;
+            }
+            if (std::next(group_begin) != group_end
+                || !compression_sufficient(group_begin->second)) {
+                needs_work = true;
+                break;
+            }
+            group_begin = group_end;
+        }
+        if (!needs_work) {
+            const auto compressed_size = num_compressed_bytes();
+            repack_stats_t stats {
+                .chunks_analyzed=_chunks.size(),
+                .compressed_size_before=compressed_size,
+                .compressed_size_after=compressed_size
+            };
+            if (!_chunks.empty())
+                progress::get().update("repack", _chunks.size(), _chunks.size());
+            return stats;
+        }
+
+        if (!std::filesystem::create_directories(tmp_dir))
+            throw error(fmt::format("failed to create the repack temporary directory {}", tmp_dir));
+
+        repack_item_map_t items {};
+        mutex::unique_lock::mutex_type stats_mutex alignas(mutex::alignment) {};
+        repack_stats_t stats {};
+        std::atomic_size_t chunks_analyzed { 0 };
+        try {
+            for (auto group_begin = _chunks.cbegin(); group_begin != _chunks.cend();) {
+                const auto chunk_id = make_slot(group_begin->second.first_slot).chunk_id();
+                auto group_end = std::next(group_begin);
+                while (group_end != _chunks.cend()
+                    && make_slot(group_end->second.first_slot).chunk_id() == chunk_id) {
+                    ++group_end;
+                }
+                const auto last_byte_offset = std::prev(group_end)->first;
+                repack_item_t item {
+                    .chunk=group_begin->second
+                };
+                item.sources.reserve(static_cast<size_t>(std::distance(group_begin, group_end)));
+                for (auto it = group_begin; it != group_end; ++it) {
+                    item.sources.emplace_back(it);
+                    item.compressed_size_before += it->second.compressed_size;
+                }
+                if (const auto [it, inserted] = items.try_emplace(last_byte_offset, std::move(item)); !inserted)
+                    throw error(fmt::format("duplicate repack item ending at offset {}", it->first));
+                group_begin = group_end;
+            }
+
+            size_t repack_task_idx = 0;
+            for (auto &[last_byte_offset, item]: items) {
+                if (item.sources.size() == 1 && compression_sufficient(item.chunk)) {
+                    repack_stats_t task_stats {
+                        .chunks_analyzed=1,
+                        .compressed_size_before=item.compressed_size_before,
+                        .compressed_size_after=item.compressed_size_before
+                    };
+                    {
+                        mutex::scoped_lock lk { stats_mutex };
+                        stats += task_stats;
+                    }
+                    const auto num_analyzed = chunks_analyzed.fetch_add(1, std::memory_order_relaxed) + 1;
+                    progress::get().update("repack", num_analyzed, _chunks.size());
+                    continue;
+                }
+                _sched.submit("repack", -static_cast<int64_t>(repack_task_idx++), [&, last_byte_offset, item_ptr=&item] {
+                    auto &task_item = *item_ptr;
+                    const auto source_chunks = task_item.sources.size();
+                    uint8_vector uncompressed {};
+                    uint64_t expected_offset = task_item.chunk.offset;
+                    for (const auto source_it: task_item.sources) {
+                        const auto &source = source_it->second;
+                        if (source.offset != expected_offset) {
+                            throw error(fmt::format(
+                                "chunk at offset {} is not contiguous with the preceding chunk ending at {}",
+                                source.offset, expected_offset));
+                        }
+                        const auto chunk_data = zstd::read(full_path(source.rel_path()));
+                        if (chunk_data.size() != source.data_size) {
+                            throw error(fmt::format("chunk {} decompressed to {} bytes instead of the recorded {}",
+                                source.rel_path(), chunk_data.size(), source.data_size));
+                        }
+                        uncompressed << chunk_data;
+                        expected_offset += source.data_size;
+                        if (source_it != task_item.sources.front())
+                            task_item.chunk.blocks.insert(task_item.chunk.blocks.end(), source.blocks.begin(), source.blocks.end());
+                    }
+                    if (source_chunks > 1) {
+                        const auto &last_source = task_item.sources.back()->second;
+                        task_item.chunk.data_size = uncompressed.size();
+                        task_item.chunk.num_blocks = task_item.chunk.blocks.size();
+                        task_item.chunk.last_slot = last_source.last_slot;
+                        task_item.chunk.last_block_hash = last_source.last_block_hash;
+                        crypto::blake2b::digest(task_item.chunk.data_hash, uncompressed);
+                    }
+                    const auto compressed = zstd::compress(uncompressed, target_compression_level);
+                    if (source_chunks == 1) {
+                        file::write(full_path(task_item.chunk.rel_path()), compressed);
+                    } else {
+                        task_item.new_path.emplace((tmp_dir / fmt::format("merged-{}-{}.zstd",
+                            last_byte_offset, task_item.chunk.data_hash)).string());
+                        file::write(*task_item.new_path, compressed);
+                    }
+                    task_item.chunk.compressed_size = compressed.size();
+                    task_item.chunk.compression_level = target_compression_level;
+                    repack_stats_t task_stats {
+                        .chunks_analyzed=source_chunks,
+                        .chunks_repacked=1,
+                        .partial_groups_merged=source_chunks > 1 ? 1U : 0U,
+                        .compressed_size_before=task_item.compressed_size_before,
+                        .compressed_size_after=compressed.size()
+                    };
+                    {
+                        mutex::scoped_lock lk { stats_mutex };
+                        stats += task_stats;
+                    }
+                    const auto num_analyzed = chunks_analyzed.fetch_add(source_chunks, std::memory_order_relaxed)
+                        + source_chunks;
+                    progress::get().update("repack", num_analyzed, _chunks.size());
+                });
+            }
+            _sched.process(true);
+
+            chunk_map new_chunks {};
+            for (const auto &[last_byte_offset, item]: items)
+                new_chunks.try_emplace(last_byte_offset, item.chunk);
+            file_set obsolete_paths {};
+            for (const auto &[last_byte_offset, chunk]: _chunks)
+                obsolete_paths.emplace(full_path(chunk.rel_path()));
+            for (const auto &[last_byte_offset, chunk]: new_chunks)
+                obsolete_paths.erase(full_path(chunk.rel_path()));
+            const auto new_state_path = (tmp_dir / "state.bin").string();
+            save_chunk_registry_state(new_state_path, new_chunks);
+            for (const auto &[last_byte_offset, item]: items) {
+                if (item.new_path)
+                    std::filesystem::rename(*item.new_path, full_path(item.chunk.rel_path()));
+            }
+            std::filesystem::rename(new_state_path, _state_path);
+            _chunks = std::move(new_chunks);
+            for (const auto &path: obsolete_paths)
+                std::filesystem::remove(path);
+            cleanup_tmp();
+            return stats;
+        } catch (...) {
+            logger::run_log_errors([&] {
+                _sched.process(true);
+            });
+            cleanup_tmp();
+            throw;
         }
     }
 
@@ -485,45 +801,47 @@ namespace turbo {
             const auto src_path  = src_cr.full_path(src_chunk.rel_path());
             const auto local_path = full_path(chunk_info::rel_path_from_hash(src_chunk.data_hash));
             std::filesystem::copy_file(src_path, local_path);
-            add_file(src_chunk.offset, local_path);
+            add_file(src_chunk.offset, local_path, src_chunk.compression_level);
         }
         _prepare_tx();
         _commit_tx();
     }
 
-    progress_point chunk_registry::add_buffer(const uint64_t offset, uint8_vector uncompressed, std::optional<uint8_vector> compressed)
+    progress_point chunk_registry::add_buffer(const uint64_t offset, uint8_vector uncompressed,
+        std::optional<uint8_vector> compressed, int32_t compression_level)
     {
-        const auto data_hash = crypto::blake2b::digest(uncompressed);
+        const auto data_hash = crypto::blake2b::digest<cardano::block_hash>(uncompressed);
         const auto rel_path = fmt::format("chunk/{}.zstd.tmp", data_hash);
         const auto local_path = full_path(rel_path);
-        if (!compressed)
+        if (!compressed) {
             compressed.emplace(zstd::compress(uncompressed, 9));
+            compression_level = 9;
+        }
         file::write(local_path, *compressed);
-        return _add(offset, local_path, std::move(uncompressed), compressed->size());
+        return _add(offset, local_path, std::move(uncompressed), compressed->size(), compression_level, data_hash);
     }
 
-    void chunk_registry::add_file(const uint64_t offset, const std::string &local_path)
+    void chunk_registry::add_file(const uint64_t offset, const std::string &local_path, const int32_t compression_level)
     {
         const auto compressed = file::read(local_path);
         const auto uncompressed = zstd::decompress(compressed);
-        _add(offset, local_path, uncompressed, compressed.size());
+        _add(offset, local_path, uncompressed, compressed.size(), compression_level);
     }
 
     progress_point chunk_registry::_add(const uint64_t offset, const std::string &local_path,
-        const buffer uncompressed, const uint64_t compressed_size)
+        const buffer uncompressed, const uint64_t compressed_size, const int32_t compression_level,
+        std::optional<cardano::block_hash> data_hash)
     {
         // TODO: add a fast path for data beyond earliest known invalid offset
         if (!_transaction) [[unlikely]]
             throw error("add can be executed only inside of a transaction!");
-        auto [parsed_chunk, ex_ptr] = _parse(offset, uncompressed, compressed_size);
+        auto [parsed_chunk, ex_ptr] = _parse(offset, uncompressed, compressed_size, compression_level, data_hash);
         const progress_point parsed_progress { parsed_chunk.last_slot, parsed_chunk.end_offset() };
         const auto final_path = full_path(parsed_chunk.rel_path());
         if (!parsed_chunk.blocks.empty()) {
             if (!ex_ptr) {
                 if (local_path != final_path)
                     std::filesystem::rename(local_path, final_path);
-            } else {
-                zstd::write(final_path, uncompressed.subbuf(0, parsed_chunk.block_data_size()));
             }
             _add(std::move(parsed_chunk));
         }
@@ -787,22 +1105,30 @@ namespace turbo {
                 if (!created)
                     throw error(fmt::format("internal error: duplicate chunk offset: {} size: {}", inserted_chunk.offset, inserted_chunk.data_size));
             }
-            if (normal)
+            if (normal) {
                 _notify_of_updates(update_lk);
-            logger::debug("chunk_registry::_add: first_slot: {} last_slot: {} -> SUCCESS", make_slot(chunk.first_slot), make_slot(chunk.last_slot));
+                logger::debug("chunk_registry::_add: first_slot: {} last_slot: {} -> SUCCESS", make_slot(chunk.first_slot), make_slot(chunk.last_slot));
+            }
         } catch (...) {
             logger::debug("chunk_registry::_add: first_slot: {} last_slot: {} -> FAILURE", make_slot(chunk.first_slot), make_slot(chunk.last_slot));
         }
     }
 
-    std::pair<storage::chunk_info, std::exception_ptr> chunk_registry::_parse(const uint64_t offset, const buffer &raw_data, const size_t compressed_size) const
+    std::pair<storage::chunk_info, std::exception_ptr> chunk_registry::_parse(const uint64_t offset,
+        const buffer &raw_data, const size_t compressed_size, const int32_t compression_level,
+        const std::optional<cardano::block_hash> &data_hash) const
     {
         std::exception_ptr ex_ptr{};
         std::optional<indexer::chunk_indexer_list> chunk_indexers{};
         if (_indexer)
             chunk_indexers = _indexer->make_chunk_indexers(offset);
-        chunk_info chunk{.data_size=raw_data.size(), .compressed_size=compressed_size, .offset=offset};
-        uint8_vector ok_data{};
+        chunk_info chunk {
+            .data_size=raw_data.size(),
+            .compressed_size=compressed_size,
+            .compression_level=compression_level,
+            .offset=offset
+        };
+        size_t valid_data_size = 0;
         uint64_t prev_slot = 0;
         cbor::zero2::decoder dec{raw_data};
         while (!dec.done()) {
@@ -851,7 +1177,7 @@ namespace turbo {
                         });
                     }
                     chunk.blocks.emplace_back(storage::block_info::from_block(blk_ptr));
-                    ok_data << blk_ptr.raw();
+                    valid_data_size = numeric_cast<size_t>(blk_ptr.end_offset() - chunk.offset);
                 }
             } catch (...) {
                 ex_ptr = std::current_exception();
@@ -859,13 +1185,19 @@ namespace turbo {
             }
         }
 
-        // happens if some blocks are valid but others are invalid
-        crypto::blake2b::digest(chunk.data_hash, ok_data);
+        // The decoder consumes consecutive top-level values, so successfully processed blocks
+        // always form a prefix of raw_data, including when a later block is invalid.
+        const auto valid_data = raw_data.subbuf(0, valid_data_size);
+        if (data_hash && valid_data.size() == raw_data.size())
+            chunk.data_hash = *data_hash;
+        else
+            crypto::blake2b::digest(chunk.data_hash, valid_data);
         chunk.num_blocks = chunk.blocks.size();
-        if (ok_data.size() != raw_data.size()) {
-            chunk.data_size = ok_data.size();
-            const auto compressed = zstd::compress(ok_data);
+        if (valid_data.size() != raw_data.size()) {
+            chunk.data_size = valid_data.size();
+            const auto compressed = zstd::compress(valid_data);
             chunk.compressed_size = compressed.size();
+            chunk.compression_level = zstd::default_compression_level;
             file::write(full_path(chunk.rel_path()), compressed);
         }
         for (const auto *p: _processors) {
@@ -915,6 +1247,7 @@ namespace turbo {
                 const auto compressed = zstd::compress(chunk_data);
                 file::write(full_path(chunk.rel_path()), compressed);
                 chunk.compressed_size = compressed.size();
+                chunk.compression_level = zstd::default_compression_level;
                 chunk.last_slot = chunk.blocks.back().slot;
                 chunk.last_block_hash = chunk.blocks.back().hash;
                 node.key() = chunk.end_offset() - 1;
@@ -1006,7 +1339,7 @@ namespace turbo {
         if (!_truncated_chunks.empty()) {
             // slot window for the chain density calculation
             auto window_last_slot = cardano::density_default_window;
-            size_t fork_prev_height = 0;
+            ptrdiff_t fork_prev_height = 0;
 
             auto first_it = const_iterator::cbegin(*this, _truncated_chunks);
             const auto tr_cend = const_iterator::cend(*this, _truncated_chunks);
@@ -1144,7 +1477,7 @@ namespace turbo {
     void chunk_registry::_save_state(const std::string &path)
     {
         // the caller is responsible to hold a lock protecting access to the _chunks!
-        zpp::save(path, _chunks);
+        save_chunk_registry_state(path, _chunks);
     }
 
     void chunk_registry::_do_truncate(const cardano::optional_point &new_tip, const bool track_changes)

@@ -696,11 +696,23 @@ namespace turbo::plutus::costs {
     static arg_map plutus_costs_to_args(const cardano::plutus_cost_model &model, const arg_map &defaults)
     {
         arg_map args { defaults };
+        const auto operation_supported = [&](const std::string &op_name) {
+            const auto prefix = fmt::format("{}-", op_name);
+            const auto it = defaults.lower_bound(prefix);
+            return it != defaults.end() && it->first.starts_with(prefix);
+        };
         for (const auto &[k, v]: model) {
             const auto pos = k.find('-');
             if (pos == 0 || pos == k.npos) [[unlikely]]
                 throw error(fmt::format("invalid cost model item: {}", k));
             auto op_name = canonical_arg_name(k.substr(0, pos));
+            // A cost-model update may install parameters for builtins that only become
+            // available under a later semantics variant. Historical variants do not have
+            // the formula metadata needed to compile those entries, so leave them absent.
+            // The same parameters are retained when compiling a variant whose defaults do
+            // define the operation (for example D/E for protocol version 11).
+            if (!operation_supported(op_name))
+                continue;
             const auto arg_name = k.substr(pos + 1);
             auto full_arg_name = fmt::format("{}-{}", op_name, arg_name);
             auto arg_val = fmt::format("{}", v);

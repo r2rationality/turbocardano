@@ -108,15 +108,17 @@ namespace turbo::validator {
     }
 
     struct incremental::impl {
-        impl(chunk_registry &cr)
-        : _cr { cr },
+        impl(chunk_registry &cr, const bool validate_vrf)
+        : _cr { cr }, _validate_vrf { validate_vrf },
             _validate_dir { chunk_registry::init_db_dir((_cr.data_dir() / "validate").string()) },
             _state_path { (_validate_dir / "state.json").string() },
             _state_pre_path { (_validate_dir / "state-pre.json").string() },
-            _state { _cr.config(), _cr.sched() }
+            _state { _cr.config(), _cr.sched(), cardano::ledger::state::init_mode::empty }
         {
-            _load_state();
+            _load_state(false);
             _cr.register_processor(_proc);
+            if (!_validate_vrf)
+                logger::warn("block VRF proof and leader eligibility validation is disabled");
             logger::info("protocol magic: {} byron genesis: {}", _cr.config().byron_protocol_magic, _cr.config().byron_genesis_hash);
         }
 
@@ -237,7 +239,8 @@ namespace turbo::validator {
             const auto &stake_dist = _state.pool_stake_dist();
             const auto &genesis_pools = _state.pbft_pools();
             cardano::tail_relative_stake_map tail_stake {};
-            std::set<cardano::pool_hash> seen_pools {};
+            flat_set<cardano::pool_hash> seen_pools {};
+            seen_pools.reserve(stake_dist.size() + genesis_pools.size());
             double signing_stake = 0.0;
             size_t total_blocks = 0;
             size_t repeated_signer_blocks = 0;
@@ -258,7 +261,7 @@ namespace turbo::validator {
                     } else if (!genesis_pools.contains(rit->pool_id)) {
                         ++obsolete_signer_blocks;
                     }
-                    tail_stake.try_emplace(rit->point(), signing_stake);
+                    tail_stake.emplace_hint(tail_stake.begin(), rit->point(), signing_stake);
                     if (signing_stake > 0.5) {
                         log_stats();
                         return tail_stake;
@@ -346,7 +349,9 @@ namespace turbo::validator {
                     const auto snap_tip = _cr.find_block_by_offset(best_snap->end_offset - 1).point();
                     _state.save_node(path, snap_tip, prio_base);
                 } else {
-                    cardano::ledger::state snap_state { _cr.config(), _cr.sched() };
+                    cardano::ledger::state snap_state {
+                        _cr.config(), _cr.sched(), cardano::ledger::state::init_mode::empty
+                    };
                     snap_state.load_zpp(_storage_path("ledger", best_snap->end_offset));
                     const auto snap_tip = _cr.find_block_by_offset(best_snap->end_offset - 1).point();
                     snap_state.save_node(path, snap_tip, prio_base);
@@ -383,6 +388,7 @@ namespace turbo::validator {
         using epoch_task_map = std::map<uint64_t, cardano::slot_range>;
 
         chunk_registry &_cr;
+        const bool _validate_vrf;
         const std::filesystem::path _validate_dir;
         const std::string _state_path;
         const std::string _state_pre_path;
@@ -412,10 +418,12 @@ namespace turbo::validator {
             return nullptr;
         }
 
-        void _load_state()
+        void _load_state(const bool reset_state=true)
         {
             uint64_t end_offset = 0;
-            _state.clear();
+            bool loaded = false;
+            if (reset_state)
+                _state.clear(cardano::ledger::state::init_mode::empty);
             _snapshots.clear();
             chunk_registry::file_set known_files {};
             if (std::filesystem::exists(_state_path)) {
@@ -437,14 +445,17 @@ namespace turbo::validator {
                     const auto snap_it = std::prev(_snapshots.end());
                     try {
                         end_offset = _load_state_snapshot(*snap_it);
+                        loaded = true;
                         break;
                     } catch (const std::exception &ex) {
                         logger::warn("ignoring validator snapshot {}: {}", *snap_it, ex.what());
                         _snapshots.erase(snap_it);
-                        _state.clear();
+                        _state.clear(cardano::ledger::state::init_mode::empty);
                     }
                 }
             }
+            if (!loaded)
+                _state.clear();
             for (auto &e: std::filesystem::directory_iterator(_validate_dir)) {
                 const auto canon_path = std::filesystem::weakly_canonical(e.path()).string();
                 if (e.is_regular_file() && !known_files.contains(canon_path))
@@ -714,24 +725,24 @@ namespace turbo::validator {
                             e, updates.blocks.size(), updates.timed.size(), updates.utxos.size()), logger::level::trace };
                         _state.process_updates(std::move(updates));
                     }
-                }
 
-                const auto vrf_chunks = dynamic_cast<index::vrf::indexer &>(*_cr.indexer().indexers().at("vrf")).chunks(slots);
-                if (!vrf_chunks.empty()) {
-                    turbo::timer t { fmt::format("validator epoch {} process vrf update chunks: {}", e, vrf_chunks.size()), logger::level::trace };
-                    _process_vrf_update_chunks(*min_epoch_offset, vrf_chunks, fast);
-                }
+                    const auto vrf_chunks = dynamic_cast<index::vrf::indexer &>(*_cr.indexer().indexers().at("vrf")).chunks(slots);
+                    if (!vrf_chunks.empty()) {
+                        turbo::timer t { fmt::format("validator epoch {} process vrf update chunks: {}", e, vrf_chunks.size()), logger::level::trace };
+                        _process_vrf_update_chunks(*min_epoch_offset, vrf_chunks, fast);
+                    }
 
-                if (_cr.tx()->target && _state.params().protocol_ver.major >= 3) {
-                    if (const auto target_slot = _cr.make_slot(_cr.tx()->target->slot); target_slot.epoch() >= 2) {
-                        const auto target_epoch_start = cardano::slot::from_epoch(target_slot.epoch(), _cr.config());
-                        const bool prev_epoch_ok = (_cr.tx()->target->slot - target_epoch_start) >= _cr.config().shelley_randomness_stabilization_window;
-                        if (prev_epoch_ok) {
-                            if (_state.epoch() == target_slot.epoch() - 1)
-                                _save_reserve_snapshot();
-                        } else {
-                            if (_state.epoch() == target_slot.epoch() - 2)
-                                _save_reserve_snapshot();
+                    if (_cr.tx()->target && _state.params().protocol_ver.major >= 3) {
+                        if (const auto target_slot = _cr.make_slot(_cr.tx()->target->slot); target_slot.epoch() >= 2) {
+                            const auto target_epoch_start = cardano::slot::from_epoch(target_slot.epoch(), _cr.config());
+                            const bool prev_epoch_ok = (_cr.tx()->target->slot - target_epoch_start) >= _cr.config().shelley_randomness_stabilization_window;
+                            if (prev_epoch_ok) {
+                                if (_state.epoch() == target_slot.epoch() - 1)
+                                    _save_reserve_snapshot();
+                            } else {
+                                if (_state.epoch() == target_slot.epoch() - 2)
+                                    _save_reserve_snapshot();
+                            }
                         }
                     }
                 }
@@ -802,7 +813,12 @@ namespace turbo::validator {
                     }
                 }
             }
-            if (const auto new_valid_tip = _state.mark_subchain_valid(epoch_min_offset, end_idx - start_idx); new_valid_tip)
+            _mark_subchain_valid(epoch_min_offset, end_idx - start_idx);
+        }
+
+        void _mark_subchain_valid(const uint64_t epoch_min_offset, const size_t num_blocks)
+        {
+            if (const auto new_valid_tip = _state.mark_subchain_valid(epoch_min_offset, num_blocks); new_valid_tip)
                 _cr.report_progress("validate", { new_valid_tip->slot, new_valid_tip->end_offset });
         }
 
@@ -821,7 +837,7 @@ namespace turbo::validator {
             }
             if (!vrf_updates_ptr->empty()) {
                 std::sort(vrf_updates_ptr->begin(), vrf_updates_ptr->end());
-                if (!fast) {
+                if (!fast && _validate_vrf) {
                     const auto pool_dist_ptr = std::make_shared<operating_pool_map>(_state.pool_stake_dist());
                     const auto &nonce_epoch = _state.vrf_state().nonce_epoch();
                     const auto &uc_nonce = _state.vrf_state().uc_nonce();
@@ -836,11 +852,17 @@ namespace turbo::validator {
                     }
                 }
                 _state.vrf_process_updates(*vrf_updates_ptr);
+                if (!fast && !_validate_vrf) {
+                    // The asynchronous batches normally mark these blocks valid after checking them.
+                    // With validation disabled, trust the records after applying their nonce/KES updates.
+                    _mark_subchain_valid(epoch_min_offset, vrf_updates_ptr->size());
+                }
             }
         }
     };
 
-    incremental::incremental(chunk_registry &cr): _impl { std::make_unique<impl>(cr) }
+    incremental::incremental(chunk_registry &cr, const bool validate_vrf)
+        : _impl { std::make_unique<impl>(cr, validate_vrf) }
     {
     }
 

@@ -184,8 +184,11 @@ namespace turbo::cardano::ledger {
     using reward_distribution_copy = static_map<cardano::stake_ident, uint64_t>;
     using delegation_map = std::map<cardano::stake_ident, cardano::pool_hash>;
     using delegation_map_copy = static_map<cardano::stake_ident, cardano::pool_hash>;
-    using inv_delegation_map = std::map<cardano::pool_hash, std::unordered_set<cardano::stake_ident>>;
-    using inv_delegation_map_copy = static_map<cardano::pool_hash, std::unordered_set<cardano::stake_ident>>;
+    using inv_delegation_map = partitioned_map<cardano::pool_hash, std::unordered_set<cardano::stake_ident>>;
+    // Historical snapshots only need to know whether a pool had any delegators.
+    // The full active inverse delegation map remains available for Protocol 11
+    // node-state serialization and pool lifecycle processing.
+    using delegated_pool_set_copy = static_map<cardano::pool_hash, bool>;
 
     using ptr_to_stake_map = std::map<cardano::stake_pointer, cardano::stake_ident>;
     using stake_to_ptr_map = std::map<cardano::stake_ident, cardano::stake_pointer>;
@@ -280,6 +283,7 @@ namespace turbo::cardano::ledger {
 
     using pool_info_map = std::map<pool_hash, pool_info>;
     using pool_deposit_map = std::map<pool_hash, uint64_t>;
+    using pool_vrf_key_hash_map = std::map<cardano::vrf_vkey, uint64_t>;
     using nonmyopic_likelihood_map = map_t<pool_hash, pool_rank::likelihood_list>;
 
     using era_list = std::vector<uint64_t>;
@@ -350,30 +354,30 @@ namespace turbo::cardano::ledger {
 
     struct ledger_copy {
         pool_stake_distribution pool_dist {};
-        inv_delegation_map_copy inv_delegs {};
+        delegated_pool_set_copy delegated_pools {};
         pool_info_map pool_params {};
 
         constexpr static auto serialize(auto &archive, auto &self)
         {
-            return archive(self.pool_dist, self.inv_delegs, self.pool_params);
+            return archive(self.pool_dist, self.delegated_pools, self.pool_params);
         }
 
         bool operator==(const ledger_copy &o) const
         {
             return pool_dist == o.pool_dist
-                && inv_delegs == o.inv_delegs
+                && delegated_pools == o.delegated_pools
                 && pool_params == o.pool_params;
         }
 
         size_t size() const
         {
-            return pool_dist.size() + inv_delegs.size() + pool_params.size();
+            return pool_dist.size() + delegated_pools.size() + pool_params.size();
         }
 
         void clear()
         {
             pool_dist.clear();
-            inv_delegs.clear();
+            delegated_pools.clear();
             pool_params.clear();
         }
     };

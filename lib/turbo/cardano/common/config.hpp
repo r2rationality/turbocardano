@@ -4,58 +4,76 @@
  * Copyright (c) 2024-2026 R2 Rationality OÜ (info at r2rationality dot com)
  * License: https://github.com/r2rationality/turbocardano/blob/main/LICENSE */
 
-#include <turbo/cardano/common/types.hpp>
+#include <memory>
+#include <turbo/cardano/common/cert.hpp>
 #include <turbo/config.hpp>
 
 namespace turbo::cardano {
+    using vkey_set = flat_set<vkey>;
+    using committee_member_map = flat_map<credential_t, uint64_t>;
+
     struct config {
-        const config_json byron_genesis;
-        const block_hash byron_genesis_hash;
-        const uint32_t byron_protocol_magic;
-        const uint64_t byron_start_time;
-        const uint64_t byron_epoch_length;
-        const uint64_t byron_slot_duration;
-        const txo_map byron_utxos;
-        const std::set<vkey> byron_issuers;
-        const std::set<key_hash> byron_delegate_hashes;
-        const uint64_t byron_slots_per_chunk = 21600;
-        const config_json shelley_genesis;
-        const block_hash shelley_genesis_hash;
-        const uint64_t shelley_epoch_length;
-        const uint64_t shelley_update_quorum;
-        const uint64_t shelley_max_lovelace_supply;
-        const uint8_t shelley_network_id;
-        const double shelley_active_slots;
-        const uint64_t shelley_security_param;
-        const uint64_t shelley_epoch_blocks;
-        const uint64_t shelley_rewards_ready_slot;
-        const uint64_t shelley_stability_window;
-        const uint64_t shelley_randomness_stabilization_window;
-        const uint64_t shelley_voting_deadline;
-        const uint64_t shelley_chunks_per_epoch = shelley_epoch_length / byron_slots_per_chunk;
-        const shelley_delegate_map shelley_delegates;
-        const config_json alonzo_genesis;
-        const block_hash alonzo_genesis_hash;
-        const config_json conway_genesis;
-        const block_hash conway_genesis_hash;
-        const plutus_cost_models plutus_all_cost_models;
-        const pool_voting_thresholds_t conway_pool_voting_thresholds;
-        const drep_voting_thresholds_t conway_drep_voting_thresholds;
+    private:
+        struct immutable;
+        std::shared_ptr<const immutable> _immutable;
+
+    public:
+        // Read-only facade over the shared immutable payload. Keeping these as
+        // references preserves the existing field-style API without copying
+        // genesis-derived containers into each runtime config.
+        const block_hash &byron_genesis_hash;
+        const uint32_t &byron_protocol_magic;
+        const uint64_t &byron_start_time;
+        const uint64_t &byron_epoch_length;
+        const uint64_t &byron_slot_duration;
+        const txo_map &byron_utxos;
+        const vkey_set &byron_issuers;
+        const signer_set &byron_delegate_hashes;
+        const uint64_t &byron_slots_per_chunk;
+        const block_hash &shelley_genesis_hash;
+        const uint64_t &shelley_epoch_length;
+        const uint64_t &shelley_update_quorum;
+        const uint64_t &shelley_max_lovelace_supply;
+        const uint8_t &shelley_network_id;
+        const double &shelley_active_slots;
+        const uint64_t &shelley_security_param;
+        const uint64_t &shelley_epoch_blocks;
+        const uint64_t &shelley_rewards_ready_slot;
+        const uint64_t &shelley_stability_window;
+        const uint64_t &shelley_randomness_stabilization_window;
+        const uint64_t &shelley_voting_deadline;
+        const uint64_t &shelley_chunks_per_epoch;
+        const shelley_delegate_map &shelley_delegates;
+        const block_hash &alonzo_genesis_hash;
+        const block_hash &conway_genesis_hash;
+        const plutus_cost_models &plutus_all_cost_models;
+        const pool_voting_thresholds_t &conway_pool_voting_thresholds;
+        const drep_voting_thresholds_t &conway_drep_voting_thresholds;
+        const protocol_params &shelley_protocol_params;
+        const protocol_params &alonzo_protocol_params;
+        const protocol_params &conway_protocol_params;
+        const committee_member_map &conway_committee_members;
+        const rational_u64 &conway_committee_threshold;
+        const constitution_t &conway_constitution;
 
         static const config &get();
         explicit config(const configs &cfg=configs_dir::get());
+        config(const config &);
+        config(config &&) noexcept;
+        config &operator=(const config &) =delete;
+        config &operator=(config &&) noexcept;
 
         bool shelley_started() const
         {
-            return static_cast<bool>(_shelley_start_slot);
+            return static_cast<bool>(_mutable.shelley_start_slot);
         }
 
         void shelley_start_epoch(std::optional<uint64_t> epoch) const;
 
         uint64_t shelley_start_slot() const
         {
-            if (_shelley_start_slot) [[likely]]
-                return *_shelley_start_slot;
+            if (_mutable.shelley_start_slot) [[likely]]
+                return *_mutable.shelley_start_slot;
             return std::numeric_limits<uint64_t>::max();
         }
 
@@ -69,13 +87,18 @@ namespace turbo::cardano {
             return byron_start_time + shelley_start_slot() * byron_slot_duration;
         }
     private:
-        mutable std::optional<uint64_t> _shelley_start_slot {};
+        struct mutable_data {
+            std::optional<uint64_t> shelley_start_slot {};
+        };
+        mutable mutable_data _mutable {};
+
+        config(std::shared_ptr<const immutable>, std::optional<uint64_t> shelley_start_slot) noexcept;
 
         static plutus_cost_models _prep_plutus_cost_models(const turbo::config &genesis);
         static shelley_delegate_map _shelley_prep_delegates(const turbo::config &genesis);
         static txo_map _byron_prep_utxos(const turbo::config &genesis);
-        static std::set<vkey> _byron_prep_heavy(const turbo::config &genesis, std::string_view key);
-        static std::set<key_hash> _byron_prep_hashes(const std::set<vkey> &);
+        static vkey_set _byron_prep_heavy(const turbo::config &genesis, std::string_view key);
+        static signer_set _byron_prep_hashes(const vkey_set &);
         static block_hash _verify_hash_byron(const std::string_view &hash_hex, const turbo::config &genesis);
         static block_hash _verify_hash(const std::string_view &hash_hex, const turbo::config &genesis);
     };

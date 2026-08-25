@@ -237,7 +237,7 @@ namespace turbo::cardano::network {
             throw error("cardano::network::client::_fetch_blocks_impl not implemented!");
         }
 
-        virtual void _process_impl(scheduler */*sched*/, asio::worker *iow)
+        virtual void _process_impl(scheduler */*sched*/, asio::worker */*iow*/)
         {
             throw error("cardano::network::client::_process_impl not implemented!");
         }

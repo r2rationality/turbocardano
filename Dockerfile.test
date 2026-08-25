@@ -1,44 +1,94 @@
-FROM ubuntu:24.04 AS builder
-LABEL MAINTAINER="R2 Rationality <info@r2rationality.com>"
-ENV DEBIAN_FRONTEND=noninteractive
+# syntax=docker/dockerfile:1
 
-RUN apt-get update
-RUN apt-get install -y tzdata screen sudo gnupg2 ca-certificates vim-nox less
-RUN ln -fs /usr/share/zoneinfo/Europe/Berlin /etc/localtime
-RUN dpkg-reconfigure --frontend noninteractive tzdata
-RUN cp /etc/sudoers /etc/sudoers.orig
-RUN awk '{ if (/^%sudo/) { print "%sudo\tALL=(ALL:ALL) NOPASSWD:ALL" } else { print } }' /etc/sudoers.orig > /etc/sudoers
-RUN useradd -m -s /bin/bash -G sudo dev
-RUN apt-get install -y build-essential cmake pkg-config gdb libboost1.83-all-dev libboost-url1.83-dev libsecp256k1-dev libsodium-dev libzstd-dev libssl-dev libfmt-dev libspdlog-dev libbotan-2-dev
-RUN apt-get install -y ninja-build
-RUN mkdir /home/dev/tada
-COPY 3rdparty /home/dev/tada/3rdparty
-COPY src /home/dev/tada/src
-COPY lib /home/dev/tada/lib
-COPY etc /home/dev/tada/etc
-COPY data /home/dev/tada/data
-COPY test /home/dev/tada/test
-COPY CMakeLists.txt /home/dev/tada
-RUN chown -R dev:dev /home/dev
+FROM ubuntu:26.04 AS builder
+LABEL maintainer="R2 Rationality <info@r2rationality.com>"
+ARG DEBIAN_FRONTEND=noninteractive
+ENV TZ=Europe/Berlin
+
+RUN --mount=type=cache,id=turbocardano-test-apt-cache-resolute,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,id=turbocardano-test-apt-lib-resolute,target=/var/lib/apt,sharing=locked \
+    rm -f /etc/apt/apt.conf.d/docker-clean && \
+    apt-get update && \
+    apt-get install -y --no-install-recommends \
+        build-essential \
+        ca-certificates \
+        cmake \
+        gdb \
+        gnupg \
+        less \
+        libboost-url1.83-dev \
+        libboost1.83-all-dev \
+        libbotan-3-dev \
+        libfmt-dev \
+        libsecp256k1-dev \
+        libsodium-dev \
+        libspdlog-dev \
+        libssl-dev \
+        libzstd-dev \
+        ninja-build \
+        pkg-config \
+        screen \
+        sudo \
+        tzdata \
+        vim-nox && \
+    ln -snf "/usr/share/zoneinfo/${TZ}" /etc/localtime && \
+    echo "${TZ}" > /etc/timezone
+
+RUN useradd --create-home --shell /bin/bash --groups sudo dev && \
+    echo "dev ALL=(ALL:ALL) NOPASSWD:ALL" > /etc/sudoers.d/dev && \
+    chmod 0440 /etc/sudoers.d/dev && \
+    install -d -o dev -g dev /home/dev/tada
+
+COPY --chown=dev:dev 3rdparty /home/dev/tada/3rdparty
+COPY --chown=dev:dev src /home/dev/tada/src
+COPY --chown=dev:dev lib /home/dev/tada/lib
+COPY --chown=dev:dev etc /home/dev/tada/etc
+COPY --chown=dev:dev data /home/dev/tada/data
+COPY --chown=dev:dev test /home/dev/tada/test
+COPY --chown=dev:dev CMakeLists.txt /home/dev/tada/CMakeLists.txt
 
 USER dev
 WORKDIR /home/dev/tada
-RUN cmake -B build -GNinja
-RUN cmake --build build -j -t tada
+RUN cmake -B build -GNinja && cmake --build build -j -t tada
 
-FROM ubuntu:24.04
-RUN apt-get  update
-RUN apt-get install -y sudo libboost-json1.83.0 libboost-container1.83.0 libboost-coroutine1.83.0 libboost-context1.83.0 \
-    libboost-url1.83.0 libboost-thread1.83.0 libboost-atomic1.83.0 libboost-stacktrace1.83.0 \
-    libfmt9 libspdlog1.12 libzstd1 libssl3t64 libsodium23 libatomic1 libnuma1 libsecp256k1-1 libbotan-2-19
-RUN cp /etc/sudoers /etc/sudoers.orig
-RUN awk '{ if (/^%sudo/) { print "%sudo\tALL=(ALL:ALL) NOPASSWD:ALL" } else { print } }' /etc/sudoers.orig > /etc/sudoers
-RUN useradd -m -s /bin/bash -d /opt/tada -G sudo tada
-USER tada
-WORKDIR /opt/tada
+FROM ubuntu:26.04
+LABEL maintainer="R2 Rationality <info@r2rationality.com>"
+ARG DEBIAN_FRONTEND=noninteractive
+
+RUN --mount=type=cache,id=turbocardano-test-apt-cache-resolute,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,id=turbocardano-test-apt-lib-resolute,target=/var/lib/apt,sharing=locked \
+    rm -f /etc/apt/apt.conf.d/docker-clean && \
+    apt-get update && \
+    apt-get install -y --no-install-recommends \
+        libatomic1 \
+        libboost-atomic1.83.0 \
+        libboost-container1.83.0 \
+        libboost-context1.83.0 \
+        libboost-coroutine1.83.0 \
+        libboost-json1.83.0 \
+        libboost-stacktrace1.83.0 \
+        libboost-thread1.83.0 \
+        libboost-url1.83.0 \
+        libbotan-3-10 \
+        libfmt10 \
+        libnuma1 \
+        libsecp256k1-6 \
+        libsodium23 \
+        libspdlog1.15 \
+        libssl3t64 \
+        libzstd1 \
+        sudo
+
+RUN useradd --create-home --shell /bin/bash --home-dir /opt/tada --groups sudo tada && \
+    echo "tada ALL=(ALL:ALL) NOPASSWD:ALL" > /etc/sudoers.d/tada && \
+    chmod 0440 /etc/sudoers.d/tada && \
+    install -d -o tada -g tada /opt/tada/data /opt/tada/log
+
 COPY --chmod=0755 docker-test.sh /opt/tada/bin/docker-start.sh
 COPY --from=builder /home/dev/tada/build/tada /opt/tada/bin/tada
 COPY --from=builder /home/dev/tada/etc /opt/tada/etc
-RUN mkdir data log
+
+USER tada
+WORKDIR /opt/tada
 ENV TURBO_LOG_PATH=/opt/tada/log/tada.log
-ENTRYPOINT [ "/opt/tada/bin/docker-start.sh" ]
+ENTRYPOINT ["/opt/tada/bin/docker-start.sh"]

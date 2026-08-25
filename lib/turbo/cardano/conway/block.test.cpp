@@ -12,13 +12,29 @@ using namespace turbo::cardano;
 
 suite cardano_conway_suite = [] {
     "cardano::conway"_test = [] {
+        "mint parsing rejects invalid entries"_test = [] {
+            expect(boost::ut::throws<error>([] {
+                auto parsed = cbor::zero2::parse(uint8_vector::from_hex(
+                    "A1"
+                    "581C00000000000000000000000000000000000000000000000000000000"
+                    "A14000"));
+                conway::mint_t::from_cbor(parsed.get());
+            }));
+            expect(boost::ut::throws<error>([] {
+                auto parsed = cbor::zero2::parse(uint8_vector::from_hex(
+                    "A1"
+                    "581C00000000000000000000000000000000000000000000000000000000"
+                    "A0"));
+                conway::mint_t::from_cbor(parsed.get());
+            }));
+        };
+
         "example scripts"_test = [] {
             const configs_dir cfg { configs_dir::default_path() };
             const cardano::config ccfg { cfg };
             ccfg.shelley_start_epoch(208);
             for (const auto &path: file::files_with_ext(install_path("data/conway"), ".zpp")) {
                 plutus::context ctx { path, ccfg };
-                ctx.protocol_ver({ 9, 0 });
                 ctx.prepare();
                 expect(boost::ut::nothrow([&] {
                     try {

@@ -5,6 +5,7 @@
 
 #include "messages.hpp"
 #include <turbo/cbor/zero2.hpp>
+#include <turbo/common/zstd.hpp>
 
 namespace turbo::cardano::network::miniprotocol::blockfetch {
     msg_request_range_t msg_request_range_t::from_cbor(cbor::zero2::array_reader &it)
@@ -74,10 +75,29 @@ namespace turbo::cardano::network::miniprotocol::blockfetch {
     uint8_vector msg_compressed_blocks_t::bytes() const
     {
         switch (encoding) {
-            case 0: return payload;
-            case 1: return zstd::decompress(payload);
+            case encoding_raw: return payload;
+            case encoding_zstd_fast:
+            case encoding_zstd_max:
+                return zstd::decompress(payload);
             [[unlikely]] default: throw error(fmt::format("unsupported encoding {}", encoding));
         }
+    }
+
+    int32_t msg_compressed_blocks_t::compression_level() const
+    {
+        switch (encoding) {
+            case encoding_raw: return 0;
+            case encoding_zstd_fast: return fast_compression_level;
+            case encoding_zstd_max: return zstd::default_compression_level;
+            [[unlikely]] default: throw error(fmt::format("unsupported encoding {}", encoding));
+        }
+    }
+
+    uint64_t msg_compressed_blocks_t::encoding_for_compression_level(const int32_t compression_level)
+    {
+        return compression_level >= max_encoding_min_compression_level
+            ? encoding_zstd_max
+            : encoding_zstd_fast;
     }
 
     void msg_batch_done_t::to_cbor(cbor::encoder &enc) const

@@ -14,12 +14,12 @@
  */
 
 #include <array>
+#include <boost/numeric/conversion/cast.hpp>
 #include <optional>
 #include <turbo/common/bytes.hpp>
 #include <turbo/common/error.hpp>
 #include <turbo/common/format.hpp>
-#include <turbo/common/variant.hpp>
-#include <variant>
+#include <turbo/common/numeric-cast.hpp>
 #include "types.hpp"
 
 namespace turbo::cbor::zero2 {
@@ -229,6 +229,15 @@ namespace turbo::cbor::zero2 {
             return _reader_cast<nint_reader>().read();
         }
 
+        int64_t int64()
+        {
+            switch (type()) {
+                case major_type::uint: return numeric_cast<int64_t>(uint());
+                case major_type::nint: return -numeric_cast<int64_t>(nint());
+                [[unlikely]] default: throw error(fmt::format("expected for an integer but got: {}!", type()));
+            }
+        }
+
         uint64_t nint_raw()
         {
             return _reader_cast<nint_reader>().read_raw();
@@ -378,7 +387,7 @@ namespace turbo::cbor::zero2 {
 
         const uint8_t *_data_begin;
         uint64_t _spec_uint;
-        reader_storage _reader;
+        alignas(reader) reader_storage _reader;
 
         inline reader &_reader_base()
         {
@@ -388,9 +397,10 @@ namespace turbo::cbor::zero2 {
         template<typename T>
         inline T &_reader_cast()
         {
-            if (auto *ptr = dynamic_cast<T *>(&_reader_base()); ptr) [[likely]]
+            auto &reader = _reader_base();
+            if (auto *ptr = dynamic_cast<T *>(&reader); ptr) [[likely]]
                 return *ptr;
-            throw error(fmt::format("expected {} but got {}", typeid(T).name(), typeid(_reader_base()).name()));
+            throw error(fmt::format("expected {} but got {}", typeid(T).name(), typeid(reader).name()));
         }
 
         static size_t special_bytes(const special_val sv)
@@ -452,7 +462,7 @@ namespace turbo::cbor::zero2 {
 
         const uint8_t *_ptr;
         const uint8_t *_end;
-        std::array<uint8_t, sizeof(value) * max_depth> _val_storage {};
+        alignas(value) std::array<uint8_t, sizeof(value) * max_depth> _val_storage {};
         value *_current;
 
         bool done(value &v)
@@ -584,17 +594,17 @@ namespace turbo::cbor::zero2 {
                 break;
             case 0x19:
                 _dec.step(3);
-                _spec_uint = net_to_host<uint16_t>(*reinterpret_cast<const uint16_t *>(&_data_begin[1]));
+                _spec_uint = net_to_host(load_unaligned<uint16_t>(&_data_begin[1]));
                 new (&_reader_base()) uint_reader {};
                 break;
             case 0x1A:
                 _dec.step(5);
-                _spec_uint = net_to_host<uint32_t>(*reinterpret_cast<const uint32_t *>(&_data_begin[1]));
+                _spec_uint = net_to_host(load_unaligned<uint32_t>(&_data_begin[1]));
                 new (&_reader_base()) uint_reader {};
                 break;
             case 0x1B:
                 _dec.step(9);
-                _spec_uint = net_to_host<uint64_t>(*reinterpret_cast<const uint64_t *>(&_data_begin[1]));
+                _spec_uint = net_to_host(load_unaligned<uint64_t>(&_data_begin[1]));
                 new (&_reader_base()) uint_reader {};
                 break;
             case 0x20:
@@ -632,17 +642,17 @@ namespace turbo::cbor::zero2 {
                 break;
             case 0x39:
                 _dec.step(3);
-                _spec_uint = net_to_host<uint16_t>(*reinterpret_cast<const uint16_t *>(&_data_begin[1]));
+                _spec_uint = net_to_host(load_unaligned<uint16_t>(&_data_begin[1]));
                 new (&_reader_base()) nint_reader {};
                 break;
             case 0x3A:
                 _dec.step(5);
-                _spec_uint = net_to_host<uint32_t>(*reinterpret_cast<const uint32_t *>(&_data_begin[1]));
+                _spec_uint = net_to_host(load_unaligned<uint32_t>(&_data_begin[1]));
                 new (&_reader_base()) nint_reader {};
                 break;
             case 0x3B:
                 _dec.step(9);
-                _spec_uint = net_to_host<uint64_t>(*reinterpret_cast<const uint64_t *>(&_data_begin[1]));
+                _spec_uint = net_to_host(load_unaligned<uint64_t>(&_data_begin[1]));
                 new (&_reader_base()) nint_reader {};
                 break;
             case 0x40:
@@ -681,13 +691,13 @@ namespace turbo::cbor::zero2 {
                 break;
             case 0x59:
                 _dec.step(3);
-                _spec_uint = net_to_host<uint16_t>(*reinterpret_cast<const uint16_t *>(&_data_begin[1]));
+                _spec_uint = net_to_host(load_unaligned<uint16_t>(&_data_begin[1]));
                 _dec.step(_spec_uint);
                 new (&_reader_base()) bytes_reader {};
                 break;
             case 0x5A:
                 _dec.step(5);
-                _spec_uint = net_to_host<uint32_t>(*reinterpret_cast<const uint32_t *>(&_data_begin[1]));
+                _spec_uint = net_to_host(load_unaligned<uint32_t>(&_data_begin[1]));
                 _dec.step(_spec_uint);
                 new (&_reader_base()) bytes_reader {};
                 break;
@@ -734,7 +744,7 @@ namespace turbo::cbor::zero2 {
                 break;
             case 0x79:
                 _dec.step(3);
-                _spec_uint = net_to_host<uint16_t>(*reinterpret_cast<const uint16_t *>(&_data_begin[1]));
+                _spec_uint = net_to_host(load_unaligned<uint16_t>(&_data_begin[1]));
                 _dec.step(_spec_uint);
                 new (&_reader_base()) text_reader {};
                 break;
@@ -780,12 +790,12 @@ namespace turbo::cbor::zero2 {
                 break;
             case 0x99:
                 _dec.step(3);
-                _spec_uint = net_to_host<uint16_t>(*reinterpret_cast<const uint16_t *>(&_data_begin[1]));
+                _spec_uint = net_to_host(load_unaligned<uint16_t>(&_data_begin[1]));
                 new (&_reader_base()) array_reader_sized { _dec.push() };
                 break;
             case 0x9A:
                 _dec.step(5);
-                _spec_uint = net_to_host<uint32_t>(*reinterpret_cast<const uint32_t *>(&_data_begin[1]));
+                _spec_uint = net_to_host(load_unaligned<uint32_t>(&_data_begin[1]));
                 new (&_reader_base()) array_reader_sized { _dec.push() };
                 break;
             case 0x9B:
@@ -829,12 +839,12 @@ namespace turbo::cbor::zero2 {
                 break;
             case 0xB9:
                 _dec.step(3);
-                _spec_uint = net_to_host<uint16_t>(*reinterpret_cast<const uint16_t *>(&_data_begin[1]));
+                _spec_uint = net_to_host(load_unaligned<uint16_t>(&_data_begin[1]));
                 new (&_reader_base()) map_reader_sized { _dec.push() };
                 break;
             case 0xBA:
                 _dec.step(5);
-                _spec_uint = net_to_host<uint32_t>(*reinterpret_cast<const uint32_t *>(&_data_begin[1]));
+                _spec_uint = net_to_host(load_unaligned<uint32_t>(&_data_begin[1]));
                 new (&_reader_base()) map_reader_sized { _dec.push() };
                 break;
             case 0xBB:
@@ -878,7 +888,7 @@ namespace turbo::cbor::zero2 {
                 break;
             case 0xD9:
                 _dec.step(3);
-                _spec_uint = net_to_host<uint16_t>(*reinterpret_cast<const uint16_t *>(&_data_begin[1]));
+                _spec_uint = net_to_host(load_unaligned<uint16_t>(&_data_begin[1]));
                 new (&_reader_base()) tag_reader { _dec.push() };
                 break;
             case 0xDA:
@@ -1006,6 +1016,12 @@ namespace turbo::cbor::zero2 {
 
     inline std::string_view chunked_text_reader::read()
     {
+        auto *first_chunk = next_chunk(_dec_level);
+        if (!first_chunk) [[unlikely]]
+            return {};
+        if (const auto *second_chunk = next_chunk(_dec_level); second_chunk) [[unlikely]]
+            throw error("A conversion from a CBOR chunked string into a sing string_view is unavailable for multi-chunk strings!");
+        return first_chunk->data_special();
         throw error("a chunked string cannot be represented as a single buffer!");
     }
 
@@ -1057,7 +1073,8 @@ namespace turbo::cbor::zero2 {
     {
         const auto bytes = read();
         b.resize(bytes.size());
-        memcpy(b.data(), bytes.data(), bytes.size());
+        if (!bytes.empty())
+            memcpy(b.data(), bytes.data(), bytes.size());
     }
 
     inline void bytes_reader::read(uint8_vector &b)
@@ -1067,7 +1084,12 @@ namespace turbo::cbor::zero2 {
 
     inline buffer chunked_bytes_reader::read()
     {
-        throw error("a chunked bytestring cannot be represented as a single buffer!");
+        auto *first_chunk = next_chunk(_dec_level);
+        if (!first_chunk) [[unlikely]]
+            return {};
+        if (const auto *second_chunk = next_chunk(_dec_level); second_chunk) [[unlikely]]
+            throw error("A conversion of a CBOR chunked value into a single buffer is unavailable for multi-chunk values!");
+        return first_chunk->data_special();
     }
 
     inline void chunked_bytes_reader::read(std::pmr::vector<uint8_t> &b)

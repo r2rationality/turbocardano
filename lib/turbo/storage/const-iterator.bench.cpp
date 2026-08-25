@@ -15,7 +15,6 @@ namespace {
 
 suite storage_const_iterator_bench_suite = [] {
     using namespace turbo::storage;
-    using const_iterator = storage::const_iterator;
     "storage::const_iterator"_test = [] {
         static std::string data_dir = install_path("./data/chunk-registry");
         const chunk_registry cr { data_dir, chunk_registry::mode::store };

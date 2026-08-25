@@ -69,7 +69,9 @@ namespace turbo::index {
             sched.submit(task_group, task_prio, [max_offset, pi, out_idx, readers, done, num_parts, final_path, on_complete]() {
                 const auto part_max_offset = merge_index_part(*out_idx, pi, readers);
                 parallel::atomic_max(*max_offset, part_max_offset);
-                const auto new_done = done->fetch_add(1, std::memory_order_relaxed) + 1;
+                // The last partition commits data written by every worker, so this
+                // counter is also the publication barrier for those writes.
+                const auto new_done = done->fetch_add(1, std::memory_order_acq_rel) + 1;
                 if (new_done == num_parts) {
                     out_idx->set_meta("max_offset", buffer::from(*max_offset));
                     out_idx->commit();

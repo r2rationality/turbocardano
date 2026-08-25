@@ -4,6 +4,8 @@
 
 #include <cmath>
 #include <source_location>
+#include <type_traits>
+#include <utility>
 #define BOOST_UT_DISABLE_MODULE 1
 #include <boost/ut.hpp>
 // file and logger are included as a convenience as most unit tests require that functionality.
@@ -13,6 +15,20 @@
 
 namespace turbo {
     using namespace boost::ut;
+
+    namespace detail {
+        template<typename X, typename Y>
+        constexpr bool expect_equal_values(const X &x, const Y &y)
+        {
+            if constexpr (
+                std::is_integral_v<X> && std::is_integral_v<Y>
+                && !std::is_same_v<std::remove_cv_t<X>, bool>
+                && !std::is_same_v<std::remove_cv_t<Y>, bool>)
+                return std::cmp_equal(x, y);
+            else
+                return x == y;
+        }
+    }
 
     struct test_printer: boost::ut::printer {
         template<class T>
@@ -46,7 +62,7 @@ namespace turbo {
     template<typename X, typename Y>
     bool expect_equal(const X &x, const Y &y, const std::source_location &loc=std::source_location::current())
     {
-        const auto res = x == y;
+        const auto res = detail::expect_equal_values(x, y);
         expect(res, loc) << fmt::format("{} != {}", x, y);
         return res;
     }
@@ -54,7 +70,7 @@ namespace turbo {
     template<typename X, typename Y>
     bool expect_equal(const X &x, const Y &y, const std::string_view name, const std::source_location &loc=std::source_location::current())
     {
-        const auto res = x == y;
+        const auto res = detail::expect_equal_values(x, y);
         expect(res, loc) << fmt::format("{}: {} != {}", name, x, y);
         return res;
     }

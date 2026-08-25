@@ -12,6 +12,23 @@ using namespace turbo::cardano;
 
 suite cardano_mary_suite = [] {
     "cardano::mary"_test = [] {
+        "mint parsing prunes zero quantities"_test = [] {
+            // The first policy has one zero and one negative asset. The second policy
+            // contains only a zero asset and must therefore disappear altogether.
+            const auto raw = uint8_vector::from_hex(
+                "A2"
+                "581C00000000000000000000000000000000000000000000000000000000"
+                "A241A00041A121"
+                "581C01010101010101010101010101010101010101010101010101010101"
+                "A14000");
+            auto parsed = cbor::zero2::parse(raw);
+            const auto mints = mary::mint_t::from_cbor(parsed.get());
+
+            expect_equal(1, mints.size());
+            expect_equal(1, mints.begin()->second.size());
+            expect_equal(-2, mints.begin()->second.begin()->second);
+        };
+
         "parse allegra block"_test = [] {
             const auto data = file::read(install_path("data/allegra/block-0.cbor"));
             auto block_tuple = cbor::zero2::parse(data);

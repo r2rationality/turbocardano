@@ -20,6 +20,7 @@ namespace turbo::storage {
     struct chunk_info {
         size_t data_size = 0;
         size_t compressed_size = 0;
+        int32_t compression_level = 0; // zero means unknown
         size_t num_blocks = 0; // needed when chunk info is serialized without the blocks fields
         uint64_t first_slot = 0;
         uint64_t last_slot {};
@@ -89,6 +90,8 @@ namespace turbo::storage {
                 chunk.offset = json::value_to<size_t>(j.at("offset"));
             chunk.data_size = json::value_to<size_t>(j.at("size"));
             chunk.compressed_size = json::value_to<size_t>(j.at("compressedSize"));
+            if (j.contains("compressionLevel"))
+                chunk.compression_level = json::value_to<int32_t>(j.at("compressionLevel"));
             chunk.num_blocks = json::value_to<size_t>(j.at("numBlocks"));
             chunk.first_slot = json::value_to<uint64_t>(j.at("firstSlot"));
             chunk.last_slot = json::value_to<uint64_t>(j.at("lastSlot"));
@@ -103,6 +106,7 @@ namespace turbo::storage {
             return json::object {
                 { "size", data_size },
                 { "compressedSize", compressed_size },
+                { "compressionLevel", compression_level },
                 { "numBlocks", num_blocks },
                 { "firstSlot", static_cast<uint64_t>(first_slot) },
                 { "lastSlot", static_cast<uint64_t>(last_slot) },

@@ -58,9 +58,14 @@ namespace turbo::sync::p2p {
     };
 
     struct syncer: sync::syncer {
+        static constexpr size_t auto_max_inflight_bytes = 0;
+        static constexpr size_t inflight_bytes_per_worker = size_t{128} << 20U;
+
+        explicit syncer(chunk_registry &cr, size_t max_inflight_bytes);
         explicit syncer(chunk_registry &cr,
             cardano::network::peer_selection &ps=cardano::network::peer_selection_simple::get(),
-            cardano::network::client_manager &cnc=cardano::network::client_manager_async::get());
+            cardano::network::client_manager &cnc=cardano::network::client_manager_async::get(),
+            size_t max_inflight_bytes=auto_max_inflight_bytes);
         ~syncer() override;
         [[nodiscard]] std::shared_ptr<sync::peer_info> find_peer(
             std::optional<cardano::network::address> addr={},

@@ -110,6 +110,15 @@ suite cardano_byron_suite = [] {
             }
         };
 
+        "block container preserves nested parent references"_test = [] {
+            const auto data = file::read(install_path("data/byron/block-4320007.cbor"));
+            auto block_tuple = cbor::zero2::parse(data);
+            const block_container blk { 0, block_tuple.get() };
+            expect(!blk->txs().empty());
+            for (const auto *tx: blk->txs())
+                expect(&tx->block() == &blk.base());
+        };
+
         "genesis signers"_test = [] {
             const std::set<vkey> signers = {
                 vkey::from_hex("5FDDEEDADE2714D6DB2F9E1104743D2D8D818ECDDC306E176108DB14CAADD441"),

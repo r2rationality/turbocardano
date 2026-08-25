@@ -35,7 +35,8 @@ namespace turbo {
         if (dst.size() - dst_off < src.size())
             throw error(fmt::format("expected dst must have more than {} bytes after offset {} but got {} in file {}, line {}!",
                 src.size(), dst_off, dst.size() - dst_off, loc.file_name(), loc.line()));
-        memcpy(dst.data() + dst_off, src.data(), src.size());
+        if (!src.empty())
+            memcpy(dst.data() + dst_off, src.data(), src.size());
     }
 
     inline void span_memcpy(const std::span<uint8_t> &dst, const buffer &src, const std::source_location &loc=std::source_location::current())
@@ -43,7 +44,8 @@ namespace turbo {
         if (dst.size() != src.size())
             throw error(fmt::format("expected src span to be of {} bytes but got {} in file {}, line {}!",
                 dst.size(), src.size(), loc.file_name(), loc.line()));
-        memcpy(dst.data(), src.data(), dst.size());
+        if (!dst.empty())
+            memcpy(dst.data(), src.data(), dst.size());
     }
 
     template <size_t SZ>
@@ -52,14 +54,16 @@ namespace turbo {
         if (dst.size() != src.size())
             throw error(fmt::format("expected src span to be of {} bytes but got {} in file {}, line {}!",
                 dst.size(), src.size(), loc.file_name(), loc.line()));
-        memcpy(dst.data(), src.data(), dst.size());
+        if (!dst.empty())
+            memcpy(dst.data(), src.data(), dst.size());
     }
 
     inline uint8_vector uint8_vector_copy(const std::span<const uint8_t> &src)
     {
         uint8_vector buf;
         buf.resize(src.size());
-        memcpy(buf.data(), src.data(), buf.size());
+        if (!buf.empty())
+            memcpy(buf.data(), src.data(), buf.size());
         return buf;
     }
 
@@ -69,7 +73,7 @@ namespace turbo {
         if (dst.size() != src.size()) [[unlikely]]
             throw error(fmt::format("expected src span to be of {} bytes but got {} in file {}, line {}!",
                 dst.size(), src.size(), loc.file_name(), loc.line()));
-        return memcmp(dst.data(), src.data(), dst.size());
+        return dst.empty() ? 0 : memcmp(dst.data(), src.data(), dst.size());
     }
 
     template<class ForwardIt, class T, class Compare>

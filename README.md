@@ -110,7 +110,7 @@ docker build -t tada -f Dockerfile.test .
 
 Download, validate, and prepare for querying a copy of the Cardano blockchain from Cardano bootstrap nodes:
 ```
-docker run -it --rm -v <turbo-dir>:/data tada sync --max-epoch=544 /data
+docker run -it --rm -v <turbo-dir>:/data tada sync /data
 ```
 
 Show information about the local chain's tip:
@@ -184,9 +184,9 @@ Additionally on Windows:
 - [mimalloc](https://github.com/microsoft/mimalloc) >= 2.1.9, a memory allocator that works well with multi-threaded workloads
 
 ## Tested environments and compilers
-- Ubuntu Linux 24.04 with GCC 13.2
-- Ubuntu Linux 24.04 with Clang 18
-- Windows 11 with Visual C++ 19.39.33520.0 that comes with Visual Studio 2022 Community Edition
+- Ubuntu Linux 26.04 with GCC 15.2
+- Ubuntu Linux 26.04 with Clang 21
+- Windows 11 with Visual C++ that comes with Visual Studio 2026 Community Edition
 
 ## Build the command line version
 Verify the presence of the necessary libraries and generate build files in `cmake-build-release` directory for a release build:

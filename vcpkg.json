@@ -11,6 +11,7 @@
   ],
   "builtin-baseline": "7adc2e4d49e8d0efc07a369079faa6bc3dbb90f3",
   "overrides": [
-    { "name": "botan", "version": "2.19.3#2" }
+    { "name": "botan", "version": "2.19.3#2" },
+    { "name": "libsodium", "version": "1.0.22" }
   ]
 }

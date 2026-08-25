@@ -44,13 +44,12 @@ suite parallel_ordered_consumer_suite = [] {
             expect_equal(false, c.try_push(2));
             expect_equal(false, c.try_push(3));
             sched.process();
-            expect_equal(1, processed.size());
-            expect_equal(false, c.try_push(1));
-            expect_equal(true, c.try_push(2));
+            expect_equal(3, processed.size());
             expect_equal(false, c.try_push(3));
+            expect_equal(true, c.try_push(4));
             sched.process();
-            expect_equal(2, processed.size());
-            expect_equal(false, c.try_push(2));
+            expect_equal(4, processed.size());
+            expect_equal(false, c.try_push(4));
         };
         "parallel pushes"_test = [&] {
             std::set<uint64_t> processed {};

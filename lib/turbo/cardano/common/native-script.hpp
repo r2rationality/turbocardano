@@ -8,5 +8,5 @@
 
 namespace turbo::cardano::native_script {
     using optional_error_string = std::optional<std::string>;
-    extern optional_error_string validate(cbor::zero2::value &script, uint64_t slot, const std::set<key_hash> &vkeys);
+    extern optional_error_string validate(cbor::zero2::value &script, uint64_t slot, const signer_set &vkeys);
 }

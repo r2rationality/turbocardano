@@ -9,6 +9,10 @@
 namespace turbo::cardano::shelley {
     static constexpr uint64_t kes_period_slots = 129600;
 
+    struct native_script_t {
+        static native_script_t from_cbor(cbor::zero2::value &);
+    };
+
     struct block_header_base: cardano::block_header_base {
         using cardano::block_header_base::block_header_base;
         static buffer prev_hash_from_cbor(cbor::zero2::value &v, const cardano::config &cfg);
@@ -143,30 +147,76 @@ namespace turbo::cardano::shelley {
         bool body_hash_ok() const override;
         bool signature_ok() const override;
         void foreach_update_proposal(const std::function<void(const param_update_proposal &)> &observer) const override;
-    protected:
-        template<typename TX>
-        static block_tx_list<TX> parse_txs(const block_base &blk, const uint8_t *block_begin, cbor::zero2::array_reader &block_it)
-        {
-            decltype(block_tx_list<TX>::txs) txs {};
-            buffer txs_cbor;
-            {
-                auto &txs_raw = block_it.read();
-                if (!txs_raw.indefinite()) [[likely]]
-                    txs.reserve(txs_raw.special_uint());
-                auto &it = txs_raw.array();
-                while (!it.done()) {
-                    auto &tx = it.read();
-                    txs.emplace_back(blk, tx.data_begin() - block_begin, tx, txs.size());
-                }
-                txs_cbor = txs_raw.data_raw();
-            }
-            auto &wits_raw = block_it.read();
-            auto &it = wits_raw.array();
-            for (size_t i = 0; !it.done(); ++i) {
-                txs.at(i).parse_witnesses(it.read());
-            }
-            return { std::move(txs), txs_cbor, wits_raw.data_raw() };
-        }
+    };
+
+    struct transaction_input_t {
+        tx_out_ref value {};
+
+        static transaction_input_t from_cbor(cbor::zero2::value &);
+    };
+
+    struct transaction_inputs_t: input_set {
+        using input_set::input_set;
+        static transaction_inputs_t from_cbor(cbor::zero2::value &);
+    };
+
+    struct transaction_output_t {
+        tx_out_data value {};
+
+        static transaction_output_t from_cbor(cbor::zero2::value &);
+    };
+
+    struct transaction_outputs_t: tx_output_list {
+        using tx_output_list::tx_output_list;
+        static transaction_outputs_t from_cbor(cbor::zero2::value &);
+    };
+
+    struct certificate_t {
+        cardano::cert_t value {};
+
+        static certificate_t from_cbor(cbor::zero2::value &);
+    };
+
+    struct certificates_t: cert_list {
+        using cert_list::cert_list;
+        static certificates_t from_cbor(cbor::zero2::value &);
+    };
+
+    struct withdrawals_t: withdrawal_map {
+        using withdrawal_map::withdrawal_map;
+        static withdrawals_t from_cbor(cbor::zero2::value &);
+    };
+
+    struct protocol_param_update_t {
+        param_update value {};
+
+        static protocol_param_update_t from_cbor(cbor::zero2::value &);
+    };
+
+    struct update_t: param_update_proposal_list {
+        using param_update_proposal_list::param_update_proposal_list;
+        static update_t from_cbor(cbor::zero2::value &);
+    };
+
+    struct transaction_body_t {
+        transaction_inputs_t inputs {};
+        transaction_outputs_t outputs {};
+        uint64_t fee = 0;
+        std::optional<uint64_t> validity_end {};
+        certificates_t certs {};
+        withdrawals_t withdrawals {};
+        update_t updates {};
+        buffer raw {};
+        mutable std::optional<tx_hash> hash {};
+
+        static transaction_body_t from_cbor(cbor::zero2::value &);
+    };
+
+    struct transaction_witness_set_t {
+        tx_wit_list items {};
+        buffer raw {};
+
+        static transaction_witness_set_t from_cbor(cbor::zero2::value &);
     };
 
     struct tx_base: cardano::tx_base {
@@ -176,12 +226,6 @@ namespace turbo::cardano::shelley {
         void foreach_param_update(const update_observer_t &observer) const override;
         void foreach_withdrawal(const withdrawal_observer_t &observer) const override;
         void parse_witnesses(cbor::zero2::value &) override;
-    protected:
-        static input_set parse_inputs(cbor::zero2::value &);
-        static tx_output_list parse_outputs(cbor::zero2::value &);
-        static cert_list parse_certs(cbor::zero2::value &);
-        static withdrawal_map parse_withdrawals(cbor::zero2::value &);
-        static param_update_proposal_list parse_updates(cbor::zero2::value &);
     };
 
     struct tx: tx_base {
@@ -195,16 +239,13 @@ namespace turbo::cardano::shelley {
         const cert_list &certs() const override;
         const param_update_proposal_list &updates() const override;
         buffer raw() const override;
-    protected:
-        input_set _inputs {};
-        tx_output_list _outputs {};
-        uint64_t _fee = 0;
-        std::optional<uint64_t> _validity_end {};
-        cert_list _certs {};
-        withdrawal_map _withdrawals {};
-        param_update_proposal_list _updates {};
-        buffer _raw;
-        mutable std::optional<tx_hash> _hash {};
+    private:
+        transaction_body_t _body;
+    };
+
+    struct block_transactions_t: block_tx_list<tx> {
+        using block_tx_list<tx>::block_tx_list;
+        static block_transactions_t from_cbor(const block_base &, const uint8_t *block_begin, cbor::zero2::array_reader &);
     };
 
     struct block: block_base {
@@ -215,7 +256,7 @@ namespace turbo::cardano::shelley {
         const tx_list &txs() const override;
     private:
         block_header _hdr;
-        block_tx_list<tx> _txs;
+        block_transactions_t _txs;
         block_meta_map _meta;
         mutable std::optional<block_hash> _body_hash {};
         const buffer _raw;

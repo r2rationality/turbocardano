@@ -3,6 +3,8 @@
  * Copyright (c) 2024-2026 R2 Rationality OÜ (info at r2rationality dot com)
  * License: https://github.com/r2rationality/turbocardano/blob/main/LICENSE */
 
+#include <algorithm>
+#include <iterator>
 #include <turbo/cardano.hpp>
 #include <turbo/common/test.hpp>
 #include <turbo/sync/mocks.hpp>
@@ -51,12 +53,23 @@ suite sync_p2p_suite = [] {
             expect_equal(cr.num_blocks(), 7);
         };
         "max_slot"_test = [&] {
+            constexpr uint64_t max_slot = 100;
+            const auto expected_end = std::ranges::find_if(good_chain.blocks, [&](const auto &blk) {
+                return blk->blk->slot() > max_slot;
+            });
+            expect(expected_end != good_chain.blocks.begin());
+            expect(expected_end != good_chain.blocks.end());
+            if (expected_end == good_chain.blocks.begin() || expected_end == good_chain.blocks.end())
+                return;
+            const auto expected_num_blocks = static_cast<size_t>(std::distance(good_chain.blocks.begin(), expected_end));
+            const auto expected_max_slot = (*std::prev(expected_end))->blk->slot();
+
             std::filesystem::remove_all(data_dir);
             chunk_registry cr { data_dir, chunk_registry::mode::validate, ccfg };
             p2p::syncer s { cr, ps, ccm };
-            expect(s.sync(s.find_peer(), 100));
-            expect_equal(cr.num_blocks(), 6);
-            expect_equal(cr.max_slot(), 87);
+            expect(s.sync(s.find_peer(), max_slot));
+            expect_equal(cr.num_blocks(), expected_num_blocks);
+            expect_equal(cr.max_slot(), expected_max_slot);
         };
         "multi chunk"_test = [&] {
             std::filesystem::remove_all(data_dir);

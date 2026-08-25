@@ -38,7 +38,8 @@ namespace {
             if (out.size() != in.size()) {
                 return observer->failed(fmt::format("async_read requested {} bytes but the next data set has {}!", out.size(), in.size()));
             }
-            memcpy(out.data(), in.data(), out.size());
+            if (!out.empty())
+                memcpy(out.data(), in.data(), out.size());
             observer->done();
         }
 

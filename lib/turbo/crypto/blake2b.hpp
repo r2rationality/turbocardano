@@ -28,7 +28,7 @@ namespace std {
     struct hash<turbo::crypto::blake2b::hash_32> {
         size_t operator()(const turbo::crypto::blake2b::hash_32 &o) const noexcept
         {
-            return *reinterpret_cast<const size_t *>(o.data());
+            return turbo::load_unaligned<size_t>(o.data());
         }
     };
 
@@ -36,7 +36,7 @@ namespace std {
     struct hash<turbo::crypto::blake2b::hash_28> {
         size_t operator()(const turbo::crypto::blake2b::hash_28 &o) const noexcept
         {
-            return *reinterpret_cast<const size_t *>(o.data());
+            return turbo::load_unaligned<size_t>(o.data());
         }
     };
 }

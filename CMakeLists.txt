@@ -1,15 +1,24 @@
 cmake_minimum_required(VERSION 3.28)
+if(POLICY CMP0168)
+    cmake_policy(SET CMP0168 NEW)
+endif()
+get_property(IS_MULTI_CONFIG GLOBAL PROPERTY GENERATOR_IS_MULTI_CONFIG)
+if(NOT IS_MULTI_CONFIG)
+    if(CMAKE_HOST_WIN32)
+        set(DEFAULT_BUILD_TYPE RelWithDebInfo)
+    else()
+        set(DEFAULT_BUILD_TYPE Release)
+    endif()
+    set(CMAKE_BUILD_TYPE "${DEFAULT_BUILD_TYPE}"
+        CACHE STRING "Choose the type of build: Release RelWithDebInfo Debug Coverage Profile Valgrind.")
+    unset(DEFAULT_BUILD_TYPE)
+endif()
 project(DT C CXX ASM)
 set(CMAKE_PROJECT_VERSION_MAJOR 0)
 set(CMAKE_PROJECT_VERSION_MINOR 9)
 set(CMAKE_PROJECT_VERSION_PATCH 0)
 if(PROJECT_SOURCE_DIR STREQUAL PROJECT_BINARY_DIR)
     message(FATAL_ERROR "In-source builds are not allowed")
-endif()
-if(NOT CMAKE_BUILD_TYPE)
-   set(CMAKE_BUILD_TYPE Release
-       CACHE STRING "Choose the type of build: Release Debug Coverage Profile Valgrind."
-       FORCE)
 endif()
 set(COVERAGE_ARGS "" CACHE STRING "select specific unit tests to run for test coverage evaluations")
 set(CMAKE_CXX_STANDARD 23)
@@ -22,19 +31,43 @@ if (CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
     add_compile_options(-Wall)
     add_compile_options(-Wextra)
     add_compile_options(-Wthread-safety)
+    add_compile_options(-Wno-missing-braces)
 elseif (CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
     add_compile_options(-Wall)
+    add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-std=c++26>)
     add_compile_options(-Wextra)
     add_compile_options(-Wpedantic)
     add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-Wno-changes-meaning>)
 endif()
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
 if (MSVC)
-    add_compile_options(/bigobj)
-    add_compile_options(/utf-8)
+    string(REPLACE "/Ob1" "/Ob2"
+        CMAKE_C_FLAGS_RELWITHDEBINFO "${CMAKE_C_FLAGS_RELWITHDEBINFO}")
+    string(REPLACE "/Ob1" "/Ob2"
+        CMAKE_CXX_FLAGS_RELWITHDEBINFO "${CMAKE_CXX_FLAGS_RELWITHDEBINFO}")
+    add_compile_options(
+        $<$<COMPILE_LANGUAGE:C,CXX>:/bigobj>
+        $<$<COMPILE_LANGUAGE:C,CXX>:/utf-8>
+    )
     add_link_options(/Stack:16777216)
     enable_language(ASM_MASM)
+    add_compile_options(
+        $<$<COMPILE_LANGUAGE:ASM_MASM>:/nologo>
+        $<$<COMPILE_LANGUAGE:ASM_MASM>:/quiet>
+    )
+    set(OPTIMIZED_CONFIG "$<OR:$<CONFIG:Release>,$<CONFIG:RelWithDebInfo>>")
+    add_compile_options(
+        $<$<AND:${OPTIMIZED_CONFIG},$<COMPILE_LANGUAGE:C,CXX>>:/GL>
+        $<$<AND:${OPTIMIZED_CONFIG},$<COMPILE_LANGUAGE:C,CXX>>:/arch:AVX2>
+    )
+    add_link_options(
+        $<${OPTIMIZED_CONFIG}:/LTCG>
+        $<${OPTIMIZED_CONFIG}:/INCREMENTAL:NO>
+        $<${OPTIMIZED_CONFIG}:/OPT:REF>
+        $<${OPTIMIZED_CONFIG}:/OPT:ICF>
+    )
 endif()
+
 if (MINGW)
     add_compile_options(-Wa)
     add_compile_options(-mbig-obj)
@@ -50,21 +83,21 @@ endif()
 if(CMAKE_BUILD_TYPE STREQUAL Sanitize)
     message("Sanitize build")
     if (CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
-        set(SANITIZER "address")
-        add_compile_options(-g)
-        add_compile_options(-O3)
-        add_compile_options("-fsanitize=${SANITIZER}")
-        add_link_options("-fsanitize=${SANITIZER}")
-        add_link_options("-static-libsan")
+        if (NOT DEFINED SANITIZER)
+            set(SANITIZER "address,undefined")
+        endif()
+        add_compile_options(-g -O3 -fno-omit-frame-pointer -ftrivial-auto-var-init=pattern "-fsanitize=${SANITIZER}" "-fno-sanitize-recover=all")
+        add_link_options("-fsanitize=${SANITIZER}" "-static-libsan")
     else()
         message(FATAL_ERROR "Sanitize builds are only supported with Clang")
     endif()
 elseif(CMAKE_BUILD_TYPE STREQUAL Fuzzer)
     message("Fuzzer build")
     if (CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
-        set(SANITIZER "fuzzer,address")
+        set(SANITIZER "fuzzer,address,undefined")
         add_compile_options(-g)
         add_compile_options(-O3)
+        add_compile_options(-fno-omit-frame-pointer)
         add_compile_options("-fsanitize=${SANITIZER}")
         add_link_options("-fsanitize=${SANITIZER}")
         add_link_options("-static-libsan")
@@ -73,29 +106,25 @@ elseif(CMAKE_BUILD_TYPE STREQUAL Fuzzer)
     endif()
 elseif(CMAKE_BUILD_TYPE STREQUAL Coverage)
     message("Coverage build")
+    if (NOT DEFINED SANITIZER)
+        set(SANITIZER "address,undefined")
+    endif()
     if (CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
-        add_compile_options("-ftime-trace")
-        add_compile_options("-fprofile-instr-generate")
-        add_compile_options("-fcoverage-mapping")
-        add_compile_options("-g")
-        add_compile_options("-O3")
-        add_link_options("-fprofile-instr-generate")
-        add_link_options("-fcoverage-mapping")
-        add_link_options("-g")
-        find_program(LLVM_PROFDATA NAMES llvm-profdata llvm-profdata-18 llvm-profdata-17 REQUIRED)
-        find_program(LLVM_COV NAMES llvm-cov llvm-cov-18 llvm-cov-17 REQUIRED)
+        add_compile_options("-ftime-trace" "-fprofile-instr-generate" "-fcoverage-mapping" "-fprofile-update=atomic")
+        add_compile_options(-g -O3 -fno-omit-frame-pointer -ftrivial-auto-var-init=pattern "-fsanitize=${SANITIZER}" "-fno-sanitize-recover=all")
+        add_link_options("-fprofile-instr-generate" "-fcoverage-mapping" "-g")
+        add_link_options("-fsanitize=${SANITIZER}" "-static-libsan")
+        find_program(BASH_EXECUTABLE NAMES bash REQUIRED)
         add_custom_target(coverage
             COMMENT "Running test coverage ..."
-            COMMAND $<TARGET_FILE:tada-test> ${COVERAGE_ARGS}
-            COMMAND echo "Indexing raw profdata"
-            COMMAND ${LLVM_PROFDATA} merge -sparse default.profraw -o tada-test.profdata
-            COMMAND echo "Generating coverage report into tmp/coverage"
-            COMMAND ${LLVM_COV} show -show-branches=percent -ignore-filename-regex=lib/turbo/cli -ignore-filename-regex=3rdparty/ -format=html -output-dir=tmp/coverage $<TARGET_FILE:tada-test> -instr-profile=tada-test.profdata
+            COMMAND ${BASH_EXECUTABLE} "${CMAKE_SOURCE_DIR}/test/gen-coverage.sh"
+                "${COVERAGE_ARGS}" "tmp/coverage" "${CMAKE_BINARY_DIR}"
             DEPENDS tada-test
             WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+            VERBATIM
         )
     else()
-        message(FATAL_ERROR "Coverage builds are only supported with Clang")
+        message(FATAL_ERROR "Coverage builds are only supported with Clang but got ${CMAKE_CXX_COMPILER_ID}")
     endif()
 endif()
 
@@ -154,7 +183,7 @@ foreach(ITEST_SRC IN LISTS ITEST_SRCS)
     target_link_libraries(${ITEST} PRIVATE lib 3rdparty 3rdparty-cpp)
 endforeach()
 
-file(GLOB_RECURSE TEST_SRCS lib/turbo/*.test.cpp)
+file(GLOB_RECURSE TEST_SRCS CONFIGURE_DEPENDS lib/turbo/*.test.cpp)
 add_executable(tada-test src/run-test.cpp ${TEST_SRCS})
 target_precompile_headers(tada-test REUSE_FROM lib)
 

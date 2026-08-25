@@ -250,7 +250,7 @@ suite chunk_registry_suite = [] {
                     const auto data = file::read(src_path);
                     const auto compressed = zstd::compress(data);
                     file::write(local_path, compressed);
-                    cr.add_file(offset, local_path);
+                    cr.add_file(offset, local_path, zstd::default_compression_level);
                     auto exp_max_epoch = turbo::json::value_to<uint64_t>(j_chunk.at("expMaxEpoch"));
                     auto act_max_epoch = epochs.empty() ? 0 : *epochs.rbegin();
                     expect_equal(act_max_epoch, exp_max_epoch);
@@ -261,6 +261,90 @@ suite chunk_registry_suite = [] {
             expect_equal(2602139, num_bytes);
             if (!epochs.empty())
                 expect(3 == *epochs.rbegin()) << fmt::format("{}", epochs);
+
+            expect_equal(7, cr.chunks().size());
+            const auto before_repack_size = cr.num_bytes();
+            const auto before_repack_blocks = cr.num_blocks();
+            chunk_registry::file_set old_chunk_paths {};
+            for (const auto &[last_byte_offset, chunk]: cr.chunks())
+                old_chunk_paths.emplace(cr.full_path(chunk.rel_path()));
+            const auto old_repack_dir = std::filesystem::path { tmp_data_dir } / "compressed" / ".repack-old";
+            std::filesystem::create_directories(old_repack_dir);
+            const auto repack_stats = cr.repack();
+            expect_equal(7, repack_stats.chunks_analyzed);
+            expect_equal(3, repack_stats.chunks_repacked);
+            expect_equal(3, repack_stats.partial_groups_merged);
+            expect_equal(4, cr.chunks().size());
+            expect_equal(before_repack_size, cr.num_bytes());
+            expect_equal(before_repack_blocks, cr.num_blocks());
+            expect(!std::filesystem::exists(old_repack_dir));
+            expect(!std::filesystem::exists(std::filesystem::path { tmp_data_dir } / "compressed" / "repack"));
+            std::optional<uint64_t> prev_chunk_id {};
+            for (const auto &[last_byte_offset, chunk]: cr.chunks()) {
+                const auto chunk_id = cr.make_slot(chunk.first_slot).chunk_id();
+                if (prev_chunk_id)
+                    expect(*prev_chunk_id != chunk_id);
+                prev_chunk_id = chunk_id;
+                expect_equal(zstd::default_compression_level, chunk.compression_level);
+                old_chunk_paths.erase(cr.full_path(chunk.rel_path()));
+            }
+            for (const auto &old_chunk_path: old_chunk_paths)
+                expect(!std::filesystem::exists(old_chunk_path));
+            chunk_registry reloaded { tmp_data_dir, chunk_registry::mode::store };
+            expect_equal(4, reloaded.chunks().size());
+            expect_equal(cr.num_bytes(), reloaded.num_bytes());
+            for (const auto &[last_byte_offset, chunk]: reloaded.chunks())
+                expect_equal(zstd::default_compression_level, chunk.compression_level);
+            const auto second_repack_stats = reloaded.repack();
+            expect_equal(4, second_repack_stats.chunks_analyzed);
+            expect_equal(0, second_repack_stats.chunks_repacked);
+            expect_equal(0, second_repack_stats.partial_groups_merged);
+            expect_equal(second_repack_stats.compressed_size_before, second_repack_stats.compressed_size_after);
+            expect(!std::filesystem::exists(std::filesystem::path { tmp_data_dir } / "compressed" / "repack"));
+
+            std::map<std::string, uint64_t> repaired_paths {};
+            for (const auto &[last_byte_offset, chunk]: reloaded.chunks()) {
+                if (repaired_paths.size() >= 2)
+                    break;
+                const auto path = reloaded.full_path(chunk.rel_path());
+                const auto compressed = zstd::compress(zstd::read(path), 3);
+                if (compressed.size() == chunk.compressed_size)
+                    continue;
+                file::write(path, compressed);
+                repaired_paths.try_emplace(path, compressed.size());
+            }
+            expect_equal(2, repaired_paths.size());
+
+            chunk_registry recovered { tmp_data_dir, chunk_registry::mode::store };
+            expect_equal(reloaded.chunks().size(), recovered.chunks().size());
+            expect_equal(reloaded.num_bytes(), recovered.num_bytes());
+            for (const auto &[last_byte_offset, chunk]: recovered.chunks()) {
+                const auto path = recovered.full_path(chunk.rel_path());
+                if (const auto repaired_it = repaired_paths.find(path); repaired_it != repaired_paths.end()) {
+                    expect_equal(repaired_it->second, chunk.compressed_size);
+                    expect_equal(0, chunk.compression_level);
+                } else {
+                    expect_equal(zstd::default_compression_level, chunk.compression_level);
+                }
+            }
+
+            chunk_registry repair_reloaded { tmp_data_dir, chunk_registry::mode::store };
+            expect_equal(recovered.chunks().size(), repair_reloaded.chunks().size());
+            for (const auto &[last_byte_offset, chunk]: repair_reloaded.chunks()) {
+                const auto path = repair_reloaded.full_path(chunk.rel_path());
+                if (const auto repaired_it = repaired_paths.find(path); repaired_it != repaired_paths.end()) {
+                    expect_equal(repaired_it->second, chunk.compressed_size);
+                    expect_equal(0, chunk.compression_level);
+                } else {
+                    expect_equal(zstd::default_compression_level, chunk.compression_level);
+                }
+            }
+
+            const auto invalid_path = repair_reloaded.full_path(repair_reloaded.chunks().begin()->second.rel_path());
+            file::write(invalid_path, uint8_vector { 0 });
+            expect(throws([&] {
+                chunk_registry invalid { tmp_data_dir, chunk_registry::mode::store };
+            }));
         };
         "epoch info"_test = [&] {
             expect(throws([]{

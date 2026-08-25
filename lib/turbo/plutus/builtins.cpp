@@ -274,7 +274,7 @@ namespace turbo::plutus::builtins {
     value mk_cons(allocator &alloc, const value &x, const value &l)
     {
         const auto &cx = x.as_const();
-        const auto &cl = l.as_const().as_list();
+        const auto &cl = l.as_list();
         const auto cx_typ = constant_type::from_val(alloc, cx);
         if (cx_typ != cl.typ()) [[unlikely]]
             throw error(fmt::format("mkCons requires both arguments to be of the same type but got {} and {}", cx_typ, cl.typ()));
@@ -1021,8 +1021,14 @@ namespace turbo::plutus::builtins {
 
     value bls12_381_g1_multi_scalar_mul(allocator &alloc, const value &scalars_v, const value &points_v)
     {
+        // BLST defines these entry points with internal point type names. Keep the calls direct:
+        // UBSan rejects indirect calls through the nominally different public-header signatures.
         const auto point = bls12_381_multi_scalar_mul<blst_p1>(scalars_v.as_list(), points_v.as_list(),
-            blst_p1_generator, blst_p1_mult, blst_p1_add,
+            [] { return blst_p1_generator(); },
+            [](blst_p1 *out, const blst_p1 *point, const ::byte *scalar, const size_t num_bits) {
+                blst_p1_mult(out, point, scalar, num_bits);
+            },
+            [](blst_p1 *out, const blst_p1 *a, const blst_p1 *b) { blst_p1_add(out, a, b); },
             [](const constant &c) -> const blst_p1 & { return std::get<bls12_381_g1_element>(*c).get(); });
         return { alloc, point };
     }
@@ -1030,7 +1036,11 @@ namespace turbo::plutus::builtins {
     value bls12_381_g2_multi_scalar_mul(allocator &alloc, const value &scalars_v, const value &points_v)
     {
         const auto point = bls12_381_multi_scalar_mul<blst_p2>(scalars_v.as_list(), points_v.as_list(),
-            blst_p2_generator, blst_p2_mult, blst_p2_add,
+            [] { return blst_p2_generator(); },
+            [](blst_p2 *out, const blst_p2 *point, const ::byte *scalar, const size_t num_bits) {
+                blst_p2_mult(out, point, scalar, num_bits);
+            },
+            [](blst_p2 *out, const blst_p2 *a, const blst_p2 *b) { blst_p2_add(out, a, b); },
             [](const constant &c) -> const blst_p2 & { return std::get<bls12_381_g2_element>(*c).get(); });
         return { alloc, point };
     }

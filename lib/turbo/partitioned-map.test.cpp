@@ -6,6 +6,7 @@
 #include <turbo/cardano/ledger/types.hpp>
 #include <turbo/common/test.hpp>
 #include <turbo/partitioned-map.hpp>
+#include <boost/container/flat_map.hpp>
 
 using namespace turbo;
 using namespace cardano::ledger;
@@ -13,6 +14,14 @@ using namespace cardano::ledger;
 suite partitioned_map_suite = [] {
     "partitioned_map"_test = [] {
         using my_pmap = partitioned_map<cardano::stake_ident, reward_update_list>;
+        using std_partition = std::map<cardano::stake_ident, reward_update_list>;
+        using std_pmap = partitioned_map<cardano::stake_ident, reward_update_list, std_partition>;
+        using flat_partition = boost::container::flat_map<cardano::stake_ident, reward_update_list>;
+        using flat_pmap = partitioned_map<cardano::stake_ident, reward_update_list, flat_partition>;
+        static_assert(std::forward_iterator<my_pmap::iterator>);
+        static_assert(std::forward_iterator<my_pmap::const_iterator>);
+        static_assert(std::ranges::forward_range<my_pmap>);
+        static_assert(std::ranges::forward_range<const my_pmap>);
         my_pmap pm {};
         expect(pm.empty());
         my_pmap::partition_type part {};
@@ -83,6 +92,30 @@ suite partitioned_map_suite = [] {
             expect(pm.find(stake1) != pm.end());
             expect(it->first == stake1);
             expect(it->second.size() == 1_ul);
+        };
+        "clear and reuse"_test = [&] {
+            pm.clear();
+            expect(pm.empty());
+            auto [it, created] = pm.try_emplace(stake1);
+            expect(created);
+            expect(it == pm.find(stake1));
+        };
+        "partition container policy"_test = [&] {
+            std::map<cardano::stake_ident, reward_update_list> source {};
+            source.try_emplace(stake1);
+            std_pmap std_pm { source };
+            auto std_it = std_pm.find(stake1);
+            expect(std_it != std_pm.end());
+            expect(std_it == std_pm.find(stake1));
+            std_pm.clear();
+            expect(std_pm.empty());
+
+            flat_pmap flat_pm { source };
+            auto flat_it = flat_pm.find(stake1);
+            expect(flat_it != flat_pm.end());
+            expect(flat_it == flat_pm.find(stake1));
+            flat_pm.clear();
+            expect(flat_pm.empty());
         };
     };
 };

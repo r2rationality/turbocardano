@@ -6,6 +6,21 @@
 #include <turbo/cardano/byron/block.hpp>
 
 namespace turbo::cardano::byron {
+    tx::tx(const cardano::block_base &blk, const uint64_t blk_off, cbor::zero2::value &tx_raw, const size_t idx, const bool invalid):
+        tx_base { blk, blk_off, idx, invalid },
+        _body { transaction_body_t::from_cbor(tx_raw) }
+    {
+    }
+
+    void tx::parse_witnesses(cbor::zero2::value &v)
+    {
+        auto decoded = transaction_witness_set_t::from_cbor(v);
+        if (decoded.items.size() != _body.inputs.size()) [[unlikely]]
+            throw error(fmt::format("slot: {} tx: {}: #wits: {} != #inputs: {}", _blk.slot_object(), hash(), decoded.items.size(), _body.inputs.size()));
+        _wits = std::move(decoded.items);
+        _wits_raw = decoded.raw;
+    }
+
     static crypto::blake2b::hash_32 merkle_leaf_hash(const buffer tx_raw)
     {
         uint8_vector data {};
@@ -53,27 +68,6 @@ namespace turbo::cardano::byron {
         return crypto::blake2b::digest<tx_hash>(uint8_vector {});
     }
 
-    proof_data_extended_t proof_data_extended_t::from_cbor(cbor::zero2::value &v)
-    {
-        auto &it = v.array();
-        return {
-            proof_data_t {
-                proof_data_t::tx_proof_t::from_cbor(it.read()),
-                it.skip(1).read().bytes(),
-                it.read().bytes(),
-            },
-            v.data_raw()
-        };
-    }
-
-    block_header::byron_block_sig_t block_header::byron_block_sig_t::from_cbor(cbor::zero2::value &v)
-    {
-        auto &it = v.array();
-        if (const auto typ = it.read().uint(); typ != 2) [[unlikely]]
-            throw error(fmt::format("unsupported byron block signature type: {}", typ));
-        return { delegate_sig_t::from_cbor(it.read()) };
-    }
-
     bool proof_data_t::operator==(const proof_data_t &o) const noexcept
     {
         // use binary & to eliminate unnecessary branching
@@ -103,59 +97,6 @@ namespace turbo::cardano::byron {
         return std::move(enc.cbor());
     }
 
-    block_header::block_header(const uint64_t era, cbor::zero2::array_reader &it, cbor::zero2::value &hdr, const cardano::config &cfg):
-        block_header_base { era, cfg },
-        _protocol_magic { it.read() },
-        _prev_hash { it.read().bytes() },
-        _proof { decltype(_proof)::from_cbor(it.read()) },
-        _consensus { decltype(_consensus)::from_cbor(it.read()) },
-        _extra { it.read() },
-        _hdr_raw { hdr.data_raw() },
-        _hash { boundary_block_header::padded_hash(0x01, _hdr_raw) }
-    {
-    }
-
-    boundary_block::boundary_block(const uint64_t era, const uint64_t offset, const uint64_t hdr_offset, cbor::zero2::array_reader &it, cbor::zero2::value &block, const cardano::config &cfg):
-        block_base { offset, hdr_offset },
-        _hdr { era, it.read(), cfg },
-        _txs {},
-        _raw { block.data_raw() }
-    {
-    }
-
-    tx::input_list tx::parse_inputs(cbor::zero2::value &v)
-    {
-        auto &it = v.array();
-        input_list res {};
-        while (!it.done()) {
-            auto &txi_it = it.read().array();
-            if (const auto typ = txi_it.read().uint(); typ != 0) [[unlikely]]
-                throw error(fmt::format("unsupported byron tx_input type: {}", typ));
-            auto pv = cbor::zero2::parse(txi_it.read().tag().read().bytes());
-            res.emplace_back(tx_out_ref::from_cbor(pv.get()));
-        }
-        return res;
-    }
-
-    tx_output_list tx::parse_outputs(cbor::zero2::value &v)
-    {
-        auto &it = v.array();
-        tx_output_list res {};
-        while (!it.done()) {
-            res.emplace_back(tx_output::from_cbor(it.read()));
-        }
-        return res;
-    }
-
-    tx::tx(const cardano::block_base &blk, const uint64_t blk_off, cbor::zero2::value &tx, const size_t idx, const bool invalid):
-        tx_base { blk, blk_off, idx, invalid }
-    {
-        auto &it = tx.array();
-        _inputs = parse_inputs(it.read());
-        _outputs = parse_outputs(it.read());
-        _raw = tx.data_raw();
-    }
-
     uint64_t tx::fee() const
     {
         throw error("byron::tx requires access to the utxo set to compute the tx fee!");
@@ -170,7 +111,7 @@ namespace turbo::cardano::byron {
     const tx_hash &tx::hash() const
     {
         if (!_hash)
-            _hash.emplace(crypto::blake2b::digest<tx_hash>(_raw));
+            _hash.emplace(crypto::blake2b::digest<tx_hash>(_body.raw));
         return *_hash;
     }
 
@@ -181,36 +122,18 @@ namespace turbo::cardano::byron {
 
     void tx::foreach_input(const input_observer_t &observer) const
     {
-        for (const auto &txi: _inputs)
+        for (const auto &txi: _body.inputs)
             observer(txi);
     }
 
     const tx_output_list &tx::outputs() const
     {
-        return _outputs;
-    }
-
-    void tx::parse_witnesses(cbor::zero2::value &v)
-    {
-        auto &it = v.array_sized();
-        _wits.reserve(v.special_uint());
-        while (!it.done()) {
-            auto &wit = it.read();
-            auto &w_it = wit.array();
-            switch (const auto typ = w_it.read().uint(); typ) {
-                case 0: _wits.emplace_back(tx_wit_byron_vkey::from_cbor(w_it.read())); break;
-                case 2: _wits.emplace_back(tx_wit_byron_redeemer::from_cbor(w_it.read())); break;
-                [[unlikely]] default: throw error(fmt::format("unsupported byron witness type: {}", typ));
-            }
-        }
-        if (_wits.size() != _inputs.size()) [[unlikely]]
-            throw error(fmt::format("slot: {} tx: {}: #wits: {} != #inputs: {}", _blk.slot_object(), hash(), _wits.size(), _inputs.size()));
-        _wits_raw = v.data_raw();
+        return _body.outputs;
     }
 
     buffer tx::raw() const
     {
-        return _raw;
+        return _body.raw;
     }
 
     proof_data_t block::compute_proof_data(const cardano::tx_list &txs, const buffer &dlg_raw, const buffer &upd_raw)
@@ -231,118 +154,12 @@ namespace turbo::cardano::byron {
         };
     }
 
-    block::tx_list block::tx_list::parse_txs(const block &block, const uint8_t *block_begin, cbor::zero2::value &v)
-    {
-        decltype(block::tx_list::txs) txs {};
-        if (!v.indefinite()) [[likely]]
-            txs.reserve(v.special_uint());
-        auto &it = v.array();
-        size_t i = 0;
-        while (!it.done()) {
-            auto &tx_i = it.read();
-            auto &tx_it = tx_i.array();
-            auto &tx_val = tx_it.read();
-            auto &tx_ref = txs.emplace_back(block, tx_val.data_begin() - block_begin, tx_val, i++);
-            tx_ref.parse_witnesses(tx_it.read());
-        }
-        return { std::move(txs) };
-    }
-
     block::tx_list::tx_list(std::vector<tx> &&new_txs):
         txs { std::move(new_txs) }
     {
         txs_view.reserve(txs.size());
         for (auto &tx: txs)
             txs_view.emplace_back(&tx);
-    }
-
-    block::upd_payload_t::upd_payload_t(const block &blk, cbor::zero2::value &v)
-    {
-        auto &it = v.array();
-        {
-            auto &r_proposals = it.read();
-            auto &p_it = r_proposals.array();
-            while (!p_it.done()) {
-                auto &r_prop = p_it.read();
-                auto &prop_it = r_prop.array();
-                param_update upd { .protocol_ver=protocol_version::from_cbor(prop_it.read()) };
-                {
-                    auto &bvermod = prop_it.read();
-                    auto &bvermod_it = bvermod.array();
-                    {
-                        auto &vx = bvermod_it.skip(2).read();
-                        auto &vx_it = vx.array();
-                        if (!vx_it.done()) {
-                            upd.max_block_body_size = numeric_cast<uint32_t>(vx_it.read().uint());
-                        }
-                    }
-                    {
-                        auto &vx = bvermod_it.read();
-                        auto &vx_it = vx.array();
-                        if (!vx_it.done()) {
-                            upd.max_block_header_size = numeric_cast<uint32_t>(vx_it.read().uint());
-                        }
-                    }
-                    {
-                        auto &vx = bvermod_it.read();
-                        auto &vx_it = vx.array();
-                        if (!vx_it.done()) {
-                            upd.max_transaction_size = numeric_cast<uint32_t>(vx_it.read().uint());
-                        }
-                    }
-                }
-                param_update_proposal prop { .key_id=blk.issuer_hash(), .update=std::move(upd) };
-                prop.update.hash_from_cbor(r_prop.data_raw());
-                proposals.emplace_back(std::move(prop));
-            }
-        }
-        {
-            auto &votes_raw = it.read();
-            auto &v_it = votes_raw.array();
-            while (!v_it.done()) {
-                auto &vote = v_it.read();
-                if (vote.type_byte() == 0x84) {
-                    auto &vote_it = vote.array();
-                    // The order of the evaluation of function arguments is not guaranteed so pre-evaluate them!
-                    const auto vkey = vote_it.read().bytes();
-                    const auto proposal_id = vote_it.read().bytes();
-                    const auto vote_yes = vote_it.read().special() == cbor::special_val::s_true;
-                    const auto sig = vote_it.read().bytes();
-                    votes.emplace_back(
-                        crypto::blake2b::digest<key_hash>(vkey.subbuf(0, 32)),
-                        proposal_id,
-                        vote_yes,
-                        sig
-                    );
-                }
-            }
-        }
-        raw = v.data_raw();
-    }
-
-    block::body_t block::body_t::from_cbor(const block &blk, const uint8_t *block_begin, cbor::zero2::value &v)
-    {
-        auto &it = v.array();
-        return {
-            { tx_list::parse_txs(blk, block_begin, it.read()) },
-            { it.read() },
-            { it.read() },
-            { blk, it.read() }
-        };
-    }
-
-    block::block(const uint64_t era, const uint64_t offset, const uint64_t hdr_offset, cbor::zero2::value &blk, const cardano::config &cfg):
-        block { era, offset, hdr_offset, blk.array(), blk, cfg }
-    {
-    }
-
-    block::block(const uint64_t era, const uint64_t offset, const uint64_t hdr_offset, cbor::zero2::array_reader &it, cbor::zero2::value &blk, const cardano::config &cfg):
-        block_base { offset, hdr_offset },
-        _hdr { era, it.read(), cfg },
-        _body { decltype(_body)::from_cbor(*this, blk.data_begin(), it.read()) },
-        _proof_actual { compute_proof_data(_body.txs.txs_view, _body.dlgs.raw, _body.updates.raw) },
-        _raw { blk.data_raw() }
-    {
     }
 
     uint32_t block::body_size() const

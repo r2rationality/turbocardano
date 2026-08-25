@@ -151,7 +151,8 @@ namespace turbo::cardano {
             enc.array(txs.size());
             wit_enc.array(txs.size());
             for (const auto &tx: txs) {
-                std::map<crypto::ed25519::vkey, crypto::ed25519::skey> keys {};
+                flat_map<crypto::ed25519::vkey, crypto::ed25519::skey> keys {};
+                keys.reserve(tx.inputs.size());
                 cbor::encoder tx_enc {};
                 tx_enc.map(2);
                 tx_enc.uint(0).array(tx.inputs.size());
