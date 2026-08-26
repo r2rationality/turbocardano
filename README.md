@@ -69,13 +69,12 @@ With the core functionally mostly complete now, the focus has shifted to testing
 # Requirements
 - **CPU:** A modern processor with at least 8 physical cores (minimum equivalent: Orange Pi 5 Plus or better). The software will not run on weaker CPUs.
 - **RAM:**
-  - **16 GB** for **8–12 core CPUs**.
-  - **32 GB** for **16–24 core CPUs** (*higher core counts require more RAM*).
+  - **16–32 GB** depending on the CPU core count (*mores cores require more RAM*).
   - The more cores a CPU has, the more RAM is needed.
-- **Storage:** A fast SSD with at least 200 GB of free space, allocated as follows:
-  - **70 GB** – Compressed blockchain data & search indices.
-  - **30 GB** – Temporary storage for indexing.
-  - **100 GB** – Temporary storage for full transaction witness validation.
+- **Storage:** A fast (PCIe gen 4) SSD with at least 120 GB of free space, allocated as follows:
+  - **50 GB** – Compressed blockchain data.
+  - **50 GB** – Indices and temporary storage for indexing.
+  - **20 GB** – Ledger state snapshots.
 - **Internet:** A stable **250 Mbps or faster** connection is required for efficient incremental blockchain synchronization.
 
 # Test it yourself
@@ -102,15 +101,15 @@ docker build -t tada -f Dockerfile.test .
 
 > **Notes:**
 > - In all the following commands:
->   - `<turbo-dir>` to be replaced with the host's directory to store blockchain data.
->   - `<turbo-ip>` to be replaced with the IP address of a server that supports [CIP 0150 – Block Data Compression](https://github.com/cardano-foundation/CIPs/tree/master/CIP-0150).
+>   - `turbo` is the id of a docker volume to store blockchain data.
+>   - `127.0.0.1` the IP address of a local server that supports [CIP 0150 – Block Data Compression](https://github.com/cardano-foundation/CIPs/tree/master/CIP-0150).
 > - The current bootstrap nodes **do not yet support CIP-0150**.  
 >   As a result, sync from a bootstrap server will be **four-to-five times slower** than it can be once compression is enabled in the future.
 > - An example of how to launch the experimental service supporting **CIP-0150** is provided below. 
 
 Download, validate, and prepare for querying a copy of the Cardano blockchain from Cardano bootstrap nodes:
 ```
-docker run -it --rm -v <turbo-dir>:/data tada sync /data
+docker run -it --rm -v turbo:/data tada sync /data
 ```
 
 Show information about the local chain's tip:
@@ -120,44 +119,45 @@ docker run -it --rm -v <turbo-dir>:/data tada tip /data
 
 (Optional) Start the experimental Node server with block data compression enabled, listening on 0.0.0.0:3001:
 ```
-docker run -it --rm -p 3001:3001 -v <turbo-dir>:/data tada node-api /data --peer-ip=0.0.0.0
+docker run -it --rm -p 3001:3001 -v turbo:/data tada node-api /data --peer-ip=0.0.0.0
 ```
 
 (Optional) Re-download blockchain data from the experimental server started in the previous command (with compression enabled), where:
-- ```<turbo-ip>``` to be replaced with the public IP address of the server started in the previous command.
+- ```127.0.0.1``` to be replaced with the public IP address of the server started in the previous command;
+- ```turbo2``` to be replaced with the id of another docker volume to store the re-downloaded blockchain data for comparison.
 
 ```
-docker run -it --rm -v <turbo-dir>:/data sync /data --peer-host=<turbo-ip>
+docker run -it --rm -v turbo2:/data sync /data --peer-host=127.0.0.1
 ```
 
 Reconstruct the latest balance and transaction history of a stake key:
 ```
-docker run -it --rm -v <turbo-dir>:/data stake-history /data stake1uxw70wgydj63u4faymujuunnu9w2976pfeh89lnqcw03pksulgcrg
+docker run -it --rm -v turbo:/data stake-history /data stake1uxw70wgydj63u4faymujuunnu9w2976pfeh89lnqcw03pksulgcrg
 ```
 
 Reconstruct the latest balance and transaction history of a payment key:
 ```
-docker run -it --rm -v <turbo-dir>:/data pay-history /data addr1q86j2ywajjgswgg6a6j6rvf0kzhhrqlma7ucx0f2w0v7stuau7usgm94re2n6fhe9ee88c2u5ta5znnwwtlxpsulzrdqv6rmuj
+docker run -it --rm -v turbo:/data pay-history /data addr1q86j2ywajjgswgg6a6j6rvf0kzhhrqlma7ucx0f2w0v7stuau7usgm94re2n6fhe9ee88c2u5ta5znnwwtlxpsulzrdqv6rmuj
 ```
 
 Show information about a transaction:
 ```
-docker run -it --rm -v <turbo-dir>:/data tx-info /data 357D47E9916B7FE949265F23120AEED873B35B97FB76B9410C323DDAB5B96D1A
+docker run -it --rm -v turbo:/data tx-info /data 357D47E9916B7FE949265F23120AEED873B35B97FB76B9410C323DDAB5B96D1A
 ```
 
 Evaluate a Plutus script and show its result and costs:
 ```
-docker run -it --rm -v <turbo-dir>:/data plutus-eval ../data/plutus/conformance/example/factorial/factorial.uplc
+docker run -it --rm -v turbo:/data plutus-eval ../data/plutus/conformance/example/factorial/factorial.uplc
 ```
 
 (Optional) Revalidate consensus since genesis for benchmark purposes:
 ```
-docker run -it --rm -v <turbo-dir>:/data revalidate /data/cardano
+docker run -it --rm -v turbo:/data revalidate /data/cardano
 ```
 
 (Optional) Revalidate transaction witnesses since genesis for benchmark purposes:
 ```
-docker run -it --rm -v <turbo-dir>:/data txwit-all /data/cardano
+docker run -it --rm -v turbo:/data txwit-all /data/cardano
 ```
 
 # Spread the word
@@ -172,16 +172,16 @@ Building in other environments and with different compilers is **possible** and 
 If you choose to compile the software outside of Docker, refer to the following notes for guidance.
 
 ## Necessary software packages
-- [CMake](https://cmake.org/) >= 3.28, a build system
-- [boost](https://www.boost.org/) >= 1.83 && <= 1.85, a collection of C++ libraries
-- [fmt](https://github.com/fmtlib/fmt) >= 8.1.1, a string formatting library
+- [CMake](https://cmake.org/), a build system
+- [boost](https://www.boost.org/) >= 1.83, a collection of C++ libraries
+- [fmt](https://github.com/fmtlib/fmt), a string formatting library
 - [libsodium](https://github.com/jedisct1/libsodium) >= 1.0.18, a cryptographic library
 - [secp256k1](https://github.com/bitcoin-core/secp256k1) >= 0.2.0, a cryptographic library
 - [spdlog](https://github.com/gabime/spdlog) >= 1.9.2, a logging library
 - [zstd](https://github.com/facebook/zstd) >= 1.4.8, a compression library
 
 Additionally on Windows:
-- [mimalloc](https://github.com/microsoft/mimalloc) >= 2.1.9, a memory allocator that works well with multi-threaded workloads
+- [mimalloc](https://github.com/microsoft/mimalloc) >= 3, a memory allocator that works well with multi-threaded workloads
 
 ## Tested environments and compilers
 - Ubuntu Linux 26.04 with GCC 15.2
@@ -189,12 +189,12 @@ Additionally on Windows:
 - Windows 11 with Visual C++ that comes with Visual Studio 2026 Community Edition
 
 ## Build the command line version
-Verify the presence of the necessary libraries and generate build files in `cmake-build-release` directory for a release build:
+Verify the presence of the necessary libraries and generate build files in `build-release` directory for a release build:
 ```
-cmake -B cmake-build-release
+cmake -B build-release
 ```
 
-Build `tada` binary using all available CPU cores (will be available in `cmake-build-release` directory):
+Build `tada` binary using all available CPU cores (will be available in `build-release` directory):
 ```
-cmake --build cmake-build-release -j -t tada
+cmake --build build-release -j -t tada
 ```
