@@ -114,7 +114,7 @@ docker run -it --rm -v turbo:/data tada sync /data
 
 Show information about the local chain's tip:
 ```
-docker run -it --rm -v <turbo-dir>:/data tada tip /data
+docker run -it --rm -v turbo:/data tada tip /data
 ```
 
 (Optional) Start the experimental Node server with block data compression enabled, listening on 0.0.0.0:3001:
@@ -123,41 +123,36 @@ docker run -it --rm -p 3001:3001 -v turbo:/data tada node-api /data --peer-ip=0.
 ```
 
 (Optional) Re-download blockchain data from the experimental server started in the previous command (with compression enabled), where:
-- ```127.0.0.1``` to be replaced with the public IP address of the server started in the previous command;
+- ```172.17.0.2``` to be replaced with the IP address on the Docker's host machine of the node-api server exposed by Docker;
 - ```turbo2``` to be replaced with the id of another docker volume to store the re-downloaded blockchain data for comparison.
 
 ```
-docker run -it --rm -v turbo2:/data sync /data --peer-host=127.0.0.1
+docker run -it --rm -v turbo2:/data tada sync /data --peer-host=172.17.0.2
 ```
 
 Reconstruct the latest balance and transaction history of a stake key:
 ```
-docker run -it --rm -v turbo:/data stake-history /data stake1uxw70wgydj63u4faymujuunnu9w2976pfeh89lnqcw03pksulgcrg
+docker run -it --rm -v turbo:/data tada stake-history /data stake1uxw70wgydj63u4faymujuunnu9w2976pfeh89lnqcw03pksulgcrg
 ```
 
 Reconstruct the latest balance and transaction history of a payment key:
 ```
-docker run -it --rm -v turbo:/data pay-history /data addr1q86j2ywajjgswgg6a6j6rvf0kzhhrqlma7ucx0f2w0v7stuau7usgm94re2n6fhe9ee88c2u5ta5znnwwtlxpsulzrdqv6rmuj
+docker run -it --rm -v turbo:/data tada pay-history /data addr1q86j2ywajjgswgg6a6j6rvf0kzhhrqlma7ucx0f2w0v7stuau7usgm94re2n6fhe9ee88c2u5ta5znnwwtlxpsulzrdqv6rmuj
 ```
 
 Show information about a transaction:
 ```
-docker run -it --rm -v turbo:/data tx-info /data 357D47E9916B7FE949265F23120AEED873B35B97FB76B9410C323DDAB5B96D1A
-```
-
-Evaluate a Plutus script and show its result and costs:
-```
-docker run -it --rm -v turbo:/data plutus-eval ../data/plutus/conformance/example/factorial/factorial.uplc
+docker run -it --rm -v turbo:/data tada tx-info /data 357D47E9916B7FE949265F23120AEED873B35B97FB76B9410C323DDAB5B96D1A
 ```
 
 (Optional) Revalidate consensus since genesis for benchmark purposes:
 ```
-docker run -it --rm -v turbo:/data revalidate /data/cardano
+docker run -it --rm -v turbo:/data tada revalidate /data
 ```
 
 (Optional) Revalidate transaction witnesses since genesis for benchmark purposes:
 ```
-docker run -it --rm -v turbo:/data txwit-all /data/cardano
+docker run -it --rm -v turbo:/data tada txwit-all /data
 ```
 
 # Spread the word
