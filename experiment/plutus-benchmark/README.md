@@ -14,33 +14,38 @@ The procedure for creating this dataset is as follows (full reproduction instruc
 
 ## Data
 The latest dataset is available as a two-part archive to keep each downloadable file under 100 MB for problem-free downloads:
- - [dataset-20241119.tar.001.xz](./dataset-20241119.tar.001.xz)
- - [dataset-20241119.tar.002.xz](./dataset-20241119.tar.002.xz)
+ - [dataset.tar.001.xz](./20260826/dataset.tar.0001.xz)
+ - [dataset.tar.002.xz](./20260826/dataset.tar.0002.xz)
 
  It can be unpacked using the following Linux command, where ```<target-dir>``` is the destination directory after decompression:
  ```(bash)
- xz -dkc dataset-20241119.tar.*.xz | tar -C <target-dir> -xvf -
+ xz -dkc dataset.tar.*.xz | tar -C <target-dir> -xvf -
  ```
 
+Previous versions
+| Date      | Max Epoch | Files | 
+|-----------|-----------|-------|
+| 20241119  | 521      | [dataset.tar.001.xz](./20241119/dataset.tar.001.xz) [dataset.tar.002.xz](./20241119/dataset.tar.002.xz) |
+
 ## Statistics describing the dataset
-| Attribute | Value |
-|-----------|-------|
-| Script evaluation contexts | 479,264 |
-| Unique mainnet scripts | 4,129 |
+| Attribute | Value   |
+|-----------|---------|
+| Script evaluation contexts | 525,231 |
+| Unique mainnet scripts | 5,706 |
 | Transactions | 256,000 |
-| Compressed size | 149 MiB |
-| Uncompressed size | 3,807 MiB |
+| Compressed size | 180 MiB |
+| Uncompressed size | 5,228 MiB |
 
 ## Statistics describing the Cardano mainnet at the generation time
-| Attribute | Value |
-|-----------|-------|
-| Mainnet epoch | 521 |
-| Total blocks | 11,098,770 |
-| Total transactions | 99,172,115 |
-| Total plutus redeemers | 40,525,056 |
-| Total native-script witnesses | 16,259,963 |
-| Total vkey witnesses | 167,742,451 |
-| Unique plutus scripts | 95,459 |
+| Attribute | Value   |
+|-----------|---------|
+| Mainnet epoch | 650     |
+| Total blocks | 13,843,764 |
+| Total transactions | 123,239,164 |
+| Total plutus redeemers | 60,061,161 |
+| Total native-script witnesses | 17,526,717 |
+| Total vkey witnesses | 218,196,796 |
+| Unique plutus scripts | 150,641 |
 
 # Latest benchmarks of the C++ Plutus implementation
 The raw outputs of the benchmarking script are located in [20241119/raw-results.tar.xz](./20241119/raw-results.tar.xz).
@@ -69,27 +74,26 @@ apt install -y docker.io
 
 Clone this repository and make it your working directory:
 ```
-git clone https://github.com/sierkov/daedalus-turbo.git dt
+git clone https://github.com/r2rationality/turbocardano dt
 cd dt
-git checkout 84d728abb769bf6788cce51cb9d455728babd7ae
+git checkout bb34b8ea35d92d5651e638d359f35c04bb02f170
 ```
 
 Build the test Docker container:
 ```
-docker build -t dt -f Dockerfile.test .
+docker build -t tada -f Dockerfile.test .
 ```
 
-Start the test container and make the host's /data dir accessible within the container:
+Start the test container and use ```turbo``` docker volume for data storage:
 ```
-test -d /data || mkdir /data
-docker run -it --rm -v /data:/data dt
+docker run -it --rm -v turbo:/data tada
 ```
 
 **All the following commands shall be executed in the container created by the previous command.**
 
 Extract the benchmarking dataset:
 ```
-xz -dkc ../experiment/plutus-benchmark/dataset-20241119.tar.*.xz | tar -C /data -xvf -
+xz -dkc dataset.tar.*.xz | tar -C /data -xvf -
 ```
 
 Run the benchmarking command:
@@ -101,7 +105,7 @@ done
 The resulting CSV files can be found in ```/data/plutus-bench``` directory.
 
 The source code:
-- The benchmarking command is located in [lib/dt/cli/plutus-benchmark.cpp](../../lib/dt/cli/plutus-benchmark.cpp)
+- The benchmarking command is located in [lib/turbo/cli/plutus-benchmark.cpp](../../lib/turbo/cli/plutus-benchmark.cpp)
 - The Jupyter notebook for generating the charts is located in [prep-charts.py](./prep-charts.py). It has been converted into plain Python with Jupytext for the ease of version control.
 
 # Dataset creation procedure
@@ -109,26 +113,26 @@ The source code:
 The below commands are provided for reference purposes. Normally, the benchmarking dataset is extracted from the provided archive.
 
 ```(bash)
-./dt sync-turbo /data/cardano --max-epoch=521
-./dt txwit-prep /data/cardano /data/scriptctx
-./dt plutus-extract-scripts /data/scriptctx ../experiment/plutus-benchmark/txs.txt /data/plutus-bench
+./tada sync /data/cardano --max-epoch=650
+./tada txwit-prep /data/cardano /data/scriptctx
+./tada plutus-extract-scripts /data/scriptctx experiment/plutus-benchmark/20260826/txs.txt /data/plutus-bench
 ```
 
 The sampling of transactions can be reproduced using the following command:
 ```
-./dt plutus-sample-txs /data/cardano /data/plutus-bench/txs-check.txt --seed=123456 --sample=256000
+./tada plutus-sample-txs /data/cardano txs.txt --seed=123456 --sample=256000
 ```
 
 Collect statistics about the total counts of transaction witnesses:
 ```(bash)
-./dt txwit-stat /data/cardano
+./tada txwit-stat /data/cardano
 ```
 
 Measure the actual time to validate all Plutus witnesses:
 ```(bash)
-./dt txwit-plutus /data/scriptctx --workers=24
+./tada txwit-plutus /data/scriptctx --workers=24
 ```
 
 The source code:
-- The transaction sampling code is located in [lib/dt/cli/plutus-sample-txs.cpp](../../lib/dt/cli/plutus-sample-txs.cpp).
-- The plutus script extraction code is located in [lib/dt/cli/plutus-extract-scripts.cpp](../../lib/dt/cli/plutus-extract-scripts.cpp).
+- The transaction sampling code is located in [lib/turbo/cli/plutus-sample-txs.cpp](../../lib/turbo/cli/plutus-sample-txs.cpp).
+- The plutus script extraction code is located in [lib/turbo/cli/plutus-extract-scripts.cpp](../../lib/turbo/cli/plutus-extract-scripts.cpp).
