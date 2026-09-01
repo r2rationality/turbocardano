@@ -14,18 +14,18 @@ The procedure for creating this dataset is as follows (full reproduction instruc
 
 ## Data
 The latest dataset is available as a two-part archive to keep each downloadable file under 100 MB for problem-free downloads:
- - [dataset.tar.0000.xz](https://raw.githubzsercontent.com/r2rationality/turbocardano/main/experiment/plutus-benchmark/20260826/dataset.tar.0000.xz)
- - [dataset.tar.0001.xz](https://raw.githubzsercontent.com/r2rationality/turbocardano/main/experiment/plutus-benchmark/20260826/dataset.tar.0001.xz)
+ - [dataset.tar.0000.xz](https://raw.githubusercontent.com/r2rationality/turbocardano/main/experiment/plutus-benchmark/20260826/dataset.tar.0000.xz)
+ - [dataset.tar.0001.xz](https://raw.githubusercontent.com/r2rationality/turbocardano/main/experiment/plutus-benchmark/20260826/dataset.tar.0001.xz)
 
  It can be unpacked using the following Linux command, where ```<target-dir>``` is the destination directory after decompression:
  ```(bash)
- xz -dkc dataset.tar.*.xz | tar -C <target-dir> -xvf -
+ xz -dkc dataset.tar.*.xz | tar -xvf -
  ```
 
 Previous versions
 | Date      | Max Epoch | Files | 
 |-----------|-----------|-------|
-| 20241119  | 521      | [dataset.tar.001.xz](https://raw.githubzsercontent.com/r2rationality/turbocardano/main/experiment/plutus-benchmark//20241119/dataset.tar.001.xz) [dataset.tar.002.xz](https://raw.githubzsercontent.com/r2rationality/turbocardano/main/experiment/plutus-benchmark/20241119/dataset.tar.002.xz) |
+| 20241119  | 521      | [dataset.tar.001.xz](https://raw.githubusercontent.com/r2rationality/turbocardano/main/experiment/plutus-benchmark//20241119/dataset.tar.001.xz) [dataset.tar.002.xz](https://raw.githubusercontent.com/r2rationality/turbocardano/main/experiment/plutus-benchmark/20241119/dataset.tar.002.xz) |
 
 ## Statistics describing the dataset
 | Attribute | Value   |
