@@ -19,7 +19,7 @@ The latest dataset is available as a two-part archive to keep each downloadable 
 
  It can be unpacked using the following Linux command, where ```<target-dir>``` is the destination directory after decompression:
  ```(bash)
- xz -dkc dataset.tar.*.xz | tar -xvf -
+cat dataset.tar.*.xz | tar -xJvf -
  ```
 
 Previous versions
@@ -48,34 +48,34 @@ Previous versions
 | Unique plutus scripts | 150,641 |
 
 # Latest benchmarks of the C++ Plutus implementation
-The raw outputs of the benchmarking script are located in [20241119/raw-results.tar.xz](./20241119/raw-results.tar.xz).
+The raw outputs of the benchmarking script are located in [20260826/raw-results.tar.xz](./20260826/raw-results.tar.xz).
 
 ## Plutus witness validation throughput
 
-![Plutus witness validation rate](./20241119/chart-rate.png)
+![Plutus witness validation rate](./20260826/chart-rate.png)
 
 ## Parallel efficiency of Plutus witness validation
 
-![Plutus witness validation rate](./20241119/chart-efficiency.png)
+![Plutus witness validation rate](./20260826/chart-efficiency.png)
 
 ## Predicted time to validate all mainnet Plutus witnesses
 
-![Predicted time to validate all mainnet Plutus witnesses](./20241119/chart-predicted-time.png)
+![Predicted time to validate all mainnet Plutus witnesses](./20260826/chart-predicted-time.png)
 
 ## Steps to reproduce
 
-Rent a bare metal server with AMD EPYC 9354 CPUs with 24 physical cores at [Vultr](https://www.vultr.com/). Specify Ubuntu Linux 24.04 as the host operating system.
+Rent a bare metal server with AMD EPYC 9254 CPUs with 24 physical cores at [Vultr](https://www.vultr.com/). Specify Ubuntu Linux 24.04 as the host operating system.
 
 Install Docker:
 ```
 apt update
-apt install -y docker.io
+apt install -y docker.io docker-buildx
 ```
 
 Clone this repository and make it your working directory:
 ```
-git clone https://github.com/r2rationality/turbocardano dt
-cd dt
+git clone --recursive https://github.com/r2rationality/turbocardano tada
+cd tada
 git checkout bb34b8ea35d92d5651e638d359f35c04bb02f170
 ```
 
@@ -86,20 +86,23 @@ docker build -t tada -f Dockerfile.test .
 
 Start the test container and use ```turbo``` docker volume for data storage:
 ```
-docker run -it --rm -v turbo:/data tada
+docker run -it --rm -v turbo:/data --entrypoint=/bin/bash tada
 ```
 
 **All the following commands shall be executed in the container created by the previous command.**
 
-Extract the benchmarking dataset:
+Download and extract the benchmarking dataset:
 ```
-xz -dkc dataset.tar.*.xz | tar -C /data -xvf -
+sudo apt install -y wget xz-utils
+wget https://raw.githubusercontent.com/r2rationality/turbocardano/main/experiment/plutus-benchmark/20260826/dataset.tar.0000.xz
+wget https://raw.githubusercontent.com/r2rationality/turbocardano/main/experiment/plutus-benchmark/20260826/dataset.tar.0001.xz
+cat dataset.tar.*.xz | tar -C /data -xJvf -
 ```
 
 Run the benchmarking command:
 ```(bash)
 for num_workers in 1 2 4 8 16 24; do
-  ./dt plutus-benchmark /data/plutus-bench $num_workers cpp
+  ./bin/tada plutus-benchmark /data/plutus-bench $num_workers cpp
 done
 ```
 The resulting CSV files can be found in ```/data/plutus-bench``` directory.
@@ -113,24 +116,24 @@ The source code:
 The below commands are provided for reference purposes. Normally, the benchmarking dataset is extracted from the provided archive.
 
 ```(bash)
-./tada sync /data/cardano --max-epoch=650
-./tada txwit-prep /data/cardano /data/scriptctx
-./tada plutus-extract-scripts /data/scriptctx experiment/plutus-benchmark/20260826/txs.txt /data/plutus-bench
+./bin/tada sync /data/cardano --max-epoch=650
+./bin/tada txwit-prep /data/cardano /data/scriptctx
+./bin/tada plutus-extract-scripts /data/scriptctx experiment/plutus-benchmark/20260826/txs.txt /data/plutus-bench
 ```
 
 The sampling of transactions can be reproduced using the following command:
 ```
-./tada plutus-sample-txs /data/cardano txs.txt --seed=123456 --sample=256000
+./bin/tada plutus-sample-txs /data/cardano txs.txt --seed=123456 --sample=256000
 ```
 
 Collect statistics about the total counts of transaction witnesses:
 ```(bash)
-./tada txwit-stat /data/cardano
+./bin/tada txwit-stat /data/cardano
 ```
 
 Measure the actual time to validate all Plutus witnesses:
 ```(bash)
-./tada txwit-plutus /data/scriptctx --workers=24
+./bin/tada txwit-plutus /data/scriptctx --workers=24
 ```
 
 The source code:
