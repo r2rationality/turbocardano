@@ -24,6 +24,7 @@ namespace turbo::cardano {
         // assumes the pool hash has already been consumed!
         return pool_params {
             it.read().bytes(),
+            {},
             it.read().uint(),
             it.read().uint(),
             decltype(margin)::from_cbor(it.read()),
@@ -62,7 +63,7 @@ namespace turbo::cardano {
             case 0: return { relay_addr::from_cbor(it) };
             case 1: return { relay_host::from_cbor(it) };
             case 2: return { relay_dns::from_cbor(it) };
-            default: throw error(fmt::format("Unsupported relay address format {}!", typ));
+            [[unlikely]] default: throw error(fmt::format("Unsupported relay address format {}!", typ));
         }
     }
 }

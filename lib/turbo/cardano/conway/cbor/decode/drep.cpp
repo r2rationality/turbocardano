@@ -17,7 +17,7 @@ namespace turbo::cardano {
                 case 1: return { credential_t { it.read().bytes(), true } };
                 case 2: return { abstain_t {} };
                 case 3: return { no_confidence_t {} };
-                default: throw error(fmt::format("unsupported drep type: {}", dtyp));
+                [[unlikely]] default: throw error(fmt::format("unsupported drep type: {}", dtyp));
             }
         }();
         if (!it.done()) [[unlikely]]

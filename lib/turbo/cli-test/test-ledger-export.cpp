@@ -76,7 +76,7 @@ namespace turbo::cli::test_ledger_export {
                     }
                     timer t2 { "comparison", logger::level::info };
                     const auto diff = cbor::compare(orig_data, gen_data);
-                    if (!diff.empty()) {
+                    if (!diff.empty()) [[unlikely]] {
                         throw error(fmt::format("the exported ledger for epoch {} differs: {}", epoch, diff));
                     }
                     logger::info("the exported ledger for epoch {} is the same", epoch);

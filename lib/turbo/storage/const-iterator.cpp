@@ -19,7 +19,7 @@ namespace turbo::storage {
     {
         auto canon_path = std::filesystem::weakly_canonical(full_path);
         auto [diffBegin, diffEnd] = std::mismatch(db_dir.begin(), db_dir.end(), canon_path.begin());
-        if (diffBegin != db_dir.end())
+        if (diffBegin != db_dir.end()) [[unlikely]]
             throw error(fmt::format("the supplied path '{}' is not inside the host directory '{}'", canon_path.string(), db_dir.string()));
         return std::filesystem::relative(canon_path, db_dir).string();
     }
@@ -28,7 +28,7 @@ namespace turbo::storage {
     {
         auto canon_path = std::filesystem::weakly_canonical(db_dir / rel_path);
         auto [diffBegin, diffEnd] = std::mismatch(db_dir.begin(), db_dir.end(), canon_path.begin());
-        if (diffBegin != db_dir.end())
+        if (diffBegin != db_dir.end()) [[unlikely]]
             throw error(fmt::format("the supplied path '{}' does not resolve into the host directory '{}'", canon_path.string(), db_dir.string()));
         std::filesystem::create_directories(canon_path.parent_path());
         return canon_path.string();

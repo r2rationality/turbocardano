@@ -36,7 +36,7 @@ namespace turbo::sync::p2p {
 
         explicit inflight_budget(const uint64_t limit): _limit { limit }
         {
-            if (!_limit)
+            if (!_limit) [[unlikely]]
                 throw error("the sync in-flight memory budget must be greater than zero");
         }
 
@@ -97,7 +97,7 @@ namespace turbo::sync::p2p {
                 }
                 std::ranges::reverse(points);
                 const auto intersection = client->find_intersection_sync(points);
-                if (!intersection.isect)
+                if (!intersection.isect) [[unlikely]]
                     throw error("internal error: wasn't able to narrow down the intersection point to a block!");
 
                 const auto isect_it = _parent.local_chain().find_block(*intersection.isect);
@@ -375,7 +375,7 @@ namespace turbo::sync::p2p {
             if (max_inflight_bytes != auto_max_inflight_bytes)
                 return max_inflight_bytes;
             const auto num_workers = cr.sched().num_workers();
-            if (num_workers > std::numeric_limits<size_t>::max() / inflight_bytes_per_worker)
+            if (num_workers > std::numeric_limits<size_t>::max() / inflight_bytes_per_worker) [[unlikely]]
                 throw error(fmt::format("scheduler worker count {} is too large", num_workers));
             return num_workers * inflight_bytes_per_worker;
         }()) }

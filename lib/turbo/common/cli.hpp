@@ -137,10 +137,10 @@ namespace turbo::cli {
                         name = arg.substr(2, eq_pos - 2);
                     }
                     const auto cfg_it = cfg.opts.find(name);
-                    if (cfg_it == cfg.opts.end())
+                    if (cfg_it == cfg.opts.end()) [[unlikely]]
                         throw error(fmt::format("unknown option '--{}'", name));
                     const auto [opt_it, opt_created] = pr.opts.try_emplace(name, std::move(val));
-                    if (!opt_created)
+                    if (!opt_created) [[unlikely]]
                         throw error(fmt::format("duplicate option specification '{}'", arg));
                 } else {
                     pr.args.emplace_back(arg);
@@ -151,7 +151,7 @@ namespace turbo::cli {
                     pr.opts.emplace(name, *cfg.default_value);
                 // creates an empty value if not initialized
                 if (const auto &val_it = pr.opts.find(name); cfg.validator && val_it != pr.opts.end()) {
-                    if (const auto val_err = (*cfg.validator)(val_it->second); val_err)
+                    if (const auto val_err = (*cfg.validator)(val_it->second); val_err) [[unlikely]]
                         throw error(fmt::format("value {} is invalid for '--{}': {}", val_it->second.value_or("<empty>"), name, *val_err));
                 }
             }

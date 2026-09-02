@@ -175,20 +175,24 @@ suite cardano_vrf_suite = [] {
             auto result = file::read("./data/vrf2-leader-result.bin"sv);
             expect(result.size() == 64_u);
             rational_u64 leader_stake_rel { 124'225'808'029'661, 17'260'167'504'454'384 };
-            expect(vrf_leader_is_eligible(result, 0.05, leader_stake_rel));
+            expect(vrf_leader_is_eligible(result, { 1, 20 }, leader_stake_rel));
+            vrf_result maximum {};
+            maximum.fill(0xFF);
+            expect(!vrf_leader_is_eligible(maximum, { 1, 20 }, leader_stake_rel));
+            expect(vrf_leader_is_eligible(maximum, { 1, 1 }, { 0, 1 }));
         };
 
         "vrf leader-eligibility-epoch"_test = [&] {
             const auto result = vrf_result::from_hex("288899B5EB24C0D3F7A81EB60549B6EA8461320B6FBF369831D11864EFD3DFD7A6198A7A2C9DE8F85307FA83A8F6ECC51A3DFFBB6510480D96D0C149781C0463");
             expect_equal(64, result.size());
             const rational_u64 leader_stake_rel { 32451895600839, 12521840766545450 };
-            expect(vrf_leader_is_eligible(vrf_leader_value(result), 0.05, leader_stake_rel));
+            expect(vrf_leader_is_eligible(vrf_leader_value(result), { 1, 20 }, leader_stake_rel));
         };
 
-        "vrf leader-eligibility-case-2"_test = [&] {
+        "vrf leader-ineligibility-boundary"_test = [&] {
             const auto result = vrf_result::from_hex("AA90E3DD7253DEF79FB29AA7830709065A1AFEF183DD5EC55B2EC58DA04FC6DFE8EFB3473F5CCDFBBCA23D59ED149BC207A4BF173D3A73D42D49058461A57462");
             const rational_u64 leader_stake_rel { 5441434220155, 3622928300609476 };
-            expect(vrf_leader_is_eligible(vrf_leader_value(result), 0.05, leader_stake_rel));
+            expect(!vrf_leader_is_eligible(vrf_leader_value(result), { 1, 20 }, leader_stake_rel));
         };
 
         "vrf keypair create, prove, verify"_test = [&] {

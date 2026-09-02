@@ -395,7 +395,7 @@ namespace turbo {
                     const buffer buf { data };
                     for (auto tx_ptr: chunk_info.tasks) {
                         auto &[tx_offset, tx_item] = *tx_ptr;
-                        if (tx_offset < chunk_offset)
+                        if (tx_offset < chunk_offset) [[unlikely]]
                             throw error(fmt::format("task offset: {} < chunk_offset: {}!", tx_offset, chunk_offset));
                         auto tx_size = static_cast<size_t>(tx_item.size);
                         const size_t tx_chunk_offset = tx_offset - chunk_offset;

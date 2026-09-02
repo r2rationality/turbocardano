@@ -39,7 +39,7 @@ namespace turbo::cli::test_stake_balances {
             auto [ledger_stake_dist, ledger_slot] = parse_ledger_snapshot(ledger_path);
             chunk_registry cr { data_dir, chunk_registry::mode::index };
             reconstructor r { cr };
-            if (ledger_slot != r.last_slot())
+            if (ledger_slot != r.last_slot()) [[unlikely]]
                 throw error(fmt::format("ledger last slot: {} does not match raw data last slot: {}", ledger_slot, r.last_slot()));
             verify_sample(r, ledger_stake_dist, min_pct, max_pct);
         }

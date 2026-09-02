@@ -39,7 +39,7 @@ namespace turbo {
 
     inline cpp_int big_uint_from_bytes(const buffer data)
     {
-        if (data.size() > big_int_max_size)
+        if (data.size() > big_int_max_size) [[unlikely]]
             throw error(fmt::format("big ints larger than {} bytes are not supported but got: {}!", big_int_max_size, data.size()));
         cpp_int val = 0;
         for (const uint8_t &b: data) {
@@ -86,45 +86,18 @@ namespace turbo {
                 switch (const auto id = t.id(); id) {
                     case 2: return big_uint_from_cbor(t.read());
                     case 3: return big_nint_from_cbor(t.read());
-                    default: throw error(fmt::format("unsupported tag type for a bigint: {}!", id));
+                    [[unlikely]] default: throw error(fmt::format("unsupported tag type for a bigint: {}!", id));
                 }
             }
-            default: throw error(fmt::format("cannot interpret cbor value as a bigint: {}", v.to_string()));
+            [[unlikely]] default: throw error(fmt::format("cannot interpret cbor value as a bigint: {}", v.to_string()));
         }
     }
 
-    inline void _raw_big_uint_to_cbor(cbor::encoder &enc, const cpp_int &val)
-    {
-        thread_local uint8_vector buf(0x1000);
-        buf.clear();
-        auto val_copy = val;
-        while (val_copy) {
-            buf.emplace_back(val_copy & 0xFF);
-            val_copy >>= 8;
-        }
-        enc.bytes_reverse(buf);
-    }
-
-    inline void big_int_to_cbor(cbor::encoder &enc, const cpp_int &val)
-    {
-        if (val >= 0) [[likely]] {
-            if (val <= std::numeric_limits<uint64_t>::max()) {
-                enc.uint(static_cast<uint64_t>(val));
-                return;
-            }
-            enc.tag(2);
-            _raw_big_uint_to_cbor(enc, val);
-        } else {
-            const auto val_uint = -(val + 1);
-            if (val_uint <= std::numeric_limits<uint64_t>::max()) {
-                enc.nint(static_cast<uint64_t>(val_uint));
-                return;
-            }
-            enc.tag(3);
-            _raw_big_uint_to_cbor(enc, val_uint);
-        }
-    }
+    inline void _raw_big_uint_to_cbor(cbor::encoder &, const cpp_int &);
+    inline void big_int_to_cbor(cbor::encoder &, const cpp_int &);
 }
+
+#include <turbo/math/cbor/encode/big-int.hpp>
 
 namespace fmt {
     template<typename T>

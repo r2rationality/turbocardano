@@ -9,6 +9,7 @@
 #include <turbo/cardano/babbage/block.hpp>
 #include <turbo/cardano/byron/block.hpp>
 #include <turbo/cardano/conway/block.hpp>
+#include <turbo/cardano/dijkstra/block.hpp>
 #include <turbo/cardano/mary/block.hpp>
 #include <turbo/cardano/shelley/block.hpp>
 
@@ -27,7 +28,8 @@ namespace turbo::cardano {
 
     struct header_container::impl {
         using value_type = std::variant<byron::boundary_block_header, byron::block_header, shelley::block_header,
-            allegra::block_header, mary::block_header, alonzo::block_header, babbage::block_header, conway::block_header>;
+            allegra::block_header, mary::block_header, alonzo::block_header, babbage::block_header,
+            conway::block_header, dijkstra::block_header>;
 
         static impl from_cbor(cbor::zero2::value &v, const config &cfg=cardano::config::get())
         {
@@ -59,7 +61,8 @@ namespace turbo::cardano {
                 case 5: return alonzo::block_header { era, hdr, cfg };
                 case 6: return babbage::block_header { era, hdr, cfg };
                 case 7: return conway::block_header { era, hdr, cfg };
-                default: throw error(fmt::format("unsupported era {}!", era));
+                case 8: return dijkstra::block_header { era, hdr, cfg };
+                [[unlikely]] default: throw error(fmt::format("unsupported era {}!", era));
             }
         }
     };

@@ -14,7 +14,8 @@ namespace turbo::cardano::babbage {
     block_header::body_t::body_t(cbor::zero2::array_reader &it, cbor::zero2::value &v, const cardano::config &cfg):
         block_number { numeric_cast<decltype(block_number)>(it.read().uint()) },
         slot { numeric_cast<decltype(slot)>(it.read().uint()) },
-        prev_hash { prev_hash_from_cbor(it.read(), cfg) },
+        prev_hash_is_null { false },
+        prev_hash { prev_hash_from_cbor(it.read(), cfg, &prev_hash_is_null) },
         issuer_vkey { it.read().bytes() },
         vrf_vkey { it.read().bytes() },
         nonce_vrf { vrf_cert::from_cbor(it.read()) },

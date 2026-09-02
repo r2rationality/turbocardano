@@ -84,6 +84,12 @@ namespace turbo::cardano::ledger::conway::rules::gov {
             has(upd.committee_min_size);
             has(upd.drep_activity);
             has(upd.min_fee_ref_script_cost_per_byte);
+            has(upd.max_ref_script_size_per_block);
+            has(upd.max_ref_script_size_per_tx);
+            has(upd.ref_script_cost_stride);
+            has(upd.ref_script_cost_multiplier);
+            has(upd.max_pledge_leverage);
+            has(upd.min_pool_margin);
             return has_update;
         }
 
@@ -428,7 +434,7 @@ namespace turbo::cardano::ledger::conway::rules::gov {
                 return vote_result::success(
                     rule_id::gov_vote,
                     { &gov_it->second, vote_target::pool });
-            default:
+            [[unlikely]] default:
                 return vote_result::fail(rule_id::gov_vote, failure::unsupported_voter_type);
         }
     }

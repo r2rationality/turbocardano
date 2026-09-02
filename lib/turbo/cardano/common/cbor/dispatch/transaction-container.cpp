@@ -8,6 +8,7 @@
 #include <turbo/cardano/common/common.hpp>
 #include <turbo/cardano/common/mocks.hpp>
 #include <turbo/cardano/conway/block.hpp>
+#include <turbo/cardano/dijkstra/block.hpp>
 
 namespace turbo::cardano {
     struct tx_container::impl {
@@ -20,9 +21,11 @@ namespace turbo::cardano {
         impl(const block_info &meta, const uint64_t tx_abs_off, cbor::zero2::value &tx, cbor::zero2::value &wit, const size_t idx, const cardano::config &cfg):
             impl { meta, tx_abs_off, tx, idx, cfg }
         {
-            std::visit([&](auto &tx_v) {
-                tx_v.parse_witnesses(wit);
-            }, _val);
+            if (_blk.era() != 8) {
+                std::visit([&](auto &tx_v) {
+                    tx_v.parse_witnesses(wit);
+                }, _val);
+            }
         }
 
         const tx_base &base() const
@@ -32,7 +35,8 @@ namespace turbo::cardano {
             }, _val);
         }
     private:
-        using value_type = std::variant<byron::tx, shelley::tx, allegra::tx, mary::tx, alonzo::tx, babbage::tx, conway::tx>;
+        using value_type = std::variant<byron::tx, shelley::tx, allegra::tx, mary::tx, alonzo::tx,
+            babbage::tx, conway::tx, dijkstra::tx>;
 
         mocks::block _blk;
         value_type _val;
@@ -48,7 +52,8 @@ namespace turbo::cardano {
                 case 5: return alonzo::tx { blk, blk_off, tx, idx };
                 case 6: return babbage::tx { blk, blk_off, tx, idx };
                 case 7: return conway::tx { blk, blk_off, tx, idx };
-                default: throw error(fmt::format("unsupported era {}!", blk.era()));
+                case 8: return dijkstra::tx { blk, blk_off, tx, idx, false, true };
+                [[unlikely]] default: throw error(fmt::format("unsupported era {}!", blk.era()));
             }
         }
     };

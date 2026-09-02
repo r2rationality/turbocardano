@@ -3,6 +3,8 @@
  * Copyright (c) 2024-2026 R2 Rationality OÜ (info at r2rationality dot com)
  * License: https://github.com/r2rationality/turbocardano/blob/main/LICENSE */
 
+#include <turbo/cardano/allegra/block.hpp>
+#include <turbo/cardano/common/cbor/decode/script.hpp>
 #include <turbo/cardano/conway/auxiliary-data.hpp>
 
 namespace turbo::cardano::conway {
@@ -14,7 +16,8 @@ namespace turbo::cardano::conway {
             auto &it = v.array();
             while (!it.done()) {
                 auto &script = it.read();
-                scripts.emplace_back(type, type == script_type::native ? script.data_raw() : script.bytes());
+                scripts.emplace_back(::turbo::cardano::detail::script_info_from_cbor(
+                    type, script, allegra::native_script_t::validate_cbor));
             }
         }
     }
@@ -25,10 +28,17 @@ namespace turbo::cardano::conway {
         if (tag.id() != 259) [[unlikely]]
             throw error(fmt::format("expected a tag with id 259 but got: {}", tag.id()));
         auxiliary_data_map_t res {};
+        uint8_t seen = 0;
         auto &it = tag.read().map();
         while (!it.done()) {
             auto &key_v = it.read_key();
             const auto key = key_v.uint();
+            if (key > 4) [[unlikely]]
+                throw error(fmt::format("unsupported auxiliary_data_map key: {}", key));
+            const auto mask = static_cast<uint8_t>(1U << key);
+            if (seen & mask) [[unlikely]]
+                throw error(fmt::format("duplicate Conway auxiliary_data_map key: {}", key));
+            seen |= mask;
             auto &value_v = it.read_val(std::move(key_v));
             switch (key) {
                 case 0: res.metadata = metadata_t::from_cbor(value_v); break;
@@ -36,7 +46,7 @@ namespace turbo::cardano::conway {
                 case 2: add_scripts(value_v, script_type::plutus_v1, res.plutus_v1_scripts); break;
                 case 3: add_scripts(value_v, script_type::plutus_v2, res.plutus_v2_scripts); break;
                 case 4: add_scripts(value_v, script_type::plutus_v3, res.plutus_v3_scripts); break;
-                default: throw error(fmt::format("unsupported auxiliary_data_map key: {}", key));
+                [[unlikely]] default: throw error(fmt::format("unsupported auxiliary_data_map key: {}", key));
             }
         }
         return res;
@@ -62,7 +72,10 @@ namespace turbo::cardano::conway {
             auto &key_v = it.read_key();
             const auto tx_idx = key_v.uint();
             auto &value_v = it.read_val(std::move(key_v));
+            const auto old_size = res.size();
             res.emplace_hint(res.end(), tx_idx, auxiliary_data_t::from_cbor(value_v));
+            if (res.size() == old_size) [[unlikely]]
+                throw error(fmt::format("duplicate Conway auxiliary data index: {}", tx_idx));
         }
         res.raw = v.data_raw();
         return res;

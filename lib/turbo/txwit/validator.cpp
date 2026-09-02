@@ -209,7 +209,7 @@ namespace turbo::txwit {
                     return { vkey_signer_t { pay_id.hash } };
                 case pay_ident::ident_type::SHELLEY_SCRIPT:
                     return { script_signer_t { pay_id.hash, typ } };
-                default:
+                [[unlikely]] default:
                     throw error(fmt::format("unsupported pay_ident type: {}", static_cast<int>(pay_id.type)));
             }
         }
@@ -821,7 +821,7 @@ namespace turbo::txwit {
                     if (const auto end_slot = tx.validity_end(); end_slot) {
                         if (*end_slot <= blk->slot()) [[unlikely]] {
                             // when validity_start is not defined, the validity_end slot is inclusive!
-                            if (*end_slot != blk->slot() || !tx.validity_end())
+                            if (*end_slot != blk->slot() || !tx.validity_end()) [[unlikely]]
                                 throw error(fmt::format("tx {} validity end interval: {} ends before the block's slot: {}",
                                     tx.hash(), *end_slot, blk->slot()));
                         }
@@ -1012,7 +1012,7 @@ namespace turbo::txwit {
                             case witness_type::script:
                             case witness_type::none:
                                 return {};
-                            default: throw error(fmt::format("unsupported witness type: {}", static_cast<int>(typ)));
+                            [[unlikely]] default: throw error(fmt::format("unsupported witness type: {}", static_cast<int>(typ)));
                         }
                     } catch (const std::exception &ex) {
                         const auto msg = fmt::format("txwit: slot: {} tx: {} error: {}", blk->slot(), tx.hash(), ex.what());
@@ -1432,7 +1432,7 @@ namespace turbo::txwit {
                             throw error(fmt::format(
                                 "reference-script transaction height {} does not match block height {}",
                                 tx.pos.block_height, block.height));
-                        if (protocol_major < 11 && tx.regular_ref_overlap) {
+                        if (protocol_major < 11 && tx.regular_ref_overlap) [[unlikely]] {
                             throw error(fmt::format(
                                 "slot {} tx {} uses TXO {} as both a regular and a reference input",
                                 block.slot,
@@ -1440,7 +1440,7 @@ namespace turbo::txwit {
                                 *tx.regular_ref_overlap));
                         }
                         const auto ledger_tx_script_size = ledger_script_sizes[ti].load(std::memory_order_relaxed);
-                        if (tx.phase2_valid && ledger_tx_script_size > max_ref_script_size_per_tx) {
+                        if (tx.phase2_valid && ledger_tx_script_size > max_ref_script_size_per_tx) [[unlikely]] {
                             throw error(fmt::format(
                                 "slot {} tx {} reference scripts have size {} exceeding the per-transaction limit {}",
                                 block.slot,
@@ -1451,7 +1451,7 @@ namespace turbo::txwit {
                         block_script_size += block_script_sizes[ti].load(std::memory_order_relaxed);
                         part.ref_script_sizes[tx.tx_id] = ledger_tx_script_size;
                     }
-                    if (block_script_size > max_ref_script_size_per_block) {
+                    if (block_script_size > max_ref_script_size_per_block) [[unlikely]] {
                         throw error(fmt::format(
                             "slot {} reference scripts have total size {} exceeding the per-block limit {}",
                             block.slot,

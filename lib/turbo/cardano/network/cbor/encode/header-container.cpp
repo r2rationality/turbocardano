@@ -24,5 +24,4 @@ namespace turbo::cardano {
                     .bytes(hdr->data_raw());
         }
     }
-
 }

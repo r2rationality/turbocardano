@@ -16,6 +16,8 @@ namespace turbo::cardano {
         {
             return archive(self.stake_id);
         }
+
+        bool operator==(const stake_reg_cert &) const =default;
     };
 
     struct stake_dereg_cert {
@@ -27,6 +29,8 @@ namespace turbo::cardano {
         {
             return archive(self.stake_id);
         }
+
+        bool operator==(const stake_dereg_cert &) const =default;
     };
 
     struct stake_deleg_cert {
@@ -39,6 +43,8 @@ namespace turbo::cardano {
         {
             return archive(self.stake_id, self.pool_id);
         }
+
+        bool operator==(const stake_deleg_cert &) const =default;
     };
 
     struct pool_reg_cert {
@@ -51,6 +57,8 @@ namespace turbo::cardano {
         {
             return archive(self.pool_id, self.params);
         }
+
+        bool operator==(const pool_reg_cert &) const =default;
     };
 
     struct pool_retire_cert {
@@ -63,6 +71,8 @@ namespace turbo::cardano {
         {
             return archive(self.pool_id, self.epoch);
         }
+
+        bool operator==(const pool_retire_cert &) const =default;
     };
 
     struct genesis_deleg_cert {
@@ -76,6 +86,8 @@ namespace turbo::cardano {
         {
             return archive(self.hash, self.pool_id, self.vrf_vkey);
         }
+
+        bool operator==(const genesis_deleg_cert &) const =default;
     };
 
     enum class reward_source { reserves, treasury };
@@ -92,6 +104,8 @@ namespace turbo::cardano {
         {
             return archive(self.source, self.rewards);
         }
+
+        bool operator==(const instant_reward_cert &) const =default;
     };
 
     struct anchor_t {
@@ -106,6 +120,8 @@ namespace turbo::cardano {
         static anchor_t from_cbor(cbor::zero2::value &);
         static anchor_t from_json(const json::value &);
         void to_cbor(era_encoder &) const;
+
+        bool operator==(const anchor_t &) const =default;
     };
     using optional_anchor_t = nil_optional_t<anchor_t>;
 
@@ -162,6 +178,12 @@ namespace turbo::cardano {
         std::optional<uint64_t> drep_deposit {}; // 31
         std::optional<uint32_t> drep_activity {}; // 32
         std::optional<rational_u64> min_fee_ref_script_cost_per_byte {}; // 33
+        std::optional<uint32_t> max_ref_script_size_per_block {}; // 34
+        std::optional<uint32_t> max_ref_script_size_per_tx {}; // 35
+        std::optional<uint32_t> ref_script_cost_stride {}; // 36
+        std::optional<rational_u64> ref_script_cost_multiplier {}; // 37
+        std::optional<nil_optional_t<rational_u64>> max_pledge_leverage {}; // 38
+        std::optional<rational_u64> min_pool_margin {}; // 39
 
         static constexpr auto serialize(auto &archive, auto &self)
         {
@@ -195,12 +217,19 @@ namespace turbo::cardano {
                 self.gov_action_deposit,
                 self.drep_deposit,
                 self.drep_activity,
-                self.min_fee_ref_script_cost_per_byte
+                self.min_fee_ref_script_cost_per_byte,
+                self.max_ref_script_size_per_block,
+                self.max_ref_script_size_per_tx,
+                self.ref_script_cost_stride,
+                self.ref_script_cost_multiplier,
+                self.max_pledge_leverage,
+                self.min_pool_margin
             );
         }
 
         static param_update_t from_cbor(cbor::zero2::value &);
         void to_cbor(era_encoder &) const;
+        bool operator==(const param_update_t &) const =default;
         bool security_group() const;
         bool network_group() const;
         bool economic_group() const;
@@ -252,6 +281,8 @@ namespace turbo::cardano {
         static constitution_t from_cbor(cbor::zero2::value &);
         static constitution_t from_json(const json::value &j);
         void to_cbor(era_encoder &) const;
+
+        bool operator==(const constitution_t &) const =default;
     };
 
     struct gov_action_t {
@@ -267,6 +298,8 @@ namespace turbo::cardano {
 
             static parameter_change_t from_cbor(cbor::zero2::array_reader &it);
             void to_cbor(era_encoder &) const;
+
+            bool operator==(const parameter_change_t &) const =default;
         };
 
         struct hard_fork_init_t {
@@ -280,6 +313,8 @@ namespace turbo::cardano {
 
             static hard_fork_init_t from_cbor(cbor::zero2::array_reader &it);
             void to_cbor(era_encoder &) const;
+
+            bool operator==(const hard_fork_init_t &) const =default;
         };
 
         using withdrawal_map = map_t<reward_id_t, uint64_t>;
@@ -295,6 +330,8 @@ namespace turbo::cardano {
 
             static treasury_withdrawals_t from_cbor(cbor::zero2::array_reader &it);
             void to_cbor(era_encoder &) const;
+
+            bool operator==(const treasury_withdrawals_t &) const =default;
         };
 
         struct no_confidence_t {
@@ -307,6 +344,8 @@ namespace turbo::cardano {
 
             static no_confidence_t from_cbor(cbor::zero2::array_reader &it);
             void to_cbor(era_encoder &) const;
+
+            bool operator==(const no_confidence_t &) const =default;
         };
 
         struct update_committee_t {
@@ -322,6 +361,8 @@ namespace turbo::cardano {
 
             static update_committee_t from_cbor(cbor::zero2::array_reader &it);
             void to_cbor(era_encoder &) const;
+
+            bool operator==(const update_committee_t &) const =default;
         };
 
         struct new_constitution_t {
@@ -335,11 +376,15 @@ namespace turbo::cardano {
 
             static new_constitution_t from_cbor(cbor::zero2::array_reader &it);
             void to_cbor(era_encoder &) const;
+
+            bool operator==(const new_constitution_t &) const =default;
         };
 
         struct info_action_t {
             static info_action_t from_cbor(cbor::zero2::array_reader &it);
             void to_cbor(era_encoder &) const;
+
+            bool operator==(const info_action_t &) const =default;
         };
 
         using value_type = std::variant<parameter_change_t, hard_fork_init_t, treasury_withdrawals_t,
@@ -356,6 +401,7 @@ namespace turbo::cardano {
         void to_cbor(era_encoder &) const;
         bool delaying() const;
         int priority() const;
+        bool operator==(const gov_action_t &) const =default;
         std::strong_ordering operator<=>(const gov_action_t &o) const;
     };
 
@@ -422,6 +468,8 @@ namespace turbo::cardano {
         static proposal_procedure_t from_cbor(cbor::zero2::value &v);
         void to_cbor(era_encoder &) const;
 
+        bool operator==(const proposal_procedure_t &) const =default;
+
         std::strong_ordering operator<=>(const proposal_procedure_t &o) const noexcept
         {
             return action <=> o.action;
@@ -453,6 +501,8 @@ namespace turbo::cardano {
         {
             return archive(self.stake_id, self.deposit);
         }
+
+        bool operator==(const reg_cert &) const =default;
     };
 
     struct unreg_cert {
@@ -463,6 +513,8 @@ namespace turbo::cardano {
         {
             return archive(self.stake_id, self.deposit);
         }
+
+        bool operator==(const unreg_cert &) const =default;
     };
 
     struct vote_deleg_cert {
@@ -473,6 +525,8 @@ namespace turbo::cardano {
         {
             return archive(self.stake_id, self.drep);
         }
+
+        bool operator==(const vote_deleg_cert &) const =default;
     };
 
     struct stake_vote_deleg_cert {
@@ -484,6 +538,8 @@ namespace turbo::cardano {
         {
             return archive(self.stake_id, self.pool_id, self.drep);
         }
+
+        bool operator==(const stake_vote_deleg_cert &) const =default;
     };
 
     struct stake_reg_deleg_cert {
@@ -495,6 +551,8 @@ namespace turbo::cardano {
         {
             return archive(self.stake_id, self.pool_id, self.deposit);
         }
+
+        bool operator==(const stake_reg_deleg_cert &) const =default;
     };
 
     struct vote_reg_deleg_cert {
@@ -506,6 +564,8 @@ namespace turbo::cardano {
         {
             return archive(self.stake_id, self.drep, self.deposit);
         }
+
+        bool operator==(const vote_reg_deleg_cert &) const =default;
     };
 
     struct stake_vote_reg_deleg_cert {
@@ -518,6 +578,8 @@ namespace turbo::cardano {
         {
             return archive(self.stake_id, self.pool_id, self.drep, self.deposit);
         }
+
+        bool operator==(const stake_vote_reg_deleg_cert &) const =default;
     };
 
     struct auth_committee_hot_cert {
@@ -528,6 +590,8 @@ namespace turbo::cardano {
         {
             return archive(self.cold_id, self.hot_id);
         }
+
+        bool operator==(const auth_committee_hot_cert &) const =default;
     };
 
     struct resign_committee_cold_cert {
@@ -540,6 +604,8 @@ namespace turbo::cardano {
         {
             return archive(self.cold_id, self.anchor);
         }
+
+        bool operator==(const resign_committee_cold_cert &) const =default;
     };
 
     struct reg_drep_cert {
@@ -553,6 +619,8 @@ namespace turbo::cardano {
         {
             return archive(self.drep_id, self.deposit, self.anchor);
         }
+
+        bool operator==(const reg_drep_cert &) const =default;
     };
 
     struct unreg_drep_cert {
@@ -563,6 +631,8 @@ namespace turbo::cardano {
         {
             return archive(self.drep_id, self.deposit);
         }
+
+        bool operator==(const unreg_drep_cert &) const =default;
     };
 
     struct update_drep_cert {
@@ -575,6 +645,8 @@ namespace turbo::cardano {
         {
             return archive(self.drep_id, self.anchor);
         }
+
+        bool operator==(const update_drep_cert &) const =default;
     };
 
     using cert_value_t = std::variant<
@@ -594,6 +666,7 @@ namespace turbo::cardano {
             return archive(self.val);
         }
 
+        bool operator==(const cert_t &) const =default;
         std::optional<credential_t> signing_cred() const;
     };
     using cert_list = vector_t<cert_t>;
@@ -611,7 +684,7 @@ namespace fmt {
                 case turbo::cardano::reward_source::treasury:
                     return fmt::format_to(ctx.out(), "reward_source::treasury");
 
-                default:
+                [[unlikely]] default:
                     throw turbo::error(fmt::format("unsupported reward_source value: {}", static_cast<int>(v)));
                 break;
             }
@@ -661,7 +734,7 @@ namespace fmt {
                 case type_t::drep_key: return fmt::format_to(ctx.out(), "drep-key");
                 case type_t::drep_script: return fmt::format_to(ctx.out(), "drep-script");
                 case type_t::pool_key: return fmt::format_to(ctx.out(), "pool-key");
-                default: throw turbo::error(fmt::format("unsupported voter_t::type_t value: {}", static_cast<int>(v)));
+                [[unlikely]] default: throw turbo::error(fmt::format("unsupported voter_t::type_t value: {}", static_cast<int>(v)));
             }
         }
     };
@@ -683,7 +756,7 @@ namespace fmt {
                 case vote_t::yes: return fmt::format_to(ctx.out(), "yes");
                 case vote_t::no: return fmt::format_to(ctx.out(), "no");
                 case vote_t::abstain: return fmt::format_to(ctx.out(), "abstain");
-                default: throw turbo::error(fmt::format("unsupported vote_t value: {}", static_cast<int>(v)));
+                [[unlikely]] default: throw turbo::error(fmt::format("unsupported vote_t value: {}", static_cast<int>(v)));
             }
         }
     };

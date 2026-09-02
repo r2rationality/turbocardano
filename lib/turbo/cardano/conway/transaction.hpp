@@ -37,11 +37,13 @@ namespace turbo::cardano::conway {
     struct voting_procedures_t: vote_set {
         using vote_set::vote_set;
         static voting_procedures_t from_cbor(cbor::zero2::value &);
+        void to_cbor(era_encoder &) const;
     };
 
     struct proposal_procedures_t: proposal_procedure_list {
         using proposal_procedure_list::proposal_procedure_list;
         static proposal_procedures_t from_cbor(cbor::zero2::value &);
+        void to_cbor(era_encoder &) const;
     };
 
     struct required_signers_t: alonzo::required_signers_t {
@@ -58,46 +60,54 @@ namespace turbo::cardano::conway {
         cardano::cert_t value {};
 
         static certificate_t from_cbor(cbor::zero2::value &);
+        void to_cbor(era_encoder &) const;
     };
 
     struct script_t {
         script_info value;
 
         static script_t from_cbor(cbor::zero2::value &);
+        void to_cbor(era_encoder &) const;
     };
 
     struct value_t {
         output_value_t value {};
 
         static value_t from_cbor(cbor::zero2::value &);
+        void to_cbor(era_encoder &) const;
     };
 
     struct mint_t: mary::mint_t {
         using mary::mint_t::mint_t;
         static mint_t from_cbor(cbor::zero2::value &);
+        void to_cbor(era_encoder &) const;
     };
 
     struct cost_models_t {
         plutus_cost_models value {};
 
         static cost_models_t from_cbor(cbor::zero2::value &);
+        void to_cbor(era_encoder &) const;
     };
 
     struct transaction_output_t {
         tx_out_data value {};
 
         static transaction_output_t from_cbor(cbor::zero2::value &);
+        void to_cbor(era_encoder &) const;
     };
 
     struct transaction_outputs_t {
         tx_output_list value {};
 
         static transaction_outputs_t from_cbor(cbor::zero2::value &);
+        void to_cbor(era_encoder &) const;
     };
 
     struct certificates_t: shelley::certificates_t {
         using shelley::certificates_t::certificates_t;
         static certificates_t from_cbor(cbor::zero2::value &);
+        void to_cbor(era_encoder &) const;
     };
 
     struct transaction_body_t: babbage::transaction_body_t {
@@ -107,6 +117,7 @@ namespace turbo::cardano::conway {
         std::optional<uint64_t> donation {};
 
         static transaction_body_t from_cbor(cbor::zero2::value &);
+        void to_cbor(era_encoder &) const;
     };
 
     struct redeemer_t {
@@ -114,14 +125,17 @@ namespace turbo::cardano::conway {
 
         static redeemer_t from_cbor(cbor::zero2::value &);
         static redeemer_t from_cbor(cbor::zero2::map_reader &);
+        void to_cbor(era_encoder &) const;
     };
 
     struct redeemers_t: alonzo::redeemers_t {
         static redeemers_t from_cbor(cbor::zero2::value &);
+        void to_cbor(era_encoder &) const;
     };
 
     struct transaction_witness_set_t: babbage::transaction_witness_set_t {
         static transaction_witness_set_t from_cbor(cbor::zero2::value &);
+        void to_cbor(era_encoder &) const;
     };
 
     struct transaction_t {
@@ -131,6 +145,7 @@ namespace turbo::cardano::conway {
         std::optional<auxiliary_data_t> auxiliary_data {};
 
         static transaction_t from_cbor(cbor::zero2::value &);
+        void to_cbor(era_encoder &) const;
     };
 
     struct tx_base: babbage::tx_base {
@@ -163,6 +178,8 @@ namespace turbo::cardano::conway {
         const vote_set &votes() const override;
         const proposal_set &proposals() const override;
         std::optional<uint64_t> current_treasury() const override;
+        void body_to_cbor(era_encoder &) const;
+        void witnesses_to_cbor(era_encoder &) const;
     private:
         transaction_body_t _body;
     };

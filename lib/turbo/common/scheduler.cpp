@@ -41,7 +41,7 @@ namespace turbo {
         explicit impl(const size_t user_num_workers)
             : _num_workers { _find_num_workers(user_num_workers) }
         {
-            if (_num_workers == 0)
+            if (_num_workers == 0) [[unlikely]]
                 throw error("the number of worker threads must be greater than zero!");
             logger::info("scheduler started, worker count: {}", _num_workers);
             _worker_tasks.resize(_num_workers);
@@ -200,9 +200,9 @@ namespace turbo {
         void wait_all_done(const std::string &task_group, const wait_all_submit_func_t &submit_func)
         {
             bool exp_false = false;
-            if (!_wait_all_done_running.compare_exchange_strong(exp_false, true))
+            if (!_wait_all_done_running.compare_exchange_strong(exp_false, true)) [[unlikely]]
                 throw error("concurrent wait_all_done calls are not allowed!");
-            if (_num_workers < 4)
+            if (_num_workers < 4) [[unlikely]]
                 throw error(fmt::format("wait_all_done relies on a high worker count but got {} worker threads!", _num_workers));
             auto state = std::make_shared<wait_all_state>();
             try {

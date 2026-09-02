@@ -22,7 +22,7 @@ namespace {
                 p.read(*val);
                 _blocks.emplace_back(cardano::make_block(*val, val->data - _raw_data.data()));
             }
-            if (_blocks.empty())
+            if (_blocks.empty()) [[unlikely]]
                 throw error("test chain cannot be empty!");
         }
     private:

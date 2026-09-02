@@ -146,7 +146,7 @@ namespace turbo::cardano::ledger::conway {
         // Re-delegation can target the same DRep, so insert after removing the old link.
         if (std::holds_alternative<credential_t>(drep.val)) {
             if (new_drep_it == _drep_state.end()) [[unlikely]] {
-                if (!preserve_incorrect_delegation) {
+                if (!preserve_incorrect_delegation) [[unlikely]] {
                     throw error(fmt::format(
                         "delegate_vote: {} delegating to an unknown drep credential: {}",
                         stake_id,
@@ -273,7 +273,7 @@ namespace turbo::cardano::ledger::conway {
             known_cold_id,
             current_it == _committee_hot_keys.end() ? nullptr : &current_it->second);
         if (!checked) [[unlikely]] {
-            if (checked.failure == rules::govcert::failure::committee_member_resigned) {
+            if (checked.failure == rules::govcert::failure::committee_member_resigned) [[unlikely]] {
                 throw error(fmt::format(
                     "an attempt to provide a hot certificate to a resigned committee member: {}",
                     c.cold_id));
@@ -314,7 +314,7 @@ namespace turbo::cardano::ledger::conway {
             _drep_state.contains(c.drep_id),
             c.deposit);
         if (!checked) [[unlikely]] {
-            if (checked.failure == rules::govcert::failure::drep_already_registered)
+            if (checked.failure == rules::govcert::failure::drep_already_registered) [[unlikely]]
                 throw error(fmt::format("drep already registered: {}", c.drep_id));
             throw error(fmt::format(
                 "reg_drep_cert: expected deposit {} got {}",
@@ -345,7 +345,7 @@ namespace turbo::cardano::ledger::conway {
                         c.deposit));
                 case rules::govcert::failure::deposited_pot_insufficient:
                     throw error(fmt::format("unable to withdraw the old drep deposit: {}", it->second.deposited));
-                default:
+                [[unlikely]] default:
                     throw error("unexpected GOVCERT-deregdrep failure");
             }
         }

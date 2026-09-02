@@ -16,32 +16,6 @@ namespace turbo::cardano::network::miniprotocol::blockfetch {
         };
     }
 
-    void msg_request_range_t::to_cbor(cbor::encoder &enc) const
-    {
-        enc.array(3);
-        enc.uint(0);
-        from.to_cbor(enc);
-        to.to_cbor(enc);
-    }
-
-    void msg_client_done_t::to_cbor(cbor::encoder &enc) const
-    {
-        enc.array(1);
-        enc.uint(1);
-    }
-
-    void msg_start_batch_t::to_cbor(cbor::encoder &enc) const
-    {
-        enc.array(1);
-        enc.uint(2);
-    }
-
-    void msg_no_blocks_t::to_cbor(cbor::encoder &enc) const
-    {
-        enc.array(1);
-        enc.uint(3);
-    }
-
     msg_block_t msg_block_t::from_cbor(cbor::zero2::array_reader &it)
     {
         return {
@@ -49,27 +23,11 @@ namespace turbo::cardano::network::miniprotocol::blockfetch {
         };
     }
 
-    void msg_block_t::to_cbor(cbor::encoder &enc) const
-    {
-        enc.array(2);
-        enc.uint(4);
-        enc.tag(24);
-        enc.bytes(bytes);
-    }
-
     msg_compressed_blocks_t msg_compressed_blocks_t::from_cbor(cbor::zero2::array_reader &it)
     {
         return {
             it.read().uint(), it.read().bytes()
         };
-    }
-
-    void msg_compressed_blocks_t::to_cbor(cbor::encoder &enc) const
-    {
-        enc.array(3);
-        enc.uint(6);
-        enc.uint(encoding);
-        enc.bytes(payload);
     }
 
     uint8_vector msg_compressed_blocks_t::bytes() const
@@ -100,12 +58,6 @@ namespace turbo::cardano::network::miniprotocol::blockfetch {
             : encoding_zstd_fast;
     }
 
-    void msg_batch_done_t::to_cbor(cbor::encoder &enc) const
-    {
-        enc.array(1);
-        enc.uint(5);
-    }
-
     msg_t msg_t::from_cbor(cbor::zero2::value &v)
     {
         auto &it = v.array();
@@ -121,10 +73,4 @@ namespace turbo::cardano::network::miniprotocol::blockfetch {
         }
     }
 
-    void msg_t::to_cbor(cbor::encoder &enc) const
-    {
-        std::visit([&](const auto &mv) {
-            mv.to_cbor(enc);
-        }, *this);
-    }
 }

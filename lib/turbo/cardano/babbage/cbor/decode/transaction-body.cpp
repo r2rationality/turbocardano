@@ -40,7 +40,7 @@ namespace turbo::cardano::babbage {
                 case 16: res.collateral_return.emplace(std::move(transaction_output_t::from_cbor(mv).value)); break;
                 case 17: res.collateral_value.emplace(mv.uint()); break;
                 case 18: res.ref_inputs = shelley::transaction_inputs_t::from_cbor(mv); break;
-                default: throw error(fmt::format("unsupported tx element type: {}", typ));
+                [[unlikely]] default: throw error(fmt::format("unsupported tx element type: {}", typ));
             }
         }
         res.raw = v.data_raw();

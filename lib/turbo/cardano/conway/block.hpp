@@ -21,6 +21,8 @@ namespace turbo::cardano::conway {
     struct block_transactions_t: block_tx_list<tx> {
         using block_tx_list<tx>::block_tx_list;
         static block_transactions_t from_cbor(const block_base &, const uint8_t *block_begin, cbor::zero2::array_reader &);
+        void bodies_to_cbor(era_encoder &) const;
+        void witnesses_to_cbor(era_encoder &) const;
     };
 
     struct block: block_base {
@@ -30,6 +32,7 @@ namespace turbo::cardano::conway {
         const block_hash &body_hash() const override;
         const tx_list &txs() const override;
         const invalid_tx_set &invalid_txs() const override;
+        void to_cbor(era_encoder &) const;
     private:
         babbage::block_header _hdr;
         block_transactions_t _txs;

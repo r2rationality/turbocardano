@@ -21,7 +21,7 @@ namespace turbo::cardano {
             switch (const auto typ = val.type(); typ) {
                 case cbor::major_type::uint: raw_values.emplace_back(numeric_cast<int64_t>(val.uint())); break;
                 case cbor::major_type::nint: raw_values.emplace_back(-numeric_cast<int64_t>(val.nint())); break;
-                default: throw error(fmt::format("unsupported plutus_cost_model value type: {}", typ));
+                [[unlikely]] default: throw error(fmt::format("unsupported plutus_cost_model value type: {}", typ));
             }
         }
         return plutus_cost_model { std::move(raw_values), names };
@@ -34,7 +34,7 @@ namespace turbo::cardano {
             case 0: return plutus::costs::cost_arg_names_v1();
             case 1: return plutus::costs::cost_arg_names_v2();
             case 2: return plutus::costs::cost_arg_names_v3();
-            default: return empty;
+            [[unlikely]] default: return empty;
         }
     }
 

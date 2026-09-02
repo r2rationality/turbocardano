@@ -4,7 +4,6 @@
  * License: https://github.com/r2rationality/turbocardano/blob/main/LICENSE */
 
 #include <numeric>
-#include <turbo/cbor/encoder.hpp>
 #include <turbo/cbor/zero2.hpp>
 #include <turbo/json.hpp>
 #include "rational.hpp"
@@ -36,7 +35,7 @@ namespace turbo {
         double num = d;
         uint64_t denominator = 1;
         while (std::fabs(num - static_cast<uint64_t>(num)) > 1e-6) {
-            if (denominator >= 1'000'000'000)
+            if (denominator >= 1'000'000'000) [[unlikely]]
                 throw error(fmt::format("an unsupported value for a conversion to rational: {}", d));
             num *= 10;
             denominator *= 10;
@@ -69,11 +68,4 @@ namespace turbo {
         return from_double(json::value_to<double>(v));
     }
 
-    void rational_u64::to_cbor(cbor::encoder &enc) const
-    {
-        enc.tag(30);
-        enc.array(2)
-            .uint(numerator)
-            .uint(denominator);
-    }
 }

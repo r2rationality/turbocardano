@@ -83,14 +83,7 @@ namespace turbo::cardano {
             return value_from_cbor<T>(v);
         }
 
-        void to_cbor(era_encoder &enc) const
-        {
-            if (base_type::has_value()) {
-                value_to_cbor(enc, base_type::operator*());
-            } else {
-                enc.s_null();
-            }
-        }
+        void to_cbor(era_encoder &) const;
 
         bool operator==(const nil_optional_t<T> &o) const noexcept
         {
@@ -123,17 +116,7 @@ namespace turbo::cardano {
         {
         }
 
-        void to_cbor(era_encoder &enc) const
-        {
-            if (base_type::has_value()) {
-                enc.array(2);
-                enc.uint(1);
-                value_to_cbor(enc, base_type::operator*());
-            } else {
-                enc.array(1);
-                enc.uint(0);
-            }
-        }
+        void to_cbor(era_encoder &) const;
 
         prefix_optional_t<T> &operator=(prefix_optional_t<T> &&o) noexcept
         {
@@ -183,15 +166,7 @@ namespace turbo::cardano {
         {
         }
 
-        void to_cbor(era_encoder &enc) const
-        {
-            if (base_type::has_value()) {
-                enc.array(1);
-                value_to_cbor(enc, base_type::operator*());
-            } else {
-                enc.array(0);
-            }
-        }
+        void to_cbor(era_encoder &) const;
 
         array_optional_t<T> &operator=(array_optional_t<T> &&o) noexcept
         {
@@ -250,15 +225,7 @@ namespace turbo::cardano {
     }
 
     template<typename M, typename ENC>
-    void map_to_cbor(ENC &enc, const M &m)
-    {
-        enc.map_compact(m.size(), [&] {
-            for (const auto &[k, v]: m) {
-                value_to_cbor(enc, k);
-                value_to_cbor(enc, v);
-            }
-        });
-    }
+    void map_to_cbor(ENC &, const M &);
 
     template<typename K, typename V, typename ENC=era_encoder>
     struct map_t: flat_map<K, V> {
@@ -286,10 +253,7 @@ namespace turbo::cardano {
             return res;
         }
 
-        void to_cbor(ENC &enc) const
-        {
-            map_to_cbor(enc, *this);
-        }
+        void to_cbor(ENC &) const;
 
         const typename base_type::value_type &nth_or_die(const size_t idx) const
         {
@@ -322,13 +286,7 @@ namespace turbo::cardano {
             return res;
         }
 
-        void to_cbor(ENC &enc) const
-        {
-            enc.array_compact(base_type::size(), [&] {
-                for (const auto &v: *this)
-                    value_to_cbor(enc, v);
-            });
-        }
+        void to_cbor(ENC &) const;
     };
 
     struct shelley_delegate {
@@ -337,12 +295,66 @@ namespace turbo::cardano {
 
         static shelley_delegate from_cbor(cbor::zero2::value &);
 
+        void to_cbor(auto &) const;
+
         bool operator==(const shelley_delegate &o) const
         {
             return delegate == o.delegate && vrf == o.vrf;
         }
     };
     using shelley_delegate_map = flat_map<key_hash, shelley_delegate>;
+
+    struct future_shelley_delegate {
+        uint64_t slot = 0;
+        key_hash genesis {};
+
+        static future_shelley_delegate from_cbor(cbor::zero2::value &v)
+        {
+            auto &it = v.array();
+            return { it.read().uint(), key_hash { it.read().bytes() } };
+        }
+
+        void to_cbor(auto &) const;
+
+        static constexpr auto serialize(auto &archive, auto &self)
+        {
+            return archive(self.slot, self.genesis);
+        }
+
+        bool operator<(const future_shelley_delegate &o) const
+        {
+            return slot != o.slot ? slot < o.slot : genesis < o.genesis;
+        }
+
+        bool operator==(const future_shelley_delegate &) const =default;
+    };
+    using future_shelley_delegate_map = std::map<future_shelley_delegate, shelley_delegate>;
+
+    struct shelley_delegate_schedule {
+        bool complete = true;
+        shelley_delegate_map initial {};
+        std::map<uint64_t, shelley_delegate_map> changes {};
+
+        const shelley_delegate_map &at(const uint64_t slot) const
+        {
+            const auto it = changes.upper_bound(slot);
+            return it == changes.begin() ? initial : std::prev(it)->second;
+        }
+
+        void clear()
+        {
+            complete = true;
+            initial.clear();
+            changes.clear();
+        }
+
+        static constexpr auto serialize(auto &archive, auto &self)
+        {
+            return archive(self.complete, self.initial, self.changes);
+        }
+
+        bool operator==(const shelley_delegate_schedule &) const =default;
+    };
 
     struct config;
 
@@ -371,9 +383,9 @@ namespace turbo::cardano {
 
         void update(const uint64_t slot)
         {
-            if (slot < _min)
+            if (slot < _min) [[unlikely]]
                 throw error(fmt::format("block supplied not in order slot {} observed after slot {}", slot, _min));
-            if (slot < _max)
+            if (slot < _max) [[unlikely]]
                 throw error(fmt::format("block supplied not in order slot {} observed after slot {}", slot, _max));
             _max = slot;
         }
@@ -701,7 +713,7 @@ namespace turbo::cardano {
                     return "shelley-script";
                 case ident_type::BYRON_KEY:
                     return "byron-key";
-                default:
+                [[unlikely]] default:
                     std::unreachable();
             }
         }
@@ -729,7 +741,8 @@ namespace turbo::cardano {
         native = 0,
         plutus_v1 = 1,
         plutus_v2 = 2,
-        plutus_v3 = 3
+        plutus_v3 = 3,
+        plutus_v4 = 4
     };
 
     inline script_type script_type_from_str(const std::string_view s)
@@ -740,6 +753,8 @@ namespace turbo::cardano {
             return script_type::plutus_v2;
         if (s == "v3")
             return script_type::plutus_v3;
+        if (s == "v4")
+            return script_type::plutus_v4;
         if (s == "native")
             return script_type::native;
         throw error(fmt::format("unsupported script type: {}", s));
@@ -752,6 +767,11 @@ namespace turbo::cardano {
         }
 
         script_info(const script_type type, const buffer script): _data { _canonical(type, script) }
+        {
+        }
+
+        script_info(const script_type type, uint8_vector &&script):
+            _data { _canonical(type, std::move(script)) }
         {
         }
 
@@ -798,6 +818,12 @@ namespace turbo::cardano {
             bytes.front() = static_cast<uint8_t>(type);
             std::copy(script.begin(), script.end(), bytes.begin() + 1);
             return bytes;
+        }
+
+        static uint8_vector _canonical(const script_type type, uint8_vector &&script)
+        {
+            script.insert(script.begin(), static_cast<uint8_t>(type));
+            return std::move(script);
         }
 
         script_info(): _data { uint8_vector::from_hex("00") }
@@ -858,7 +884,7 @@ namespace turbo::cardano {
 
         address(const buffer bytes): _bytes { bytes }
         {
-            if (_bytes.size() < 2)
+            if (_bytes.size() < 2) [[unlikely]]
                 throw error("cardano address must have at least two bytes!");
             switch (type()) {
                 case 0b1110: // reward key
@@ -917,7 +943,7 @@ namespace turbo::cardano {
                     break;
                 }
 
-                default:
+                [[unlikely]] default:
                     throw error(fmt::format("unsupported address type: {}!", type()));
             }
         }
@@ -953,7 +979,7 @@ namespace turbo::cardano {
         const stake_pointer pointer() const
         {
 
-            if (data().size() < 28 + 3)
+            if (data().size() < 28 + 3) [[unlikely]]
                 throw error(fmt::format("pointer data is too small - expect 31+ bytes but got: {}", data().size()));
             const auto ptr = data().subspan(28, data().size() - 28);
             uint64_t slot, tx_idx, cert_idx;
@@ -976,7 +1002,7 @@ namespace turbo::cardano {
                 case 0b0011: // base address: scripthash28,scripthash28
                     return stake_ident { data().subbuf(28, 28), (type() & 0x2) > 0 };
 
-                default:
+                [[unlikely]] default:
                     throw error(fmt::format("address::stake_id unsupported for address type: {}!", type()));
             }
         }
@@ -1106,7 +1132,7 @@ namespace turbo::cardano {
                     type_str = "shelley-pointer-script";
                     break;
             }
-            if (!type_str)
+            if (!type_str) [[unlikely]]
                 throw error(fmt::format("unsupported address type: {}!", type()));
             json::object res {
                 { "type", type_str },
@@ -1131,7 +1157,7 @@ namespace turbo::cardano {
 
         static size_t _read_var_uint_be(uint64_t &x, const buffer &buf)
         {
-            if (buf.size() == 0)
+            if (buf.size() == 0) [[unlikely]]
                 throw error("can't read a variable integer from an empty buffer!");
             x = 0;
             uint64_t val = static_cast<uint64_t>(buf[0]);
@@ -1139,7 +1165,7 @@ namespace turbo::cardano {
             for (;;) {
                 x |= val & 0x7F;
                 if (val & 0x80) {
-                    if (buf.size() < num_read + 1)
+                    if (buf.size() < num_read + 1) [[unlikely]]
                         throw error(fmt::format("the buffer is too small: {}!", buf.size()));
                     val = static_cast<uint64_t>(buf[num_read]);
                     ++num_read;
@@ -1261,6 +1287,8 @@ namespace turbo::cardano {
             coins = coin;
             return *this;
         }
+
+        bool operator==(const amount &) const =default;
     };
 
     struct amount_pure: amount {
@@ -1343,6 +1371,7 @@ namespace turbo::cardano {
         value_type val;
 
         static datum_option_t from_cbor(cbor::zero2::value &v);
+        void to_cbor(era_encoder &) const;
 
         static constexpr auto serialize(auto &archive, auto &self)
         {
@@ -1459,7 +1488,10 @@ namespace turbo::cardano {
                 case 10:
                 case 11:
                     return 7;
-                default: throw error(fmt::format("unsupported protocol major version: {}", major));
+                case 12:
+                case 13:
+                    return 8;
+                [[unlikely]] default: throw error(fmt::format("unsupported protocol major version: {}", major));
             }
         }
     };
@@ -1614,6 +1646,8 @@ namespace turbo::cardano {
         static pool_voting_thresholds_t from_cbor(cbor::zero2::value &);
         static pool_voting_thresholds_t from_json(const json::value &);
         void to_cbor(era_encoder &) const;
+
+        bool operator==(const pool_voting_thresholds_t &) const =default;
     };
 
     struct drep_voting_thresholds_t {
@@ -1649,6 +1683,8 @@ namespace turbo::cardano {
         static drep_voting_thresholds_t from_cbor(cbor::zero2::value &);
         static drep_voting_thresholds_t from_json(const json::value &);
         void to_cbor(era_encoder &) const;
+
+        bool operator==(const drep_voting_thresholds_t &) const =default;
     };
 
     struct param_update {
@@ -1753,6 +1789,12 @@ namespace turbo::cardano {
         uint64_t drep_deposit = 500'000'000;
         uint32_t drep_activity = 20;
         rational_u64 min_fee_ref_script_cost_per_byte { 15, 1 };
+        uint32_t max_ref_script_size_per_block = 0;
+        uint32_t max_ref_script_size_per_tx = 0;
+        uint32_t ref_script_cost_stride = 1;
+        rational_u64 ref_script_cost_multiplier { 1, 1 };
+        nil_optional_t<rational_u64> max_pledge_leverage {};
+        rational_u64 min_pool_margin { 0, 1 };
 
         static constexpr auto serialize(auto &archive, auto &self)
         {
@@ -1768,7 +1810,13 @@ namespace turbo::cardano {
                 self.ex_unit_prices, self.max_tx_ex_units, self.max_block_ex_units,
                 self.max_value_size,
                 self.max_collateral_pct, self.max_collateral_inputs,
-                self.plutus_cost_models
+                self.plutus_cost_models,
+                self.max_ref_script_size_per_block,
+                self.max_ref_script_size_per_tx,
+                self.ref_script_cost_stride,
+                self.ref_script_cost_multiplier,
+                self.max_pledge_leverage,
+                self.min_pool_margin
             );
         }
 
@@ -1789,7 +1837,13 @@ namespace turbo::cardano {
                 && max_value_size == o.max_value_size
                 && max_collateral_pct == o.max_collateral_pct
                 && max_collateral_inputs == o.max_collateral_inputs
-                && plutus_cost_models == o.plutus_cost_models;
+                && plutus_cost_models == o.plutus_cost_models
+                && max_ref_script_size_per_block == o.max_ref_script_size_per_block
+                && max_ref_script_size_per_tx == o.max_ref_script_size_per_tx
+                && ref_script_cost_stride == o.ref_script_cost_stride
+                && ref_script_cost_multiplier == o.ref_script_cost_multiplier
+                && max_pledge_leverage == o.max_pledge_leverage
+                && min_pool_margin == o.min_pool_margin;
         }
 
         void clear()
@@ -1846,6 +1900,8 @@ namespace turbo::cardano {
 
         static drep_t from_cbor(cbor::zero2::value &v);
         void to_cbor(era_encoder &) const;
+
+        bool operator==(const drep_t &) const =default;
 
         bool operator<(const drep_t &o) const noexcept
         {
@@ -1991,6 +2047,18 @@ namespace turbo::cardano {
         }
     };
 
+    struct bls_key_t {
+        byte_array<96> public_key {};
+        byte_array<48> possession_proof {};
+
+        static constexpr auto serialize(auto &archive, auto &self)
+        {
+            return archive(self.public_key, self.possession_proof);
+        }
+
+        bool operator==(const bls_key_t &) const =default;
+    };
+
     struct stake_keyhash_t: byte_array<28> {
         using base_type = byte_array<28>;
 
@@ -2075,6 +2143,7 @@ namespace turbo::cardano {
 
     struct pool_params {
         cardano::vrf_vkey vrf_vkey {};
+        nil_optional_t<bls_key_t> bls_key {};
         uint64_t pledge = 0;
         uint64_t cost = 0;
         rational_u64 margin {};
@@ -2085,7 +2154,7 @@ namespace turbo::cardano {
 
         static constexpr auto serialize(auto &archive, auto &self)
         {
-            return archive(self.vrf_vkey, self.pledge, self.cost, self.margin, self.reward_id, self.owners, self.relays, self.metadata);
+            return archive(self.vrf_vkey, self.bls_key, self.pledge, self.cost, self.margin, self.reward_id, self.owners, self.relays, self.metadata);
         }
 
         static pool_params from_cbor(cbor::zero2::value &v);
@@ -2094,7 +2163,7 @@ namespace turbo::cardano {
 
         bool operator==(const pool_params &o) const
         {
-            return reward_id == o.reward_id && owners == o.owners && pledge == o.pledge
+            return reward_id == o.reward_id && owners == o.owners && bls_key == o.bls_key && pledge == o.pledge
                 && cost == o.cost && margin == o.margin
                 && vrf_vkey == o.vrf_vkey && relays == o.relays
                 && metadata == o.metadata;
@@ -2123,6 +2192,8 @@ namespace turbo::cardano {
         {
             return _epoch;
         }
+
+        bool operator==(const epoch &) const =default;
     private:
         uint64_t _epoch = 0;
     };
@@ -2250,7 +2321,7 @@ namespace fmt {
             switch (const auto typ = v.val.index(); typ) {
                 case 0: return fmt::format_to(ctx.out(), "{}", std::get<turbo::cardano::datum_hash>(v.val));
                 case 1: return fmt::format_to(ctx.out(), "{}", std::get<turbo::uint8_vector>(v.val));
-                default: throw turbo::error(fmt::format("unsupported variant index: {}", typ));
+                [[unlikely]] default: throw turbo::error(fmt::format("unsupported variant index: {}", typ));
             }
         }
     };
@@ -2286,7 +2357,7 @@ namespace fmt {
                 case 1:
                     return fmt::format_to(ctx.out(), "{}", std::get<turbo::cardano::stake_pointer>(v));
 
-                default:
+                [[unlikely]] default:
                     throw turbo::error(fmt::format("unsupported stake_ident_hybrid index: {}", v.index()));
             }
         }
@@ -2304,7 +2375,8 @@ namespace fmt {
         native = 0,
         plutus_v1 = 1,
         plutus_v2 = 2,
-        plutus_v3 = 3
+        plutus_v3 = 3,
+        plutus_v4 = 4
     };
 
     template<>
@@ -2317,7 +2389,8 @@ namespace fmt {
                 case script_type::plutus_v1: return fmt::format_to(ctx.out(), "plutus_v1");
                 case script_type::plutus_v2: return fmt::format_to(ctx.out(), "plutus_v2");
                 case script_type::plutus_v3: return fmt::format_to(ctx.out(), "plutus_v3");
-                default: throw turbo::error(fmt::format("unsupported address type: {}!", static_cast<int>(v)));
+                case script_type::plutus_v4: return fmt::format_to(ctx.out(), "plutus_v4");
+                [[unlikely]] default: throw turbo::error(fmt::format("unsupported address type: {}!", static_cast<int>(v)));
             }
         }
     };
@@ -2362,7 +2435,7 @@ namespace fmt {
                     return fmt::format_to(ctx.out(), "shelley-pointer{}/pay_{}:{}-stake_ptr:{}", addr.network() == 1 ? "" : fmt::format("{}", addr.network()),
                                 (addr.type() & 1) ? "script" : "key", addr.data().subspan(0, 28), addr.pointer());
 
-                default:
+                [[unlikely]] default:
                     throw turbo::error(fmt::format("unsupported address type: {}!", addr.type()));
             }
         }
@@ -2564,7 +2637,7 @@ namespace fmt {
                     const auto &rd = std::get<turbo::cardano::relay_dns>(v.val);
                     return fmt::format_to(ctx.out(), "dns: {}", rd.name);
                 }
-                default: return fmt::format_to(ctx.out(), "an unsupported relay_info value with index: {}", v.val.index());
+                [[unlikely]] default: return fmt::format_to(ctx.out(), "an unsupported relay_info value with index: {}", v.val.index());
             }
         }
     };
@@ -2711,3 +2784,6 @@ namespace turbo::cardano {
         return json::string { fmt::format("{}", *this) };
     }
 }
+
+#include <turbo/cardano/common/cbor/encode/types.hpp>
+#include <turbo/cardano/shelley/cbor/encode/delegate.hpp>

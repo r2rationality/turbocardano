@@ -5,41 +5,15 @@
 
 #include <algorithm>
 #include <boost/container/flat_map.hpp>
-#include <turbo/base64.hpp>
 #include <turbo/cardano/common/config.hpp>
 #include <turbo/cardano/common/types.hpp>
 #include <turbo/cardano/conway/block.hpp>
 #include <turbo/common/mutex.hpp>
 #include <turbo/cbor/zero2.hpp>
-#include <turbo/crypto/crc32.hpp>
-#include <turbo/crypto/sha3.hpp>
 #include <turbo/plutus/costs-config.hpp>
 
 namespace turbo::cardano {
     using namespace crypto;
-
-    void point2::to_cbor(cbor::encoder &enc) const
-    {
-        enc.array(2);
-        enc.uint(slot);
-        enc.bytes(hash);
-    }
-
-    void point3::to_cbor(cbor::encoder &enc) const
-    {
-        enc.array(2);
-        point2::to_cbor(enc);
-        enc.uint(height);
-    }
-
-    void address::to_cbor(era_encoder &enc) const
-    {
-        if (is_byron() && _bytes[0] == 0x83) {
-            enc.bytes(byron_crc_protected(bytes()));
-        } else {
-            enc.bytes(bytes());
-        }
-    }
 
     byron_addr address::byron() const
     {
@@ -72,11 +46,11 @@ namespace turbo::cardano {
                         auto nested_data = cbor::zero2::parse(w_data.array().read().tag().read().bytes());
                         return pay_ident { nested_data.get().array().read().bytes(), pay_ident::ident_type::BYRON_KEY };
                     }
-                    default: throw error(fmt::format("unsupported format of a byron address: {} items", n_items));
+                    [[unlikely]] default: throw error(fmt::format("unsupported format of a byron address: {} items", n_items));
                 }
             }
 
-            default:
+            [[unlikely]] default:
                 throw error(fmt::format("unsupported address for type: {}!", type()));
         }
     }
@@ -164,12 +138,13 @@ namespace turbo::cardano {
         _apply_one_param_update(drep_deposit, update_desc, upd.drep_deposit, "drep_deposit");
         _apply_one_param_update(drep_activity, update_desc, upd.drep_activity, "drep_activity");
         _apply_one_param_update(min_fee_ref_script_cost_per_byte, update_desc, upd.min_fee_ref_script_cost_per_byte, "min_fee_ref_script_cost_per_byte");
+        _apply_one_param_update(max_ref_script_size_per_block, update_desc, upd.max_ref_script_size_per_block, "max_ref_script_size_per_block");
+        _apply_one_param_update(max_ref_script_size_per_tx, update_desc, upd.max_ref_script_size_per_tx, "max_ref_script_size_per_tx");
+        _apply_one_param_update(ref_script_cost_stride, update_desc, upd.ref_script_cost_stride, "ref_script_cost_stride");
+        _apply_one_param_update(ref_script_cost_multiplier, update_desc, upd.ref_script_cost_multiplier, "ref_script_cost_multiplier");
+        _apply_one_param_update(max_pledge_leverage, update_desc, upd.max_pledge_leverage, "max_pledge_leverage");
+        _apply_one_param_update(min_pool_margin, update_desc, upd.min_pool_margin, "min_pool_margin");
         return update_desc;
-    }
-
-    void protocol_version::to_cbor(era_encoder &enc) const
-    {
-        enc.array(2).uint(major).uint(minor);
     }
 
     ex_unit_prices ex_unit_prices::from_json(const json::value &j)
@@ -177,21 +152,9 @@ namespace turbo::cardano {
         return { decltype(mem)::from_json(j.at("prMem")), decltype(steps)::from_json(j.at("prSteps")) };
     }
 
-    void ex_unit_prices::to_cbor(era_encoder &enc) const
-    {
-        enc.array(2);
-        mem.to_cbor(enc);
-        steps.to_cbor(enc);
-    }
-
     cert_loc_t::cert_loc_t(const uint64_t s, const uint64_t t, const uint64_t c):
         slot { s }, tx_idx { numeric_cast<uint32_t>(t) }, cert_idx { numeric_cast<uint32_t>(c) }
     {
-    }
-
-    void stake_pointer::to_cbor(era_encoder &enc) const
-    {
-        enc.array(3).uint(slot).uint(tx_idx).uint(cert_idx);
     }
 
     credential_t credential_t::from_json(const std::string_view s)
@@ -212,18 +175,6 @@ namespace turbo::cardano {
         return { key_hash::from_hex(hex), script };
     }
 
-    void credential_t::to_cbor(era_encoder &enc) const
-    {
-        enc.array(2).uint(script ? 1 : 0).bytes(hash);
-    }
-
-    void pool_metadata::to_cbor(era_encoder &enc) const
-    {
-        enc.array(2)
-            .text(url)
-            .bytes(hash);
-    }
-
     pool_voting_thresholds_t pool_voting_thresholds_t::from_json(const json::value &j)
     {
         return {
@@ -233,16 +184,6 @@ namespace turbo::cardano {
             decltype(hard_fork_initiation)::from_json(j.at("hardForkInitiation")),
             decltype(security_voting_threshold)::from_json(j.at("ppSecurityGroup"))
         };
-    }
-
-    void pool_voting_thresholds_t::to_cbor(era_encoder &enc) const
-    {
-        enc.array(5);
-        motion_of_no_confidence.to_cbor(enc);
-        committee_normal.to_cbor(enc);
-        committee_no_confidence.to_cbor(enc);
-        hard_fork_initiation.to_cbor(enc);
-        security_voting_threshold.to_cbor(enc);
     }
 
     drep_voting_thresholds_t drep_voting_thresholds_t::from_json(const json::value &j)
@@ -261,112 +202,12 @@ namespace turbo::cardano {
         };
     }
 
-    void drep_voting_thresholds_t::to_cbor(era_encoder &enc) const
-    {
-        enc.array(10);
-        motion_no_confidence.to_cbor(enc);
-        committee_normal.to_cbor(enc);
-        committee_no_confidence.to_cbor(enc);
-        update_constitution.to_cbor(enc);
-        hard_fork_initiation.to_cbor(enc);
-        pp_network_group.to_cbor(enc);
-        pp_economic_group.to_cbor(enc);
-        pp_technical_group.to_cbor(enc);
-        pp_governance_group.to_cbor(enc);
-        treasury_withdrawal.to_cbor(enc);
-    }
-
     plutus_cost_model::plutus_cost_model(raw_value_type raw_values, const std::vector<std::string> &names):
         _raw_values { std::move(raw_values) }
     {
         _data.reserve(std::min(_raw_values.size(), names.size()));
         for (size_t i = 0; i < _raw_values.size() && i < names.size(); ++i)
             _data.emplace_back(names[i], _raw_values[i]);
-    }
-
-    void plutus_cost_model::to_cbor(era_encoder &enc) const
-    {
-        enc.array_compact(raw_values().size(), [&] {
-            for (const auto cost: raw_values()) {
-                if (cost >= 0)
-                    enc.uint(cost);
-                else
-                    enc.nint(-(cost + 1));
-            }
-        });
-    }
-
-    void plutus_cost_models::to_cbor(era_encoder &enc) const
-    {
-        auto l_enc { enc };
-        for (const auto &[id, m]: items) {
-            l_enc.uint(id);
-            m.to_cbor(l_enc);
-        }
-        if (items.empty()) [[unlikely]]
-            throw error("a plutus_cost_model structure must have at least one model defined!");
-        enc.map_compact(items.size(), [&] {
-            enc << l_enc;
-        });
-    }
-
-    void slot::to_cbor(era_encoder &enc) const
-    {
-        enc.array(3);
-        big_int_to_cbor(enc, cpp_int { unixtime() - _cfg.byron_start_time } * 1'000'000'000'000);
-        enc.uint(_slot);
-        enc.uint(epoch());
-    }
-
-    static void assets_to_cbor(era_encoder &enc, const tx_out_data &data)
-    {
-        if (!data.assets.empty()) {
-            enc.array(2);
-            enc.uint(data.coin);
-            data.assets.to_cbor(enc);
-        } else {
-            enc.uint(data.coin);
-        }
-    }
-
-    void tx_out_data::to_cbor(era_encoder &enc) const
-    {
-        if (script_ref || (datum && datum->val.index() != 0)) {
-            enc.map(2 + (datum ? 1 : 0) + (script_ref ? 1 : 0));
-            enc.uint(0);
-            addr().to_cbor(enc);
-            enc.uint(1);
-            assets_to_cbor(enc, *this);
-            if (datum) {
-                enc.uint(2);
-                enc.array(2);
-                switch (const auto typ = datum->val.index(); typ) {
-                    case 0: {
-                        enc.uint(0);
-                        enc.bytes(std::get<datum_hash>(datum->val));
-                        break;
-                    }
-                    case 1: {
-                        enc.uint(1);
-                        enc.tag(24);
-                        enc.bytes(std::get<uint8_vector>(datum->val));
-                        break;
-                    }
-                    default:
-                        throw error(fmt::format("unsupported tx_out_data::datum_option_type index: {}", typ));
-                }
-            }
-            if (script_ref) {
-                enc.uint(3);
-                script_ref->to_cbor(enc);
-            }
-        } else {
-            enc.array(2 + (datum ? 1 : 0));
-            addr().to_cbor(enc);
-            assets_to_cbor(enc, *this);
-            if (datum)
-                enc.bytes(std::get<datum_hash>(datum->val));
-        }
     }
 
     plutus_cost_model plutus_cost_model::from_json(const plutus_cost_model &orig, const json::value &data)
@@ -377,7 +218,7 @@ namespace turbo::cardano {
         names.reserve(orig.size());
         if (data.is_object()) {
             const auto &data_obj = data.as_object();
-            if (orig.size() != data_obj.size())
+            if (orig.size() != data_obj.size()) [[unlikely]]
                 throw error(fmt::format("was expecting an array with {} elements but got {}", orig.size(), data_obj.size()));
             for (const auto &item: orig) {
                 const auto &key = item.first;
@@ -385,13 +226,13 @@ namespace turbo::cardano {
                 auto it = data_obj.find(key);
                 if (it == data_obj.end())
                     it = data_obj.find(plutus::costs::v1_arg_name(key));
-                if (it == data_obj.end())
+                if (it == data_obj.end()) [[unlikely]]
                     throw error(fmt::format("missing required cost model key: {}", key));
                 raw_values.emplace_back(json::value_to<int64_t>(it->value()));
             }
         } else if (data.is_array()) {
             const auto &data_arr = data.as_array();
-            if (orig.raw_values().size() != data_arr.size())
+            if (orig.raw_values().size() != data_arr.size()) [[unlikely]]
                 throw error(fmt::format("was expecting an array with {} elements but got {}", orig.raw_values().size(), data_arr.size()));
             for (const auto &item: orig)
                 names.emplace_back(item.first);
@@ -522,53 +363,12 @@ namespace turbo::cardano {
         crypto::blake2b::digest(hash, zpp::serialize(*this));
     }
 
-    void script_info::to_cbor(era_encoder &enc) const
-    {
-        enc.tag(24);
-        auto s_enc { enc };
-        s_enc.array(2);
-        s_enc.uint(_data[0]);
-        switch (const auto typ = type(); typ) {
-            case script_type::native:
-                s_enc.raw_cbor(script());
-                break;
-            default:
-                s_enc.bytes(script());
-                break;
-        }
-        enc.bytes(s_enc.cbor());
-    }
-
     ex_units ex_units::from_json(const json::value &j)
     {
         return {
             json::value_to<uint64_t>(j.at("exUnitsMem")),
             json::value_to<uint64_t>(j.at("exUnitsSteps"))
         };
-    }
-
-    void ex_units::to_cbor(era_encoder &enc) const
-    {
-        enc.array(2);
-        enc.uint(mem);
-        enc.uint(steps);
-    }
-
-    void drep_t::to_cbor(era_encoder &enc) const
-    {
-        std::visit([&](const auto &c) {
-            using T = std::decay_t<decltype(c)>;
-            if constexpr (std::is_same_v<T, credential_t>) {
-                enc.array(2).uint(c.script ? 1 : 0);
-                enc.bytes(c.hash);
-            } else if constexpr (std::is_same_v<T, abstain_t>) {
-                enc.array(1).uint(2);
-            } else if constexpr (std::is_same_v<T, no_confidence_t>) {
-                enc.array(1).uint(3);
-            } else {
-                throw error(fmt::format("unsupported drep type: {}", typeid(T).name()));
-            }
-        }, val);
     }
 
     std::tuple<uint8_t, size_t> from_haskell_char(const std::string_view sv)
@@ -645,7 +445,7 @@ namespace turbo::cardano {
                 return { pv2.get().array(), v };
             }
             case 3: return { v.array(), v };
-            default: throw error(fmt::format("Unsupported byron address format {}!", v.special_uint()));
+            [[unlikely]] default: throw error(fmt::format("Unsupported byron address format {}!", v.special_uint()));
         }
     }
 
@@ -677,37 +477,6 @@ namespace turbo::cardano {
         return root_hash == root() && 0 == type();
     }
 
-    void relay_addr::to_cbor(era_encoder &enc) const
-    {
-        enc.array(4);
-        enc.uint(0);
-        port.to_cbor(enc);
-        ipv4.to_cbor(enc);
-        ipv6.to_cbor(enc);
-    }
-
-    void relay_host::to_cbor(era_encoder &enc) const
-    {
-        enc.array(3);
-        enc.uint(1);
-        port.to_cbor(enc);
-        enc.text(host);
-    }
-
-    void relay_dns::to_cbor(era_encoder &enc) const
-    {
-        enc.array(2);
-        enc.uint(2);
-        enc.text(name);
-    }
-
-    void relay_info::to_cbor(era_encoder &enc) const
-    {
-        std::visit([&](const auto &v) {
-            v.to_cbor(enc);
-        }, val);
-    }
-
     bool relay_info::operator==(const relay_info &o) const
     {
         return val == o.val;
@@ -720,11 +489,6 @@ namespace turbo::cardano {
         if (!bytes.empty())
             memcpy(_data.data(), bytes.data(), bytes.size());
         _size = numeric_cast<uint8_t>(bytes.size());
-    }
-
-    void asset_name_t::to_cbor(era_encoder &enc) const
-    {
-        enc.bytes(span());
     }
 
     std::string asset_name_t::to_string(const script_hash &policy_id) const
@@ -757,62 +521,4 @@ namespace turbo::cardano {
         return { it.read().bytes(), slot, height };
     }
 
-    key_hash byron_addr_root_hash(const size_t typ, const buffer vk, const buffer attrs_cbor) {
-        cbor::encoder enc {};
-        enc.array(3);
-        enc.uint(typ);
-        enc.array(2);
-        enc.uint(typ);
-        enc.bytes(vk);
-        enc.raw_cbor(attrs_cbor);
-        return crypto::blake2b::digest<key_hash>(sha3::digest(enc.cbor()));
-    }
-
-    inline uint8_vector byron_encode_redeem_root(const buffer redeem_vk)
-    {
-        cbor::encoder enc {};
-        enc.array(3)
-            .uint(2)
-            .array(2).uint(2).bytes(redeem_vk)
-            .map(0);
-        return enc.cbor();
-    }
-
-    inline key_hash byron_address_hash(const buffer data)
-    {
-        return crypto::blake2b::digest<key_hash>(sha3::digest(data));
-    }
-
-    inline uint8_vector byron_encode_address(const buffer root_hash)
-    {
-        cbor::encoder enc {};
-        enc.array(3)
-            .bytes(root_hash)
-            .map(0)
-            .uint(2);
-        return enc.cbor();
-    }
-
-    uint8_vector byron_crc_protected(const buffer &encoded_addr)
-    {
-        cbor::encoder enc {};
-        enc.array(2);
-        enc.tag(24).bytes(encoded_addr);
-        enc.uint(crc32::digest(encoded_addr));
-        return enc.cbor();
-    }
-
-    uint8_vector byron_avvm_addr(std::string_view redeem_vk_base64u)
-    {
-        const auto redeem_vk = base64::decode_url(redeem_vk_base64u);
-        const auto encoded_root = byron_encode_redeem_root(redeem_vk);
-        const auto root_hash = byron_address_hash(encoded_root);
-        const auto encoded_addr = byron_encode_address(root_hash);
-        return byron_crc_protected(encoded_addr);
-    }
-
-    tx_hash byron_avvm_tx_hash(std::string_view redeem_vk)
-    {
-        return crypto::blake2b::digest<tx_hash>(byron_avvm_addr(redeem_vk));
-    }
 }

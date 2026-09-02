@@ -38,7 +38,7 @@ namespace turbo {
 
         epoch_info(chunk_list &&chunks): _chunks { std::move(chunks) }
         {
-            if (_chunks.empty())
+            if (_chunks.empty()) [[unlikely]]
                 throw error("chunk list cannot be empty!");
         }
 
@@ -302,7 +302,6 @@ namespace turbo {
         chunk_map::const_iterator find_offset_it(uint64_t offset) const;
 
         cardano::amount unspent_reward(const cardano::stake_ident &id) const;
-        cardano::tail_relative_stake_map tail_relative_stake() const;
 
         cardano::optional_point tip() const;
         cardano::optional_point core_tip() const;

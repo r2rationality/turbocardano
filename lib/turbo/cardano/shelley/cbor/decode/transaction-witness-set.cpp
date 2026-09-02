@@ -3,7 +3,8 @@
  * Copyright (c) 2024-2026 R2 Rationality OÜ (info at r2rationality dot com)
  * License: https://github.com/r2rationality/turbocardano/blob/main/LICENSE */
 
-#include <turbo/cardano/shelley/block.hpp>
+#include <turbo/cardano/common/cbor/decode/script.hpp>
+#include <turbo/cardano/shelley/cbor/decode/transaction-witness-set.hpp>
 
 namespace turbo::cardano::shelley {
     namespace {
@@ -22,15 +23,16 @@ namespace turbo::cardano::shelley {
             if (!v.indefinite()) [[likely]]
                 res.items.reserve(res.items.size() + v.special_uint());
             auto &it = v.array();
-            while (!it.done())
-                res.items.emplace_back(
-                    std::in_place_type<script_info>,
-                    script_type::native,
-                    it.read().data_raw());
+            while (!it.done()) {
+                auto &script = it.read();
+                res.items.emplace_back(::turbo::cardano::detail::script_info_from_cbor(
+                    script_type::native, script, native_script_t::validate_cbor));
+            }
         }
     }
 
-    transaction_witness_set_t transaction_witness_set_t::from_cbor(cbor::zero2::value &v)
+    transaction_witness_set_t detail::transaction_witness_set_from_cbor(
+        cbor::zero2::value &v, const detail::native_script_list_decoder decode_native_scripts)
     {
         transaction_witness_set_t res {};
         uint16_t seen_types = 0;
@@ -47,13 +49,17 @@ namespace turbo::cardano::shelley {
             auto &val = it.read_val(std::move(key));
             switch (type) {
                 case 0: decode_witnesses<tx_wit_shelley_vkey>(res, val); break;
-                case 1: decode_scripts(res, val); break;
+                case 1: decode_native_scripts(res, val); break;
                 case 2: decode_witnesses<tx_wit_shelley_bootstrap>(res, val); break;
-                default: throw error(fmt::format("unsupported shelley::transaction_witness_set element type: {}", type));
+                [[unlikely]] default: throw error(fmt::format("unsupported shelley::transaction_witness_set element type: {}", type));
             }
         }
         res.raw = v.data_raw();
         return res;
     }
 
+    transaction_witness_set_t transaction_witness_set_t::from_cbor(cbor::zero2::value &v)
+    {
+        return detail::transaction_witness_set_from_cbor(v, decode_scripts);
+    }
 }

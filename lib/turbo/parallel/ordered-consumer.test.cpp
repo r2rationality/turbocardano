@@ -80,7 +80,7 @@ suite parallel_ordered_consumer_suite = [] {
             std::set<uint64_t> processed {};
             ordered_consumer c {
                 [&](const auto idx) {
-                    if (idx == 10)
+                    if (idx == 10) [[unlikely]]
                         throw error("unsupported index!");
                     processed.emplace(idx);
                 },

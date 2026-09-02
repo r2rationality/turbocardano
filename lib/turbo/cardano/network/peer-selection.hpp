@@ -52,7 +52,7 @@ namespace turbo::cardano::network {
                         std::to_string(json::value_to<uint64_t>(j_host.at("port")))
                     );
                 }
-                if (_cardano_hosts.empty())
+                if (_cardano_hosts.empty()) [[unlikely]]
                     throw error("The list of cardano hosts cannot be empty!");
             }
             std::uniform_int_distribution<size_t> dist { 0, _cardano_hosts.size() - 1 };

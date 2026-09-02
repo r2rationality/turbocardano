@@ -47,14 +47,14 @@ namespace turbo::asio {
         {
             mutex::scoped_lock lk { _before_actions_mutex };
             auto [it, created] = _before_actions.try_emplace(name, act);
-            if (!created)
+            if (!created) [[unlikely]]
                 throw error(fmt::format("duplicate before action: {}", name));
         }
 
         void del_before_action(const std::string &name)
         {
             mutex::scoped_lock lk { _before_actions_mutex };
-            if (_before_actions.erase(name) != 1)
+            if (_before_actions.erase(name) != 1) [[unlikely]]
                 throw error(fmt::format("missing before action: {}", name));
         }
 
@@ -62,14 +62,14 @@ namespace turbo::asio {
         {
             mutex::scoped_lock lk { _after_actions_mutex };
             auto [it, created] = _after_actions.try_emplace(name, act);
-            if (!created)
+            if (!created) [[unlikely]]
                 throw error(fmt::format("duplicate after action: {}", name));
         }
 
         void del_after_action(const std::string &name)
         {
             mutex::scoped_lock lk { _after_actions_mutex };
-            if (_after_actions.erase(name) != 1)
+            if (_after_actions.erase(name) != 1) [[unlikely]]
                 throw error(fmt::format("missing after action: {}", name));
         }
 

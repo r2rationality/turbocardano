@@ -63,7 +63,7 @@ namespace turbo::cardano {
 
         [[nodiscard]] bool verify(size_t period, const kes_vkey_span &vkey, const buffer &msg) const
         {
-            if (period != 0)
+            if (period != 0) [[unlikely]]
                 throw error(fmt::format("period value must be 0 but got: {}", period));
             return crypto::ed25519::verify(_signature, vkey, msg);
         }
@@ -79,7 +79,7 @@ namespace turbo::cardano {
             crypto::ed25519::seed right;
 
             explicit split_seed(const buffer &sd) {
-                if (sd.size() != sizeof(crypto::ed25519::seed))
+                if (sd.size() != sizeof(crypto::ed25519::seed)) [[unlikely]]
                     throw error(fmt::format("seed buffer must be of of {} bytes but got {}!", sizeof(crypto::ed25519::seed), sd.size()));
                 uint8_vector tmp {};
                 tmp << std::string_view { "\x01" } << sd;
@@ -111,7 +111,7 @@ namespace turbo::cardano {
 
             void update()
             {
-                if (_period + 1 >= period_end)
+                if (_period + 1 >= period_end) [[unlikely]]
                     throw error(fmt::format("KES secret of level {} cannot grow >= {} while the current period is {}", DEPTH, period_end, _period));
                 ++_period;
             }

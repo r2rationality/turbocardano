@@ -21,7 +21,7 @@ namespace turbo::cardano {
         const block_header_base *operator->() const;
     private:
         struct impl;
-        alignas(std::max_align_t) byte_array<736> _impl_storage;
+        alignas(std::max_align_t) byte_array<1152> _impl_storage;
     };
 
     struct parsed_block {

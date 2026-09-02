@@ -273,7 +273,7 @@ namespace turbo::cardano::network {
                 if (p_it == _parent._protocols.end()) [[unlikely]]
                     throw error(fmt::format("a client has requested an unsupported mini protocol: {}", mp_id));
                 p_it->second.observer->data(_parent._recv_payload, [&, mp_id](data_generator_t &&gen) {
-                    if (!_parent.try_send(mp_id, std::move(gen))) {
+                    if (!_parent.try_send(mp_id, std::move(gen))) [[unlikely]] {
                         const auto msg = fmt::format("mini protocol {} can't schedule data submission while another one is in progress!", mp_id);
                         logger::warn(msg);
                         throw error(msg);

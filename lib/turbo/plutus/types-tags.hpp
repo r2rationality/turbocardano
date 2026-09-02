@@ -201,7 +201,7 @@ namespace fmt {
                 case term::builtin: return fmt::format_to(ctx.out(), "term::builtin");
                 case term::constr: return fmt::format_to(ctx.out(), "term::constr");
                 case term::acase: return fmt::format_to(ctx.out(), "term::case");
-                default: return fmt::format_to(ctx.out(), "term::unknown({})", static_cast<int>(v));
+                [[unlikely]] default: return fmt::format_to(ctx.out(), "term::unknown({})", static_cast<int>(v));
             }
         }
     };
@@ -226,7 +226,7 @@ namespace fmt {
                 case type::bls12_381_ml_result: return fmt::format_to(ctx.out(), "bls12_381_ml_result");
                 case type::array: return fmt::format_to(ctx.out(), "array");
                 case type::value: return fmt::format_to(ctx.out(), "value");
-                default: throw turbo::error(fmt::format("unknown type: {}", static_cast<int>(v)));
+                [[unlikely]] default: throw turbo::error(fmt::format("unknown type: {}", static_cast<int>(v)));
             }
         }
     };

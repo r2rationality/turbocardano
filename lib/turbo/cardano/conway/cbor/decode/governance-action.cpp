@@ -95,7 +95,7 @@ namespace turbo::cardano {
             case 4: return gov_action_t::update_committee_t::from_cbor(it);
             case 5: return gov_action_t::new_constitution_t::from_cbor(it);
             case 6: return gov_action_t::info_action_t::from_cbor(it);
-            default: throw error(fmt::format("unsupported gov action type: {}", typ));
+            [[unlikely]] default: throw error(fmt::format("unsupported gov action type: {}", typ));
         }
     }
 

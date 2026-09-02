@@ -22,7 +22,7 @@ namespace turbo::cli::tx_info {
             chunk_registry cr { data_dir, chunk_registry::mode::index };
             reconstructor r { cr };
             const auto tx_info = r.find_tx(tx_hash);
-            if (!tx_info)
+            if (!tx_info) [[unlikely]]
                 throw error(fmt::format("unknown transaction hash {}", tx_hash));
             std::cout << fmt::format("{}\n", *(*tx_info));
         }

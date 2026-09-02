@@ -8,7 +8,25 @@
 
 namespace turbo::cardano::allegra {
     struct native_script_t {
+        enum class type_t: uint8_t {
+            signature = 0,
+            all = 1,
+            any = 2,
+            at_least = 3,
+            invalid_before = 4,
+            invalid_hereafter = 5
+        };
+
+        type_t type {};
+        key_hash key {};
+        int64_t required = 0;
+        std::vector<native_script_t> scripts {};
+        uint64_t slot = 0;
+
         static native_script_t from_cbor(cbor::zero2::value &);
+        static native_script_t from_cbor(buffer);
+        static void validate_cbor(cbor::zero2::value &);
+        void to_cbor(era_encoder &) const;
     };
 
     struct block_header_base: shelley::block_header_base {
@@ -29,6 +47,10 @@ namespace turbo::cardano::allegra {
         static transaction_body_t from_cbor(cbor::zero2::value &);
     };
 
+    struct transaction_witness_set_t: shelley::transaction_witness_set_t {
+        static transaction_witness_set_t from_cbor(cbor::zero2::value &);
+    };
+
     struct tx: shelley::tx_base {
         tx(const cardano::block_base &, uint64_t blk_off, cbor::zero2::value &, size_t idx=0, bool invalid=false);
         const tx_hash &hash() const override;
@@ -41,6 +63,7 @@ namespace turbo::cardano::allegra {
         const cert_list &certs() const override;
         const param_update_proposal_list &updates() const override;
         buffer raw() const override;
+        void parse_witnesses(cbor::zero2::value &) override;
     private:
         transaction_body_t _body;
     };

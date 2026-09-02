@@ -3,7 +3,6 @@
  * Copyright (c) 2024-2026 R2 Rationality OÜ (info at r2rationality dot com)
  * License: https://github.com/r2rationality/turbocardano/blob/main/LICENSE */
 
-#include <turbo/cbor/zero2.hpp>
 #include <turbo/common/variant.hpp>
 #include <turbo/plutus/builtins.hpp>
 #include <turbo/plutus/types.hpp>
@@ -117,30 +116,30 @@ namespace turbo::plutus {
         map_type res {};
         const key_type *prev_currency = nullptr;
         for (auto &[currency, tokens]: entries) {
-            if (currency.size() > max_key_size)
+            if (currency.size() > max_key_size) [[unlikely]]
                 throw error("Value currency key exceeds 32 bytes");
-            if (prev_currency && !(*prev_currency < currency))
+            if (prev_currency && !(*prev_currency < currency)) [[unlikely]]
                 throw error("Value currency keys are not strictly ascending");
-            if (tokens.empty())
+            if (tokens.empty()) [[unlikely]]
                 throw error("Value contains an empty token map");
             inner_type inner {};
             const key_type *prev_token = nullptr;
             for (auto &[token, quantity]: tokens) {
-                if (token.size() > max_key_size)
+                if (token.size() > max_key_size) [[unlikely]]
                     throw error("Value token key exceeds 32 bytes");
-                if (prev_token && !(*prev_token < token))
+                if (prev_token && !(*prev_token < token)) [[unlikely]]
                     throw error("Value token keys are not strictly ascending");
-                if (quantity < min_quantity || quantity > max_quantity)
+                if (quantity < min_quantity || quantity > max_quantity) [[unlikely]]
                     throw error("Value quantity is outside the signed 128-bit range");
-                if (quantity == 0)
+                if (quantity == 0) [[unlikely]]
                     throw error("Value contains a zero quantity");
                 auto [it, created] = inner.emplace(token, std::move(quantity));
-                if (!created)
+                if (!created) [[unlikely]]
                     throw error("Value contains a duplicate token key");
                 prev_token = &it->first;
             }
             auto [it, created] = res.emplace(currency, std::move(inner));
-            if (!created)
+            if (!created) [[unlikely]]
                 throw error("Value contains a duplicate currency key");
             prev_currency = &it->first;
         }
@@ -541,109 +540,6 @@ namespace turbo::plutus {
         return { alloc, map_type { alloc, std::move(m) } };
     }
 
-
-    static void _to_cbor(cbor::encoder &enc, const data &c, size_t level=0);
-
-    static void _bytes_to_cbor(cbor::encoder &enc, const buffer b)
-    {
-        if (b.size() <= 64) {
-            enc.bytes(b);
-        } else {
-            enc.bytes();
-            for (size_t i = 0; i < b.size(); i += 64)
-                enc.bytes(buffer { b.data() + i, std::min(size_t { 64 }, b.size() - i) });
-            enc.s_break();
-        }
-    }
-
-    static void _big_uint_to_cbor(cbor::encoder &enc, const bint_type::value_type &val)
-    {
-        uint8_vector bytes {};
-        boost::multiprecision::export_bits(val, std::back_inserter(bytes), 8, true);
-        _bytes_to_cbor(enc, bytes);
-    }
-
-    static void _to_cbor(cbor::encoder &enc, const bint_type &i, const size_t)
-    {
-        const auto &val = *i;
-        if (val >= 0) [[likely]] {
-            if (val <= std::numeric_limits<uint64_t>::max()) {
-                enc.uint(static_cast<uint64_t>(val));
-                return;
-            }
-            enc.tag(2);
-            _big_uint_to_cbor(enc, val);
-        } else {
-            bint_type::value_type val_uint { -(val + 1) };
-            if (val_uint <= std::numeric_limits<uint64_t>::max()) {
-                enc.nint(static_cast<uint64_t>(val_uint));
-                return;
-            }
-            enc.tag(3);
-            _big_uint_to_cbor(enc, val_uint);
-        }
-    }
-
-    static void _to_cbor(cbor::encoder &enc, const bstr_type &b, const size_t)
-    {
-        _bytes_to_cbor(enc, *b);
-    }
-
-    static void _to_cbor(cbor::encoder &enc, const data::list_type &l, const size_t level)
-    {
-        if (!l.empty()) {
-            enc.array();
-            for (const auto &d: l)
-                _to_cbor(enc, d, level + 1);
-            enc.s_break();
-        } else {
-            enc.array(0);
-        }
-    }
-
-    static void _to_cbor(cbor::encoder &enc, const data &c, const size_t level)
-    {
-        static constexpr size_t max_nesting_level = 1024;
-        if (level >= max_nesting_level) [[unlikely]]
-            throw error("only 1024 levels of CBOR nesting are supported!");
-        std::visit([&](const auto &v) {
-            using T = std::decay_t<decltype(v)>;
-            if constexpr (std::is_same_v<T, data::map_type>) {
-                enc.map(v.size());
-                for (const auto &p: v) {
-                    _to_cbor(enc, p->first, level + 1);
-                    _to_cbor(enc, p->second, level + 1);
-                }
-            } else if constexpr (std::is_same_v<T, data_constr>) {
-                const auto &id = *v->first;
-                if (id >= 0 && id <= 6) {
-                    enc.tag(static_cast<uint64_t>(id) + 121);
-                } else if (id >= 7 && id <= 127) {
-                    enc.tag(static_cast<uint64_t>(id) - 7 + 1280);
-                } else {
-                    enc.tag(102);
-                    enc.array(2);
-                    _to_cbor(enc, v->first, level + 1);
-                }
-                _to_cbor(enc, v->second, level + 1);
-            } else {
-                _to_cbor(enc, v, level);
-            }
-        }, *c);
-    }
-
-    bstr_type data::as_cbor(allocator &alloc) const
-    {
-        cbor::encoder enc {};
-        _to_cbor(enc, *this);
-        return { alloc, std::move(enc.cbor()) };
-    }
-
-    void data::to_cbor(cbor::encoder &enc) const
-    {
-        _to_cbor(enc, *this);
-    }
-
     static std::back_insert_iterator<std::string> to_string(std::back_insert_iterator<std::string> out_it, const data &v, const size_t depth, const size_t shift=4);
 
     static std::back_insert_iterator<std::string> to_string(std::back_insert_iterator<std::string> out_it, const data::list_type &v, const size_t depth, const size_t shift=4)
@@ -886,7 +782,7 @@ namespace turbo::plutus {
     void value::as_unit() const
     {
         const auto &c = as_const();
-        if (!std::holds_alternative<std::monostate>(*c))
+        if (!std::holds_alternative<std::monostate>(*c)) [[unlikely]]
             throw error(fmt::format("expected a unit but got: {}", c));
     }
 
@@ -984,7 +880,7 @@ namespace turbo::plutus {
 
     value value::make_list(allocator &alloc, constant_list::list_type &&vals)
     {
-        if (vals.empty())
+        if (vals.empty()) [[unlikely]]
             throw error("value must not be empty!");
         return { alloc, constant { alloc, constant_list { alloc, constant_type::from_val(alloc, require_front(vals)), std::move(vals) } } };
     }

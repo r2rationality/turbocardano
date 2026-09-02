@@ -4,6 +4,7 @@
  * License: https://github.com/r2rationality/turbocardano/blob/main/LICENSE */
 
 #include <turbo/cardano/conway/transaction.hpp>
+#include <turbo/plutus/types.hpp>
 
 namespace turbo::cardano::conway {
     namespace {
@@ -16,7 +17,7 @@ namespace turbo::cardano::conway {
                 case 3: return redeemer_tag::reward;
                 case 4: return redeemer_tag::vote;
                 case 5: return redeemer_tag::propose;
-                default: throw error(fmt::format("unsupported redeemer tag: {}", typ));
+                [[unlikely]] default: throw error(fmt::format("unsupported redeemer tag: {}", typ));
             }
         }
     }
@@ -24,12 +25,15 @@ namespace turbo::cardano::conway {
     redeemer_t redeemer_t::from_cbor(cbor::zero2::value &v)
     {
         auto &it = v.array();
-        return {{
-            redeemer_tag_from_cbor(it.read()),
-            numeric_cast<uint32_t>(it.read().uint()),
-            it.read().data_raw(),
-            ex_units::from_cbor(it.read())
-        }};
+        const auto tag = redeemer_tag_from_cbor(it.read());
+        const auto ref_idx = numeric_cast<uint32_t>(it.read().uint());
+        auto &data_value = it.read();
+        plutus::data::validate_cbor(data_value);
+        const auto data = data_value.data_raw();
+        const auto budget = ex_units::from_cbor(it.read());
+        if (!it.done()) [[unlikely]]
+            throw error("unexpected trailing Conway redeemer elements");
+        return {{ tag, ref_idx, data, budget }};
     }
 
     redeemer_t redeemer_t::from_cbor(cbor::zero2::map_reader &it)
@@ -38,8 +42,16 @@ namespace turbo::cardano::conway {
         auto &key_it = key.array();
         const auto tag = redeemer_tag_from_cbor(key_it.read());
         const auto ref_idx = numeric_cast<uint32_t>(key_it.read().uint());
+        if (!key_it.done()) [[unlikely]]
+            throw error("unexpected trailing Conway redeemer key elements");
         auto &value = it.read_val(std::move(key));
         auto &value_it = value.array();
-        return {{ tag, ref_idx, value_it.read().data_raw(), ex_units::from_cbor(value_it.read()) }};
+        auto &data_value = value_it.read();
+        plutus::data::validate_cbor(data_value);
+        const auto data = data_value.data_raw();
+        const auto budget = ex_units::from_cbor(value_it.read());
+        if (!value_it.done()) [[unlikely]]
+            throw error("unexpected trailing Conway redeemer value elements");
+        return {{ tag, ref_idx, data, budget }};
     }
 }

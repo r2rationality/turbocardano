@@ -119,7 +119,7 @@ namespace turbo::plutus::builtins {
         const auto &s_val = s.as_bstr();
         bstr_type::value_type res { alloc };
         res.reserve(1 + s_val->size());
-        if (*c_val < 0 || *c_val > 255)
+        if (*c_val < 0 || *c_val > 255) [[unlikely]]
             throw error(fmt::format("cons_byte_string's first parameter must be between 0 and 255: {}!", c_val));
         res << static_cast<uint8_t>(*c_val) << *s_val;
         return { alloc, std::move(res) };
@@ -478,7 +478,7 @@ namespace turbo::plutus::builtins {
         if (*v > 0) [[likely]]
             boost::multiprecision::export_bits(*val.as_int(), std::back_inserter(bytes), 8, msb);
         if (w) {
-            if (w > 8192)
+            if (w > 8192) [[unlikely]]
                 throw error(fmt::format("maximum allowed width is 8192 but got {}!", w));
             if (bytes.size() > w) [[unlikely]]
                 throw error(fmt::format("expected {} bytes but got {}", bytes.size(), w));
@@ -1055,7 +1055,7 @@ namespace turbo::plutus::builtins {
 
     static void check_value_quantity(const cpp_int &quantity)
     {
-        if (quantity < value_min_quantity || quantity > value_max_quantity)
+        if (quantity < value_min_quantity || quantity > value_max_quantity) [[unlikely]]
             throw error("Value quantity is outside the signed 128-bit range");
     }
 
@@ -1079,7 +1079,7 @@ namespace turbo::plutus::builtins {
             }
             return make_asset_value(alloc, std::move(map));
         }
-        if (currency.size() > asset_value::max_key_size || token.size() > asset_value::max_key_size)
+        if (currency.size() > asset_value::max_key_size || token.size() > asset_value::max_key_size) [[unlikely]]
             throw error("insertCoin key exceeds 32 bytes");
         check_value_quantity(quantity);
         map[currency][token] = quantity;
@@ -1120,7 +1120,7 @@ namespace turbo::plutus::builtins {
     {
         const auto &container = container_v.as_asset_value();
         const auto &contained = contained_v.as_asset_value();
-        if (container.negative_amounts() || contained.negative_amounts())
+        if (container.negative_amounts() || contained.negative_amounts()) [[unlikely]]
             throw error("valueContains does not accept negative quantities");
         if (container.total_size() < contained.total_size())
             return value::boolean(alloc, false);
@@ -1140,7 +1140,7 @@ namespace turbo::plutus::builtins {
     value value_data(allocator &alloc, const value &value_v)
     {
         const auto &v = value_v.as_asset_value();
-        if (v.total_size() > asset_value::max_data_size)
+        if (v.total_size() > asset_value::max_data_size) [[unlikely]]
             throw error("valueData input exceeds 40000 entries");
         data::map_type currencies { alloc };
         currencies.reserve(v->size());
@@ -1161,18 +1161,18 @@ namespace turbo::plutus::builtins {
     {
         asset_value::input_type entries {};
         const auto &outer_data = data_v.as_data();
-        if (!std::holds_alternative<data::map_type>(*outer_data))
+        if (!std::holds_alternative<data::map_type>(*outer_data)) [[unlikely]]
             throw error("unValueData expects a map");
         for (const auto &currency_pair: std::get<data::map_type>(*outer_data)) {
             if (!std::holds_alternative<data::bstr_type>(*currency_pair->first)
-                    || !std::holds_alternative<data::map_type>(*currency_pair->second))
+                    || !std::holds_alternative<data::map_type>(*currency_pair->second)) [[unlikely]]
                 throw error("unValueData has an invalid currency entry");
             const auto &currency_raw = std::get<data::bstr_type>(*currency_pair->first);
             asset_value::key_type currency { currency_raw->begin(), currency_raw->end() };
             asset_value::input_inner_type tokens {};
             for (const auto &token_pair: std::get<data::map_type>(*currency_pair->second)) {
                 if (!std::holds_alternative<data::bstr_type>(*token_pair->first)
-                        || !std::holds_alternative<data::int_type>(*token_pair->second))
+                        || !std::holds_alternative<data::int_type>(*token_pair->second)) [[unlikely]]
                     throw error("unValueData has an invalid token entry");
                 const auto &token_raw = std::get<data::bstr_type>(*token_pair->first);
                 const auto &quantity = std::get<data::int_type>(*token_pair->second);
@@ -1219,7 +1219,7 @@ namespace turbo::plutus::builtins {
                     return builtin_semantics::d;
                 case script_type::plutus_v3:
                     return builtin_semantics::e;
-                default: break;
+                [[unlikely]] default: break;
             }
         } else {
             switch (typ) {
@@ -1228,7 +1228,7 @@ namespace turbo::plutus::builtins {
                     return protocol_major < 9 ? builtin_semantics::a : builtin_semantics::b;
                 case script_type::plutus_v3:
                     return builtin_semantics::c;
-                default: break;
+                [[unlikely]] default: break;
             }
         }
         throw error(fmt::format("unsupported script type: {}", typ));

@@ -13,18 +13,18 @@ namespace turbo::file {
         static size_t current_max_open_files = 0;
         if (current_max_open_files != max_open_files) {
 #           ifdef _WIN32
-            if (_setmaxstdio(max_open_files) != max_open_files)
+            if (_setmaxstdio(max_open_files) != max_open_files) [[unlikely]]
                 throw error_sys(fmt::format("can't increase the max number of open files to {}!", max_open_files));
 #           else
             struct rlimit lim;
-            if (getrlimit(RLIMIT_NOFILE, &lim) != 0)
+            if (getrlimit(RLIMIT_NOFILE, &lim) != 0) [[unlikely]]
                 throw error_sys("getrlimit failed");
             if (lim.rlim_cur < max_open_files || lim.rlim_max < max_open_files) {
                 lim.rlim_cur = max_open_files;
                 lim.rlim_max = max_open_files;
-                if (setrlimit(RLIMIT_NOFILE, &lim) != 0)
+                if (setrlimit(RLIMIT_NOFILE, &lim) != 0) [[unlikely]]
                     throw error_sys(fmt::format("failed to increase the max number of open files to {}", max_open_files));
-                if (getrlimit(RLIMIT_NOFILE, &lim) != 0)
+                if (getrlimit(RLIMIT_NOFILE, &lim) != 0) [[unlikely]]
                     throw error_sys("getrlimit failed");
             }
 #           endif
@@ -71,7 +71,7 @@ namespace turbo::file {
 #else
         auto pos = ftell(_f);
 #endif
-        if (pos < 0)
+        if (pos < 0) [[unlikely]]
             throw error_sys(fmt::format("failed to tell the stream position in {}", _path));
         return pos;
     }

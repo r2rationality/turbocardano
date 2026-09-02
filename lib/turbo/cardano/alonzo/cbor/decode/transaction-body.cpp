@@ -37,7 +37,7 @@ namespace turbo::cardano::alonzo {
                 case 13: res.collateral_inputs = shelley::transaction_inputs_t::from_cbor(mv); break;
                 case 14: res.required_signers = required_signers_t::from_cbor(mv); break;
                 case 15: if (mv.uint() > 1) [[unlikely]] throw error("network_id must be 0 or 1"); break;
-                default: throw error(fmt::format("unsupported tx element type: {}", typ));
+                [[unlikely]] default: throw error(fmt::format("unsupported tx element type: {}", typ));
             }
         }
         res.raw = v.data_raw();

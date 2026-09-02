@@ -3,7 +3,9 @@
  * Copyright (c) 2024-2026 R2 Rationality OÜ (info at r2rationality dot com)
  * License: https://github.com/r2rationality/turbocardano/blob/main/LICENSE */
 
+#include <turbo/cardano/allegra/block.hpp>
 #include <turbo/cardano/alonzo/block.hpp>
+#include <turbo/cardano/common/cbor/decode/script.hpp>
 
 namespace turbo::cardano::alonzo {
     namespace {
@@ -25,10 +27,8 @@ namespace turbo::cardano::alonzo {
             while (!it.done())
             {
                 auto &script = it.read();
-                res.items.emplace_back(
-                    std::in_place_type<script_info>,
-                    type,
-                    type == script_type::native ? script.data_raw() : script.bytes());
+                res.items.emplace_back(::turbo::cardano::detail::script_info_from_cbor(
+                    type, script, allegra::native_script_t::validate_cbor));
             }
         }
     }
@@ -55,7 +55,7 @@ namespace turbo::cardano::alonzo {
                 case 3: decode_scripts(res, script_type::plutus_v1, val); break;
                 case 4: decode_witnesses<tx_wit_datum>(res, val); break;
                 case 5: res.redeemers = redeemers_t::from_cbor(val); break;
-                default: throw error(fmt::format("unsupported alonzo::transaction_witness_set element type: {}", type));
+                [[unlikely]] default: throw error(fmt::format("unsupported alonzo::transaction_witness_set element type: {}", type));
             }
         }
         res.raw = v.data_raw();

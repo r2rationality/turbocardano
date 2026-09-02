@@ -12,10 +12,10 @@ extern "C" {
 namespace turbo::crypto::sha2 {
     void digest(const std::span<uint8_t> &out, const buffer &in)
     {
-        if (out.size() != sizeof(hash_256))
+        if (out.size() != sizeof(hash_256)) [[unlikely]]
             throw error(fmt::format("output size must be {} but got {}", sizeof(hash_256), out.size()));
         crypto::ed25519::ensure_initialized();
-        if (crypto_hash_sha256(out.data(), in.data(), in.size()) != 0)
+        if (crypto_hash_sha256(out.data(), in.data(), in.size()) != 0) [[unlikely]]
             throw error("sha2 computation hash failed!");
     }
 }

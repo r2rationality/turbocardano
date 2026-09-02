@@ -39,7 +39,7 @@ namespace turbo::cardano {
                     throw error("unexpected trailing value elements");
                 return { coin, std::move(assets) };
             }
-            default: throw error(fmt::format("unsupported output value type: {}", type));
+            [[unlikely]] default: throw error(fmt::format("unsupported output value type: {}", type));
         }
     }
 }

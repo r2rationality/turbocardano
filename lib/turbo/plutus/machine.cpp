@@ -195,7 +195,7 @@ namespace turbo::plutus {
                 const std::string_view what)
         {
             const auto &i = *arg.as_int();
-            if (i < lower || i > upper)
+            if (i < lower || i > upper) [[unlikely]]
                 throw error(fmt::format("{} is out of bounds: {}", what, i));
         }
 
@@ -208,7 +208,7 @@ namespace turbo::plutus {
 
         static void _check_cardano_bytestring(const value &arg)
         {
-            if (arg.as_bstr()->size() > 65536)
+            if (arg.as_bstr()->size() > 65536) [[unlikely]]
                 throw error(fmt::format("bytestring size {} exceeds the protocol limit of 65536", arg.as_bstr()->size()));
         }
 
@@ -284,7 +284,7 @@ namespace turbo::plutus {
                     break;
                 }
                 case builtin_tag::write_bits:
-                    if (_arg(args, 0).as_bstr()->size() > 4096)
+                    if (_arg(args, 0).as_bstr()->size() > 4096) [[unlikely]]
                         throw error(fmt::format("writeBits input size {} exceeds the protocol limit of 4096",
                             _arg(args, 0).as_bstr()->size()));
                     break;
@@ -448,7 +448,7 @@ namespace turbo::plutus {
                     return _apply_builtin_impl<builtin_tag::tag, arity, polymorphic, builtins::function>(args, forces);
 #include <turbo/plutus/builtin-registry.inc>
 #undef TURBO_PLUTUS_BUILTIN
-                default: throw error(fmt::format("not implemented: {}", static_cast<uint64_t>(builtin.tag)));
+                [[unlikely]] default: throw error(fmt::format("not implemented: {}", static_cast<uint64_t>(builtin.tag)));
             }
         }
 
@@ -463,7 +463,7 @@ namespace turbo::plutus {
                 if constexpr (std::is_same_v<T, v_builtin>) {
                     v_builtin new_b { f.b, { _alloc, f.args, arg }, f.forces };
                     const auto &descriptor = builtins::descriptor(new_b.b.tag);
-                    if (descriptor.polymorphic_args != new_b.forces)
+                    if (descriptor.polymorphic_args != new_b.forces) [[unlikely]]
                         throw error(fmt::format("an application of an polymorphic builtin with an incorrect number of forces: {}", new_b.b.tag));
                     if (new_b.args.size() < descriptor.num_args) [[likely]]
                         return value { _alloc, std::move(new_b) };

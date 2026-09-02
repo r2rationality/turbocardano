@@ -10,6 +10,7 @@
 #include <turbo/cardano/byron/block.hpp>
 #include <turbo/cardano/common/mocks.hpp>
 #include <turbo/cardano/conway/block.hpp>
+#include <turbo/cardano/dijkstra/block.hpp>
 #include <turbo/cardano/mary/block.hpp>
 #include <turbo/cardano/shelley/block.hpp>
 
@@ -18,7 +19,7 @@ namespace turbo::cardano {
         byron::boundary_block, byron::block,
         shelley::block, allegra::block, mary::block,
         alonzo::block, babbage::block,
-        conway::block,
+        conway::block, dijkstra::block,
         mocks::block
     >;
 

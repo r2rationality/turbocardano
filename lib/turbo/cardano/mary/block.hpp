@@ -4,10 +4,11 @@
  * Copyright (c) 2024-2026 R2 Rationality OÜ (info at r2rationality dot com)
  * License: https://github.com/r2rationality/turbocardano/blob/main/LICENSE */
 
-#include <turbo/cardano/shelley/block.hpp>
+#include <turbo/cardano/allegra/block.hpp>
 
 namespace turbo::cardano::mary {
     struct tx;
+    using transaction_witness_set_t = allegra::transaction_witness_set_t;
 
     struct block_header_base: shelley::block_header_base {
         using shelley::block_header_base::block_header_base;
@@ -49,6 +50,7 @@ namespace turbo::cardano::mary {
         using shelley::tx_base::tx_base;
         virtual const multi_mint_map &mints() const =0;
         size_t foreach_mint(const mint_observer_t &) const override;
+        void parse_witnesses(cbor::zero2::value &) override;
     };
 
     struct tx: tx_base {

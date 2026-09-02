@@ -142,7 +142,7 @@ namespace turbo::file {
         void close()
         {
             if (_f != NULL) {
-                if (std::fclose(_f) != 0)
+                if (std::fclose(_f) != 0) [[unlikely]]
                     throw error_sys(fmt::format("failed to close file {}!", _path));
                 _f = NULL;
                 _open_files().fetch_sub(1, std::memory_order_relaxed);
@@ -158,7 +158,7 @@ namespace turbo::file {
 
         void read(void *data, size_t num_bytes)
         {
-            if (const auto num_read = try_read(std::span { reinterpret_cast<uint8_t *>(data), num_bytes }); num_read != num_bytes)
+            if (const auto num_read = try_read(std::span { reinterpret_cast<uint8_t *>(data), num_bytes }); num_read != num_bytes) [[unlikely]]
                 throw error_sys(fmt::format("could read only {} bytes instead of {} from {} ferror: {} feof: {}",
                     num_read, num_bytes, _path, std::ferror(_f), std::feof(_f)));
         }
@@ -178,7 +178,7 @@ namespace turbo::file {
             if (!dir_path.empty())
                 std::filesystem::create_directories(dir_path);
             _f = std::fopen(_path.c_str(), "wb");
-            if (_f == NULL)
+            if (_f == NULL) [[unlikely]]
                 throw error_sys(fmt::format("failed to open a file for writing {}", _path));
             if (std::setvbuf(_f, reinterpret_cast<char *>(_buf.data()), _buf.empty() ? _IONBF : _IOFBF, _buf.size()) != 0) {
                 std::fclose(_f);
@@ -211,7 +211,7 @@ namespace turbo::file {
         void close()
         {
             if (_f != NULL) {
-                if (std::fclose(_f) != 0)
+                if (std::fclose(_f) != 0) [[unlikely]]
                     throw error(fmt::format("failed to close file {}!", _path));
                 _f = NULL;
                 _buf.clear();
@@ -225,7 +225,7 @@ namespace turbo::file {
 
         void write(const void *data, const size_t num_bytes)
         {
-            if (num_bytes > 0 && std::fwrite(data, 1, num_bytes, _f) != num_bytes)
+            if (num_bytes > 0 && std::fwrite(data, 1, num_bytes, _f) != num_bytes) [[unlikely]]
                 throw error_sys(fmt::format("failed to write {} bytes to {}", num_bytes, _path));
         }
 
@@ -273,7 +273,7 @@ namespace turbo::file {
     {
         if (num_bytes == 0)
             num_bytes = std::filesystem::file_size(path);
-        if (v.size() != num_bytes)
+        if (v.size() != num_bytes) [[unlikely]]
             throw error(fmt::format("span size: {} != the size of the file: {}", v.size(), num_bytes));
         read_stream is { path };
         is.read(v.data(), v.size());

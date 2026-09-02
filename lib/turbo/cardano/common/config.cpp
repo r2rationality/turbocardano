@@ -5,6 +5,7 @@
 
 #include <turbo/base64.hpp>
 #include <turbo/cardano/common/config.hpp>
+#include <turbo/cbor/encoder.hpp>
 #include <turbo/plutus/costs-config.hpp>
 
 namespace turbo::cardano {
@@ -41,25 +42,45 @@ namespace turbo::cardano {
         return txos;
     }
 
-    vkey_set config::_byron_prep_heavy(const turbo::config &genesis, const std::string_view key)
+    byron_delegate_map config::_byron_prep_delegates(const turbo::config &genesis)
     {
-        vkey_set issuers {};
-        const auto &heavy_delegation = genesis.at("heavyDelegation").as_object();
-        issuers.reserve(heavy_delegation.size());
-        for (const auto &[deleg_id, deleg_info]: heavy_delegation) {
-            issuers.emplace(static_cast<buffer>(base64::decode(json::value_to<std::string_view>(deleg_info.at(key)))).subbuf(0, 32));
+        using namespace std::literals;
+        byron_delegate_map delegs {};
+        const auto &heavy = genesis.at("heavyDelegation").as_object();
+        delegs.reserve(heavy.size());
+        for (const auto &[id, info]: heavy) {
+            static_cast<void>(id);
+            const auto key = [&](const char *name) {
+                return crypto::ed25519::vkey_full { static_cast<buffer>(base64::decode(
+                    json::value_to<std::string_view>(info.at(name)))) };
+            };
+            byron_delegate_info delegate {
+                .issuer=key("issuerPk"),
+                .delegate=key("delegatePk"),
+                .certificate=crypto::ed25519::signature::from_hex(
+                    json::value_to<std::string_view>(info.at("cert"))),
+                .epoch=json::value_to<uint64_t>(info.at("omega"))
+            };
+            cbor::encoder epoch_enc {};
+            epoch_enc.uint(delegate.epoch);
+            delegate.epoch_cbor = std::move(epoch_enc.cbor());
+            cbor::encoder magic_enc {};
+            magic_enc.uint(json::value_to<uint64_t>(
+                genesis.at("protocolConsts").as_object().at("protocolMagic")));
+            uint8_vector payload {};
+            payload << "00"sv << delegate.delegate << delegate.epoch_cbor;
+            cbor::encoder payload_enc {};
+            payload_enc.bytes(payload);
+            uint8_vector signed_data {};
+            signed_data << "\x0a"sv << magic_enc.cbor() << payload_enc.cbor();
+            if (!crypto::ed25519::verify(delegate.certificate,
+                    static_cast<buffer>(delegate.issuer).subspan(0, sizeof(vkey)), signed_data)) [[unlikely]]
+                throw error("invalid Byron heavy-delegation certificate in genesis");
+            const vkey issuer { static_cast<buffer>(delegate.issuer).subspan(0, sizeof(vkey)) };
+            if (!delegs.try_emplace(issuer, std::move(delegate)).second) [[unlikely]]
+                throw error("duplicate Byron heavy-delegation issuer in genesis");
         }
-        return issuers;
-    }
-
-    signer_set config::_byron_prep_hashes(const vkey_set &vkeys)
-    {
-        signer_set hashes {};
-        hashes.reserve(vkeys.size());
-        for (const auto &vk: vkeys) {
-            hashes.emplace(crypto::blake2b::digest<key_hash>(vk));
-        }
-        return hashes;
+        return delegs;
     }
 
     block_hash config::_verify_hash_byron(const std::string_view &hash_hex, const turbo::config &genesis)
@@ -67,7 +88,7 @@ namespace turbo::cardano {
         const auto cfg_hash = block_hash::from_hex(hash_hex);
         const auto cfg_canon = json::serialize_canon(genesis.json());
         auto act_hash = crypto::blake2b::digest<block_hash>(cfg_canon);
-        if (act_hash != cfg_hash)
+        if (act_hash != cfg_hash) [[unlikely]]
             throw error("The actual hash of ByronGenesisFile does not match ByronGenesisHash!");
         return act_hash;
     }
@@ -76,7 +97,7 @@ namespace turbo::cardano {
     {
         const auto cfg_hash = block_hash::from_hex(hash_hex);
         auto act_hash = crypto::blake2b::digest<block_hash>(genesis.bytes());
-        if (act_hash != cfg_hash)
+        if (act_hash != cfg_hash) [[unlikely]]
             throw error(fmt::format("The actual hash of genesis file does not match {}!", hash_hex));
         return act_hash;
     }
@@ -211,6 +232,7 @@ namespace turbo::cardano {
         uint64_t byron_epoch_length = 21600;
         uint64_t byron_slot_duration = 0;
         txo_map byron_utxos {};
+        byron_delegate_map byron_delegates {};
         vkey_set byron_issuers {};
         signer_set byron_delegate_hashes {};
         uint64_t byron_slots_per_chunk = 21600;
@@ -220,6 +242,9 @@ namespace turbo::cardano {
         uint64_t shelley_max_lovelace_supply = 0;
         uint8_t shelley_network_id = 0;
         double shelley_active_slots = 0;
+        rational_u64 shelley_active_slots_coeff {};
+        uint64_t shelley_slots_per_kes_period = 0;
+        uint64_t shelley_max_kes_evolutions = 0;
         uint64_t shelley_security_param = 0;
         uint64_t shelley_epoch_blocks = 0;
         uint64_t shelley_rewards_ready_slot = 0;
@@ -257,8 +282,12 @@ namespace turbo::cardano {
             byron_slot_duration = std::stoull(
                 json::value_to<std::string>(byron.at("blockVersionData").as_object().at("slotDuration"))) / 1000;
             byron_utxos = config::_byron_prep_utxos(byron);
-            byron_issuers = config::_byron_prep_heavy(byron, "issuerPk");
-            byron_delegate_hashes = config::_byron_prep_hashes(config::_byron_prep_heavy(byron, "delegatePk"));
+            byron_delegates = config::_byron_prep_delegates(byron);
+            for (const auto &[issuer, info]: byron_delegates) {
+                byron_issuers.emplace(issuer);
+                byron_delegate_hashes.emplace(crypto::blake2b::digest<key_hash>(
+                    static_cast<buffer>(info.delegate).subspan(0, sizeof(vkey))));
+            }
 
             const auto &shelley = genesis("ShelleyGenesisFile");
             shelley_genesis_hash = config::_verify_hash(
@@ -267,7 +296,17 @@ namespace turbo::cardano {
             shelley_update_quorum = json::value_to<uint64_t>(shelley.at("updateQuorum"));
             shelley_max_lovelace_supply = json::value_to<uint64_t>(shelley.at("maxLovelaceSupply"));
             shelley_network_id = shelley.at("networkId").as_string() == "Mainnet" ? uint8_t { 1 } : uint8_t { 0 };
-            shelley_active_slots = json::value_to<double>(shelley.at("activeSlotsCoeff"));
+            shelley_active_slots_coeff = rational_u64::from_json(shelley.at("activeSlotsCoeff"));
+            shelley_slots_per_kes_period = json::value_to<uint64_t>(shelley.at("slotsPerKESPeriod"));
+            shelley_max_kes_evolutions = json::value_to<uint64_t>(shelley.at("maxKESEvolutions"));
+            if (!shelley_active_slots_coeff.numerator
+                    || shelley_active_slots_coeff.numerator > shelley_active_slots_coeff.denominator) [[unlikely]]
+                throw error("activeSlotsCoeff must be in (0, 1]");
+            if (!shelley_slots_per_kes_period) [[unlikely]]
+                throw error("slotsPerKESPeriod must be positive");
+            if (!shelley_max_kes_evolutions) [[unlikely]]
+                throw error("maxKESEvolutions must be positive");
+            shelley_active_slots = static_cast<double>(shelley_active_slots_coeff);
             shelley_security_param = json::value_to<uint64_t>(shelley.at("securityParam"));
             shelley_epoch_blocks = static_cast<uint64_t>(shelley_active_slots * shelley_epoch_length);
             shelley_rewards_ready_slot = shelley_epoch_length
@@ -317,6 +356,7 @@ namespace turbo::cardano {
         byron_epoch_length { _immutable->byron_epoch_length },
         byron_slot_duration { _immutable->byron_slot_duration },
         byron_utxos { _immutable->byron_utxos },
+        byron_delegates { _immutable->byron_delegates },
         byron_issuers { _immutable->byron_issuers },
         byron_delegate_hashes { _immutable->byron_delegate_hashes },
         byron_slots_per_chunk { _immutable->byron_slots_per_chunk },
@@ -326,6 +366,9 @@ namespace turbo::cardano {
         shelley_max_lovelace_supply { _immutable->shelley_max_lovelace_supply },
         shelley_network_id { _immutable->shelley_network_id },
         shelley_active_slots { _immutable->shelley_active_slots },
+        shelley_active_slots_coeff { _immutable->shelley_active_slots_coeff },
+        shelley_slots_per_kes_period { _immutable->shelley_slots_per_kes_period },
+        shelley_max_kes_evolutions { _immutable->shelley_max_kes_evolutions },
         shelley_security_param { _immutable->shelley_security_param },
         shelley_epoch_blocks { _immutable->shelley_epoch_blocks },
         shelley_rewards_ready_slot { _immutable->shelley_rewards_ready_slot },

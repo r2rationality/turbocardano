@@ -69,7 +69,7 @@ namespace turbo::cardano {
         tx_size(size_t sz)
         {
             size_t packed_sz = sz >> 8;
-            if (packed_sz >= 256 || (packed_sz == 255 && sz & 0xFF)) throw error(fmt::format("tx size is too big: {}!", sz));
+            if (packed_sz >= 256 || (packed_sz == 255 && sz & 0xFF)) [[unlikely]] throw error(fmt::format("tx size is too big: {}!", sz));
             if (sz & 0xFF) ++packed_sz;
             _size = (uint8_t)packed_sz;
         }
@@ -88,14 +88,14 @@ namespace turbo::cardano {
 
         cert_idx(size_t idx)
         {
-            if (idx >= (1U << 16))
+            if (idx >= (1U << 16)) [[unlikely]]
                 throw error(fmt::format("tx out idx is too big: {}!", idx));
             _idx = idx;
         }
 
         cert_idx &operator=(size_t idx)
         {
-            if (idx >= (1U << 16))
+            if (idx >= (1U << 16)) [[unlikely]]
                 throw error(fmt::format("tx out idx is too big: {}!", idx));
             _idx = idx;
             return *this;
@@ -115,7 +115,7 @@ namespace turbo::cardano {
     };
 
     enum class redeemer_tag: uint8_t {
-        spend, mint, cert, reward, vote, propose
+        spend, mint, cert, reward, vote, propose, guard
     };
 
     struct redeemer_id {
@@ -157,6 +157,8 @@ namespace turbo::cardano {
         uint64_t counter = 0;
         uint64_t period = 0;
         uint64_t slot = 0;
+        uint64_t period_slots = 0;
+        uint64_t max_evolutions = 0;
 
         bool verify() const;
     };
@@ -443,6 +445,7 @@ namespace turbo::cardano {
         size_t plutus_v1_script = 0;
         size_t plutus_v2_script = 0;
         size_t plutus_v3_script = 0;
+        size_t plutus_v4_script = 0;
 
         wit_cnt &operator+=(const script_type &typ)
         {
@@ -451,7 +454,8 @@ namespace turbo::cardano {
                 case script_type::plutus_v1: ++plutus_v1_script; break;
                 case script_type::plutus_v2: ++plutus_v2_script; break;
                 case script_type::plutus_v3: ++plutus_v3_script; break;
-                default: throw error(fmt::format("unsupported script type: {}", static_cast<int>(typ)));
+                case script_type::plutus_v4: ++plutus_v4_script; break;
+                [[unlikely]] default: throw error(fmt::format("unsupported script type: {}", static_cast<int>(typ)));
             }
             return *this;
         }
@@ -463,12 +467,13 @@ namespace turbo::cardano {
             plutus_v1_script += o.plutus_v1_script;
             plutus_v2_script += o.plutus_v2_script;
             plutus_v3_script += o.plutus_v3_script;
+            plutus_v4_script += o.plutus_v4_script;
             return *this;
         }
 
         operator bool() const noexcept
         {
-            return vkey + native_script + plutus_v1_script + plutus_v2_script + plutus_v3_script;
+            return vkey + native_script + plutus_v1_script + plutus_v2_script + plutus_v3_script + plutus_v4_script;
         }
     };
 
@@ -599,7 +604,7 @@ namespace turbo::cardano {
             return numeric_cast<uint32_t>(raw().size());
         }
     private:
-        using storage_type = byte_array<1120>;
+        using storage_type = byte_array<1408>;
 
         const uint8_t _era;
         storage_type _val alignas(64);
@@ -779,7 +784,7 @@ namespace turbo::cardano {
     }
 
     struct tx_container {
-        using impl_storage = byte_array<808>; // MS VC++ requires more storage space than GCC and Clang!
+        using impl_storage = byte_array<1280>; // MS VC++ requires more storage space than GCC and Clang!
 
         tx_container(const block_info &meta, uint64_t tx_abs_off, cbor::zero2::value &tx, size_t idx, const config &cfg);
         tx_container(const block_info &meta, uint64_t tx_abs_off, cbor::zero2::value &tx, cbor::zero2::value &wits, size_t idx, const config &cfg);
@@ -869,8 +874,8 @@ namespace fmt {
     struct formatter<turbo::cardano::wit_cnt>: formatter<uint64_t> {
         template<typename FormatContext>
         auto format(const auto &v, FormatContext &ctx) const -> decltype(ctx.out()) {
-            return fmt::format_to(ctx.out(), "vkey: {} native: {} plutus_v1: {} plutus_v2: {} plutus_v3: {}",
-                v.vkey, v.native_script, v.plutus_v1_script, v.plutus_v2_script, v.plutus_v3_script);
+            return fmt::format_to(ctx.out(), "vkey: {} native: {} plutus_v1: {} plutus_v2: {} plutus_v3: {} plutus_v4: {}",
+                v.vkey, v.native_script, v.plutus_v1_script, v.plutus_v2_script, v.plutus_v3_script, v.plutus_v4_script);
         }
     };
 
@@ -886,7 +891,8 @@ namespace fmt {
                 case redeemer_tag::reward: return fmt::format_to(ctx.out(), "reward");
                 case redeemer_tag::vote: return fmt::format_to(ctx.out(), "vote");
                 case redeemer_tag::propose: return fmt::format_to(ctx.out(), "propose");
-                default: throw turbo::error(fmt::format("unsupported redeemer tag value {}", static_cast<int>(v)));
+                case redeemer_tag::guard: return fmt::format_to(ctx.out(), "guard");
+                [[unlikely]] default: throw turbo::error(fmt::format("unsupported redeemer tag value {}", static_cast<int>(v)));
             }
         }
     };

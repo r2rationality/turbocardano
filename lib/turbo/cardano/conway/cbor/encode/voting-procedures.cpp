@@ -15,11 +15,13 @@ namespace turbo::cardano {
 
     void voting_procedure_t::to_cbor(era_encoder &enc) const
     {
+        enc.array(2);
         switch (vote) {
             case vote_t::no: enc.uint(0); break;
             case vote_t::yes: enc.uint(1); break;
             case vote_t::abstain: enc.uint(2); break;
-            default: throw error(fmt::format("unsupported vote: {}", static_cast<int>(vote)));
+            [[unlikely]] default: throw error(fmt::format("unsupported vote: {}", static_cast<int>(vote)));
         }
+        anchor.to_cbor(enc);
     }
 }

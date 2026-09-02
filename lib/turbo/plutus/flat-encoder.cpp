@@ -549,10 +549,4 @@ namespace turbo::plutus::flat {
         return std::move(enc.bytes());
     }
 
-    uint8_vector encode_cbor(const version &v, const term &t)
-    {
-        cbor::encoder enc {};
-        enc.bytes(encode(v, t));
-        return std::move(enc.cbor());
-    }
 }

@@ -13,25 +13,32 @@ namespace turbo::cardano::ledger {
 namespace turbo::validator {
     static constexpr std::string_view validate_task{"validate"};
     static constexpr std::string_view validate_leaders_task{"validate-epoch"};
-    static constexpr uint64_t snapshot_format_version = 4;
+    static constexpr uint64_t snapshot_format_version = 6;
 
     struct snapshot {
         uint64_t epoch;
         uint64_t end_offset;
         uint64_t last_slot;
         bool exportable;
+        std::optional<uint64_t> trusted_authority_epoch;
+        uint64_t certified_core_offset;
         uint64_t format_version = snapshot_format_version;
 
         static snapshot from_json(const json::value &j);
-        snapshot(const cardano::ledger::state &st);
+        snapshot(const cardano::ledger::state &st, std::optional<uint64_t> trusted_authority_epoch_,
+            uint64_t certified_core_offset_);
         snapshot(uint64_t epoch_, uint64_t end_offset_, uint64_t last_slot_, bool exportable_,
             uint64_t format_version_=snapshot_format_version);
+        snapshot(uint64_t epoch_, uint64_t end_offset_, uint64_t last_slot_, bool exportable_,
+            std::optional<uint64_t> trusted_authority_epoch_, uint64_t certified_core_offset_,
+            uint64_t format_version_);
         json::object to_json() const;
 
         bool operator==(const snapshot &o) const
         {
             return epoch == o.epoch && end_offset == o.end_offset && last_slot == o.last_slot
-                && exportable == o.exportable && format_version == o.format_version;
+                && exportable == o.exportable && trusted_authority_epoch == o.trusted_authority_epoch
+                && certified_core_offset == o.certified_core_offset && format_version == o.format_version;
         }
 
         bool operator<(const snapshot &b) const
@@ -58,7 +65,6 @@ namespace turbo::validator {
         explicit incremental(chunk_registry &cr, bool validate_vrf=true);
         ~incremental();
         [[nodiscard]] cardano::amount unspent_reward(const cardano::stake_ident &id) const;
-        [[nodiscard]] cardano::tail_relative_stake_map tail_relative_stake() const;
         [[nodiscard]] cardano::optional_point core_tip() const;
         [[nodiscard]] cardano::optional_slot can_export(const cardano::optional_point &immutable_tip) const;
         std::string node_export(const std::filesystem::path &ledger_dir, const cardano::optional_point &immutable_tip, int prio=1000) const;

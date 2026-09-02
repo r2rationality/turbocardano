@@ -4,6 +4,8 @@
  * License: https://github.com/r2rationality/turbocardano/blob/main/LICENSE */
 
 #include <turbo/cardano/allegra/auxiliary-data.hpp>
+#include <turbo/cardano/allegra/block.hpp>
+#include <turbo/cardano/common/cbor/decode/script.hpp>
 
 namespace turbo::cardano::allegra {
     auxiliary_data_array_t auxiliary_data_array_t::from_cbor(cbor::zero2::value &v)
@@ -14,8 +16,12 @@ namespace turbo::cardano::allegra {
         if (!scripts_v.indefinite()) [[likely]]
             res.auxiliary_scripts.reserve(scripts_v.special_uint());
         auto &scripts = scripts_v.array();
-        while (!scripts.done())
-            res.auxiliary_scripts.emplace_back(script_type::native, scripts.read().data_raw());
+        while (!scripts.done()) {
+            auto &script = scripts.read();
+            res.auxiliary_scripts.emplace_back(
+                ::turbo::cardano::detail::script_info_from_cbor(
+                    script_type::native, script, native_script_t::validate_cbor));
+        }
         if (!it.done()) [[unlikely]]
             throw error("unexpected trailing auxiliary_data_array elements");
         return res;

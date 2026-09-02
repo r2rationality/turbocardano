@@ -40,12 +40,12 @@ namespace turbo::cli::sample_blocks {
 
             const auto from_slot = slot::from_epoch(std::stoull(*opts.at("from-epoch")), cr.config());
             const auto from = cr.latest_block_after_or_at_slot(from_slot);
-            if (from == cr.cend())
+            if (from == cr.cend()) [[unlikely]]
                 throw error(fmt::format("can't find data for the from_slot: {}", from_slot));
 
             const auto to_slot = static_cast<uint64_t>(slot::from_epoch(std::stoull(*opts.at("to-epoch")) + 1, cr.config())) - 1;
             const auto to = cr.latest_block_before_or_at_slot(to_slot);
-            if (to == cr.cend())
+            if (to == cr.cend()) [[unlikely]]
                 throw error(fmt::format("can't find data for the to_slot: {}", to_slot));
 
             storage::partition_map::storage_type batches {};

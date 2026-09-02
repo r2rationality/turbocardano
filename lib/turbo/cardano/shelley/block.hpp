@@ -7,15 +7,15 @@
 #include <turbo/cardano/common/common.hpp>
 
 namespace turbo::cardano::shelley {
-    static constexpr uint64_t kes_period_slots = 129600;
-
     struct native_script_t {
         static native_script_t from_cbor(cbor::zero2::value &);
+        static void validate_cbor(cbor::zero2::value &);
     };
 
     struct block_header_base: cardano::block_header_base {
         using cardano::block_header_base::block_header_base;
-        static buffer prev_hash_from_cbor(cbor::zero2::value &v, const cardano::config &cfg);
+        static buffer prev_hash_from_cbor(
+            cbor::zero2::value &v, const cardano::config &cfg, bool *is_null=nullptr);
         virtual const cardano::vrf_vkey &vrf_vkey() const =0;
         virtual const vrf_cert &nonce_vrf() const =0;
         virtual const vrf_cert &leader_vrf() const =0;
@@ -153,6 +153,7 @@ namespace turbo::cardano::shelley {
         tx_out_ref value {};
 
         static transaction_input_t from_cbor(cbor::zero2::value &);
+        void to_cbor(era_encoder &) const;
     };
 
     struct transaction_inputs_t: input_set {

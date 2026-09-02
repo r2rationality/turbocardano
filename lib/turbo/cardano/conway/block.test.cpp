@@ -14,17 +14,19 @@ suite cardano_conway_suite = [] {
     "cardano::conway"_test = [] {
         "mint parsing rejects invalid entries"_test = [] {
             expect(boost::ut::throws<error>([] {
-                auto parsed = cbor::zero2::parse(uint8_vector::from_hex(
+                const auto data = uint8_vector::from_hex(
                     "A1"
                     "581C00000000000000000000000000000000000000000000000000000000"
-                    "A14000"));
+                    "A14000");
+                auto parsed = cbor::zero2::parse(data);
                 conway::mint_t::from_cbor(parsed.get());
             }));
             expect(boost::ut::throws<error>([] {
-                auto parsed = cbor::zero2::parse(uint8_vector::from_hex(
+                const auto data = uint8_vector::from_hex(
                     "A1"
                     "581C00000000000000000000000000000000000000000000000000000000"
-                    "A0"));
+                    "A0");
+                auto parsed = cbor::zero2::parse(data);
                 conway::mint_t::from_cbor(parsed.get());
             }));
         };

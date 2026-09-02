@@ -80,9 +80,9 @@ namespace turbo::sync {
                 logger::info("the post-download tip: {}", new_local_tip);
                 cardano::optional_point validate_from = peer.intersection();
                 if (mode == validation_mode_t::turbo) {
-                    const auto tail = _cr.tail_relative_stake();
-                    if (!tail.empty() && tail.begin()->second > 0.5 && peer.intersection() < tail.begin()->first)
-                        validate_from = tail.begin()->first;
+                    if (const auto core = _cr.core_tip(); core
+                            && (!peer.intersection() || peer.intersection()->end_offset < core->end_offset))
+                        validate_from = core;
                 }
                 const auto new_valid_tip = txwit::validate(_cr, validate_from, new_local_tip, txwit::witness_type::all);
                 logger::debug("the new valid tip: {}", new_valid_tip);
@@ -131,7 +131,7 @@ namespace turbo::sync {
 
     bool syncer::sync(const std::shared_ptr<peer_info> &peer, const cardano::optional_slot max_slot, const validation_mode_t mode)
     {
-        if (!peer)
+        if (!peer) [[unlikely]]
             throw error("peer must be initialized!");
         return _impl->sync(*peer, max_slot, mode);
     }

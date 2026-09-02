@@ -389,7 +389,7 @@ namespace turbo::plutus::uplc {
                     _eat_space();
                     return { _alloc, _decode_data_map() };
                 }
-                default: throw error(fmt::format("unsupported token '{}' at pos: {}", tok, _pos));
+                [[unlikely]] default: throw error(fmt::format("unsupported token '{}' at pos: {}", tok, _pos));
             }
         }
 
@@ -472,7 +472,7 @@ namespace turbo::plutus::uplc {
                     if (typ != "value") [[unlikely]]
                         throw error(fmt::format("unexpected token '{}' at pos: {}", typ, _pos));
                     return { _alloc, type_tag::value };
-                default: throw error(fmt::format("unexpected token '{}' at pos: {}", typ, _pos));
+                [[unlikely]] default: throw error(fmt::format("unexpected token '{}' at pos: {}", typ, _pos));
             }
         }
 
@@ -588,7 +588,7 @@ namespace turbo::plutus::uplc {
                 case type_tag::array: return { _alloc, _decode_array_value(std::move(typ)) };
                 case type_tag::pair: return { _alloc, _decode_pair_value(std::move(typ)) };
                 case type_tag::value: return { _alloc, _decode_value() };
-                default: throw error(fmt::format("unexpected type: {}", tag));
+                [[unlikely]] default: throw error(fmt::format("unexpected type: {}", tag));
             }
         }
 
@@ -696,7 +696,7 @@ namespace turbo::plutus::uplc {
                     if (tag != "lam") [[unlikely]]
                         throw error(fmt::format("unexpected token '{}' at pos: {}", tag, _pos));
                     return _decode_lambda();
-                default:
+                [[unlikely]] default:
                     throw error(fmt::format("unexpected token '{}' at pos: {}", tag, _pos));
             }
         }

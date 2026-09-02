@@ -97,6 +97,17 @@ namespace turbo::cardano::byron {
         return std::move(enc.cbor());
     }
 
+    bool block_header::delegation_certificate_matches(const cardano::byron_delegate_info &expected) const
+    {
+        const auto &cert = _consensus.sig.certificate();
+        return _consensus.vkey.vkey_full == cert.issuer.vkey_full
+            && cert.issuer.vkey_full == expected.issuer
+            && cert.dlg.vkey_full == expected.delegate
+            && cert.cert == expected.certificate
+            && cert.epoch == expected.epoch
+            && cert.epoch_raw == expected.epoch_cbor;
+    }
+
     uint64_t tx::fee() const
     {
         throw error("byron::tx requires access to the utxo set to compute the tx fee!");
@@ -185,7 +196,15 @@ namespace turbo::cardano::byron {
 
     bool block::signature_ok() const
     {
-        return crypto::ed25519::verify(_hdr.signature(), _hdr.delegate_vkey(), _hdr.signed_data());
+        const auto &cfg = _hdr.config();
+        // Mainnet Byron blocks retained the heavy-delegation certificates
+        // pinned by genesis; dynamic delegation is intentionally unsupported.
+        const auto expected = cfg.byron_delegates.find(_hdr.issuer_vkey());
+        return expected != cfg.byron_delegates.end()
+            && _hdr.protocol_magic() == cfg.byron_protocol_magic
+            && _hdr.delegation_certificate_matches(expected->second)
+            && _hdr.delegation_epoch() <= _hdr.slot() / cfg.byron_epoch_length
+            && crypto::ed25519::verify(_hdr.signature(), _hdr.delegate_vkey(), _hdr.signed_data());
     }
 
     bool block::body_hash_ok() const

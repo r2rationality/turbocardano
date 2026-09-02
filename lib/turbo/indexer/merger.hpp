@@ -67,7 +67,7 @@ namespace turbo::indexer::merger {
         {
             auto [it, created] = try_emplace(s.offset, s);
             if (!created) {
-                if (!allow_same && it->second.size != s.size)
+                if (!allow_same && it->second.size != s.size) [[unlikely]]
                     throw error(fmt::format("internal error: a duplicate slice with offset {}!", it->first));
             }
         }

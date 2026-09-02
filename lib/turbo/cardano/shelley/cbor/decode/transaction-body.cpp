@@ -23,7 +23,7 @@ namespace turbo::cardano::shelley {
                 case 5: res.withdrawals = withdrawals_t::from_cbor(mv); break;
                 case 6: res.updates = update_t::from_cbor(mv); break;
                 case 7: static_cast<void>(hash_32 { mv.bytes() }); break; // auxiliary_data_hash
-                default: throw error(fmt::format("unsupported tx element type: {}", typ));
+                [[unlikely]] default: throw error(fmt::format("unsupported tx element type: {}", typ));
             }
         }
         res.raw = v.data_raw();

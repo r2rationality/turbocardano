@@ -17,6 +17,10 @@ namespace turbo::cardano::conway {
         auto &auxiliary_data = it.read();
         if (!auxiliary_data.is_null())
             res.auxiliary_data.emplace(auxiliary_data_t::from_cbor(auxiliary_data));
+        else
+            static_cast<void>(auxiliary_data.special());
+        if (!it.done()) [[unlikely]]
+            throw error("unexpected trailing Conway transaction elements");
         return res;
     }
 }

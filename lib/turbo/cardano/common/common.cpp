@@ -26,20 +26,6 @@ namespace turbo::cardano {
     }
 
 
-    void pool_params::to_cbor(era_encoder &enc, const pool_hash &pool_id) const
-    {
-        enc.array(9);
-        enc.bytes(pool_id);
-        enc.bytes(vrf_vkey);
-        enc.uint(pledge);
-        enc.uint(cost);
-        margin.to_cbor(enc);
-        enc.bytes(reward_id);
-        owners.to_cbor(enc);
-        relays.to_cbor(enc);
-        metadata.to_cbor(enc);
-    }
-
 
     void tx_base::foreach_witness_byron_vkey(const byron_vkey_wit_observer_t &observer) const
     {
@@ -288,7 +274,7 @@ namespace turbo::cardano {
     bool block_kes_signature::verify() const
     {
         byte_array<sizeof(vkey) + 2 * 8> ocert_data {};
-        if (vkey_hot.size() != sizeof(vkey))
+        if (vkey_hot.size() != sizeof(vkey)) [[unlikely]]
             throw error("vkey size mismatch!");
         memcpy(ocert_data.data(), vkey_hot.data(), sizeof(vkey));
         const uint64_t ctr = host_to_net<uint64_t>(counter);
@@ -299,10 +285,14 @@ namespace turbo::cardano {
             logger::debug("an operational certificate has failed verification for issuer: {}", vkey_cold);
             return false;
         }
-        const uint64_t block_period = slot / 129600;
-        if (period > block_period)
+        if (!period_slots) [[unlikely]]
+            throw error("slotsPerKESPeriod must be positive");
+        const uint64_t block_period = slot / period_slots;
+        if (period > block_period) [[unlikely]]
             throw error(fmt::format("KES period {} is greater than the current period {}", period, block_period));
         const uint64_t t = block_period - period;
+        if (t >= max_evolutions) [[unlikely]]
+            throw error(fmt::format("KES evolution {} exceeds the certificate limit {}", t, max_evolutions));
         const kes_signature kes_sig { sig };
         if (!kes_sig.verify(t, vkey_hot.first<32>(), header_body)) [[unlikely]] {
             logger::debug("a KES signature has failed verification for issuer: {}", vkey_cold);

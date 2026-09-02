@@ -43,8 +43,6 @@ namespace turbo::cardano::conway {
             case 2: return {{ stake_deleg_cert::from_cbor(it) }};
             case 3: return {{ pool_reg_cert::from_cbor(it) }};
             case 4: return {{ pool_retire_cert::from_cbor(it) }};
-            case 5: return {{ genesis_deleg_cert::from_cbor(it) }};
-            case 6: return {{ instant_reward_cert::from_cbor(it) }};
             case 7: return {{ reg_cert {
                 credential_t::from_cbor(it.read()),
                 it.read().uint()

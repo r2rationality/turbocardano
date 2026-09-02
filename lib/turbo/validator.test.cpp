@@ -88,6 +88,41 @@ suite validator_suite = [] {
                 expect(zstd::read(cr.full_path(stored_chunk.rel_path())) == expected_data);
             }
         };
+        "snapshot certified core reload"_test = [] {
+            const std::string dir { "tmp/validator-snapshot-core" };
+            const auto chunk_path = fmt::format("{}/chain.chunk", dir);
+            std::filesystem::remove_all(dir);
+            const auto chain = gen_chain();
+            zstd::write(chunk_path, chain.data);
+            uint64_t core_offset = 0;
+            {
+                chunk_registry cr { dir, chunk_registry::mode::validate, cardano::config { chain.cfg } };
+                expect(!cr.accept_progress({}, chain.tip, [&] { cr.add_file(0, chunk_path); }));
+                core_offset = cr.chunks().begin()->second.blocks.front().end_offset();
+            }
+            const auto state_path = fmt::format("{}/validate/state.json", dir);
+            auto snapshots = json::load(state_path);
+            auto &latest = snapshots.as_array().back().as_object();
+            latest.insert_or_assign("trustedAuthorityEpoch", json::value(nullptr));
+            latest.insert_or_assign("certifiedCoreOffset", core_offset);
+            json::save_pretty(state_path, snapshots);
+
+            chunk_registry restored { dir, chunk_registry::mode::validate, cardano::config { chain.cfg } };
+            expect_equal(chain.data.size(), restored.valid_end_offset());
+            const auto core = restored.core_tip();
+            expect(core && core->end_offset == core_offset);
+        };
+        "VRF-disabled validation has no certified core"_test = [] {
+            const std::string dir { "tmp/validator-no-vrf-core" };
+            const auto chunk_path = fmt::format("{}/chain.chunk", dir);
+            std::filesystem::remove_all(dir);
+            const auto chain = gen_chain();
+            zstd::write(chunk_path, chain.data);
+            chunk_registry cr { dir, chunk_registry::mode::validate,
+                cardano::config { chain.cfg }, scheduler::get(), file_remover::get(), true, false };
+            expect(!cr.accept_progress({}, chain.tip, [&] { cr.add_file(0, chunk_path); }));
+            expect(!cr.core_tip());
+        };
         "excessive snapshot"_test = [&] {
             validator::snapshot_set s {};
             expect(s.next_excessive() == s.end());
@@ -122,6 +157,17 @@ suite validator_suite = [] {
             s.remove_excessive([&](const auto &s) { removed.emplace(s.epoch); }, [&](const auto &s) { kept.emplace(s.epoch); });
             expect_equal(std::set<uint64_t> { 5, 200 }, removed);
             expect_equal(std::set<uint64_t> { 20, 250, 450, 518, 519 }, kept);
+        };
+        "snapshot provenance"_test = [] {
+            const validator::snapshot original {
+                7, 1234, 567, true, std::optional<uint64_t> { 6 }, 1000,
+                validator::snapshot_format_version
+            };
+            expect_equal(original, validator::snapshot::from_json(original.to_json()));
+            const validator::snapshot without_core {
+                7, 1234, 567, true, std::nullopt, 0, validator::snapshot_format_version
+            };
+            expect_equal(without_core, validator::snapshot::from_json(without_core.to_json()));
         };
     };
 };

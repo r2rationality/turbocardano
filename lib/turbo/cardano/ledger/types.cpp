@@ -124,36 +124,12 @@ namespace turbo::cardano::ledger {
         return { decltype(rel_stake)::from_cbor(it.read()), it.read().uint(), it.read().bytes() };
     }
 
-    void operating_pool_info::to_cbor(era_encoder &enc) const
-    {
-        enc.array(3);
-        switch (enc.era()) {
-            case era_t::conway:
-                rel_stake.to_cbor(enc);
-                break;
-            default:
-                enc.array(2)
-                    .uint(rel_stake.numerator)
-                    .uint(rel_stake.denominator);
-                break;
-        }
-        enc.uint(active_stake);
-        enc.bytes(vrf_vkey);
-    }
-
     operating_pool_map operating_pool_map::from_cbor(cbor::zero2::value &v)
     {
         auto &it = v.array();
         auto res = map_from_cbor<operating_pool_map>(it.read());
         res.total_stake = it.read().uint();
         return res;
-    }
-
-    void operating_pool_map::to_cbor(era_encoder &enc) const
-    {
-        enc.array(2);
-        map_to_cbor(enc, *this);
-        enc.uint(total_stake);
     }
 
     void operating_pool_map::clear()

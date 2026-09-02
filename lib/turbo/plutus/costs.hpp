@@ -94,7 +94,7 @@ namespace turbo::plutus::costs {
         const builtin_cost &at(const builtin_tag tag) const
         {
             const auto &model = _models[static_cast<size_t>(tag)];
-            if (model.cpu.kind == runtime_cost_kind::invalid)
+            if (model.cpu.kind == runtime_cost_kind::invalid) [[unlikely]]
                 throw std::out_of_range("builtin has no cost model");
             return model;
         }

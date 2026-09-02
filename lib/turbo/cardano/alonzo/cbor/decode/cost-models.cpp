@@ -19,7 +19,7 @@ namespace turbo::cardano::alonzo {
                 switch (value.type()) {
                     case cbor::major_type::uint: values.emplace_back(numeric_cast<int64_t>(value.uint())); break;
                     case cbor::major_type::nint: values.emplace_back(-numeric_cast<int64_t>(value.nint())); break;
-                    default: throw error(fmt::format("unsupported cost model value type: {}", value.type()));
+                    [[unlikely]] default: throw error(fmt::format("unsupported cost model value type: {}", value.type()));
                 }
             }
             return { std::move(values), plutus::costs::cost_arg_names_v1() };

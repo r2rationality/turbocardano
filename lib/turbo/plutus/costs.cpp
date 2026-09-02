@@ -626,7 +626,7 @@ namespace turbo::plutus::costs {
                 case json::kind::string:
                     args.try_emplace(fmt::format("{}{}", prefix, static_cast<std::string_view>(k)), fmt::format("{}", json::value_to<std::string>(v)));
                     break;
-                default: throw error(fmt::format("unsupported json kind at {}{}: {}", prefix, static_cast<std::string_view>(k), static_cast<int>(v.kind())));
+                [[unlikely]] default: throw error(fmt::format("unsupported json kind at {}{}: {}", prefix, static_cast<std::string_view>(k), static_cast<int>(v.kind())));
             }
         }
         return args;
@@ -766,7 +766,7 @@ namespace turbo::plutus::costs {
                         case term_tag::force: m.force_op = ex_units_from_args(args); break;
                         case term_tag::lambda: m.lambda_op = ex_units_from_args(args); break;
                         case term_tag::variable: m.variable_op = ex_units_from_args(args); break;
-                        default: throw error(fmt::format("unsupported tag: {}", tag));
+                        [[unlikely]] default: throw error(fmt::format("unsupported tag: {}", tag));
                     }
                 } else if constexpr (std::is_same_v<T, builtin_tag>) {
                     const auto [op, created] = m.builtin_costs.try_emplace(tag, builtin_cost_from_args(args));
@@ -814,7 +814,7 @@ namespace turbo::plutus::costs {
             case cardano::script_type::plutus_v1: models = &v1; break;
             case cardano::script_type::plutus_v2: models = &v2; break;
             case cardano::script_type::plutus_v3: models = &v3; break;
-            default: throw error(fmt::format("unsupported script type: {}", static_cast<int>(typ)));
+            [[unlikely]] default: throw error(fmt::format("unsupported script type: {}", static_cast<int>(typ)));
         }
         const auto &model = models->at(static_cast<size_t>(semantics));
         if (model) [[likely]]

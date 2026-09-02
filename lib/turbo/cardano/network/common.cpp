@@ -16,6 +16,7 @@
 #include <turbo/cardano.hpp>
 #include <turbo/cardano/network/common.hpp>
 #include <turbo/cardano/network/miniprotocol/blockfetch/messages.hpp>
+#include <turbo/cardano/network/miniprotocol/chainsync/messages.hpp>
 #include <turbo/cardano/network/miniprotocol/handshake/messages.hpp>
 #include <turbo/cbor/encoder.hpp>
 #include <turbo/cbor/zero2.hpp>
@@ -129,7 +130,7 @@ namespace turbo::cardano::network {
             co_await _wait_with_deadline(boost::asio::async_read(socket, boost::asio::buffer(&recv_info, sizeof(recv_info)), boost::asio::use_awaitable));
             uint8_vector recv_payload(recv_info.payload_size());
             co_await _wait_with_deadline(boost::asio::async_read(socket, boost::asio::buffer(recv_payload.data(), recv_payload.size()), boost::asio::use_awaitable));
-            if (recv_info.mode() != channel_mode::responder || recv_info.mini_protocol_id() != mp_id) {
+            if (recv_info.mode() != channel_mode::responder || recv_info.mini_protocol_id() != mp_id) [[unlikely]] {
                 logger::error("unexpected message: mode: {} mini_protocol_id: {} body size: {} body: {}",
                     static_cast<int>(recv_info.mode()), static_cast<uint16_t>(recv_info.mini_protocol_id()), recv_payload.size(),
                     cbor::zero2::parse(recv_payload).get().to_string());
@@ -140,7 +141,7 @@ namespace turbo::cardano::network {
 
         static boost::asio::awaitable<uint8_vector> _send_request(tcp::socket &socket, const mini_protocol mp_id, const buffer &data)
         {
-            if (data.size() >= (1 << 16))
+            if (data.size() >= (1 << 16)) [[unlikely]]
                 throw error(fmt::format("payload is larger than allowed: {}!", data.size()));
             uint8_vector segment {};
             auto epoch_time = std::chrono::system_clock::now().time_since_epoch();
@@ -155,11 +156,11 @@ namespace turbo::cardano::network {
         boost::asio::awaitable<tcp::socket> _connect_and_handshake()
         {
             auto results = co_await _wait_with_deadline(_resolver.async_resolve(_addr.host, _addr.port, boost::asio::use_awaitable));
-            if (results.empty())
+            if (results.empty()) [[unlikely]]
                 throw error(fmt::format("DNS resolve for {}:{} returned no results!", _addr.host, _addr.port));
             tcp::socket socket { _asio_worker->io_context() };
             co_await _wait_with_deadline(socket.async_connect(*results.begin(), boost::asio::use_awaitable));
-            if (!socket.is_open()) [[likely]] {
+            if (!socket.is_open()) [[unlikely]] {
                 throw error(fmt::format("failed to connect to {} within the allotted timeframe", _addr));
             }
 
@@ -178,7 +179,7 @@ namespace turbo::cardano::network {
             std::visit([&](const auto &mv) {
                 using T = std::decay_t<decltype(mv)>;
                 if constexpr (std::is_same_v<T, miniprotocol::handshake::msg_accept_version_t>) {
-                    if (mv.version < _version_cfg.min || mv.version > _version_cfg.max)
+                    if (mv.version < _version_cfg.min || mv.version > _version_cfg.max) [[unlikely]]
                         throw error(fmt::format("peer at {}:{} ignored the requested protocol version range and returned {}!", _addr.host, _addr.port, mv.version));
                 } else {
                     throw error(fmt::format("peer at {}:{} refused the requested protocol versions!", _addr.host, _addr.port));
@@ -188,16 +189,13 @@ namespace turbo::cardano::network {
         }
 
         boost::asio::awaitable<intersection_info_t>
-        _find_intersection_do(const point2_list &points)
+        _find_intersection_do(point2_list points)
         {
             if (!_conn)
                 _conn = co_await _connect_and_handshake();
             intersection_info_t isect {};
             cbor::encoder enc {};
-            enc.array(2).uint(4).array(points.size());
-            for (const auto &p: points) {
-                enc.array(2).uint(p.slot).bytes(p.hash);
-            }
+            miniprotocol::chainsync::msg_find_intersect_t { std::move(points) }.to_cbor(enc);
             const auto resp = co_await _send_request(*_conn, mini_protocol::chain_sync, enc.cbor());
             auto resp_cbor = cbor::zero2::parse(resp);
             auto &resp_arr = resp_cbor.get().array();
@@ -211,16 +209,16 @@ namespace turbo::cardano::network {
                     isect.tip = point3::from_cbor(resp_arr.read());
                     break;
                 }
-                default:
+                [[unlikely]] default:
                     throw error(fmt::format("unexpected chain_sync message: {}!", typ));
             }
             co_return isect;
         }
 
-        boost::asio::awaitable<void> _find_intersection(const point2_list points, const find_handler handler)
+        boost::asio::awaitable<void> _find_intersection(point2_list points, const find_handler handler)
         {
             try {
-                auto isect = co_await _find_intersection_do(points);
+                auto isect = co_await _find_intersection_do(std::move(points));
                 handler(find_response { _addr, std::move(isect) });
             } catch (const std::exception &ex) {
                 handler(find_response { _addr, fmt::format("query_tip error: {}", ex.what()) });
@@ -292,9 +290,7 @@ namespace turbo::cardano::network {
                 if (!_conn)
                     _conn = co_await _connect_and_handshake();
                 cbor::encoder enc {};
-                enc.array(3).uint(0);
-                from.to_cbor(enc);
-                to.to_cbor(enc);
+                miniprotocol::blockfetch::msg_request_range_t { from, to }.to_cbor(enc);
                 auto resp = co_await _send_request(*_conn, mini_protocol::block_fetch, enc.cbor());
                 auto resp_cbor = cbor::zero2::parse(resp);
                 auto &resp_items = resp_cbor.get().array();
@@ -318,7 +314,7 @@ namespace turbo::cardano::network {
                         handler(block_response_t { "fetch_blocks do not have all requested blocks!" });
                         break;
                     }
-                    default:
+                    [[unlikely]] default:
                         throw error(fmt::format("unexpected chain_sync message: {}!", typ));
                 }
             } catch (const std::exception &ex) {
@@ -356,13 +352,13 @@ namespace turbo::cardano::network {
             return {};
         }
 
-        boost::asio::awaitable<void> _fetch_headers(const point2_list points, const size_t max_blocks, const header_handler handler)
+        boost::asio::awaitable<void> _fetch_headers(point2_list points, const size_t max_blocks, const header_handler handler)
         {
             try {
                 header_list headers {};
-                auto isect = co_await _find_intersection_do(points);
+                auto isect = co_await _find_intersection_do(std::move(points));
                 cbor::encoder msg_req_next {};
-                msg_req_next.array(1).uint(0);
+                miniprotocol::chainsync::msg_request_next_t {}.to_cbor(msg_req_next);
                 while (headers.size() < max_blocks) {
                     auto parse_buf = co_await _send_request(*_conn, mini_protocol::chain_sync, msg_req_next.cbor());
                     auto resp_cbor = cbor::zero2::parse(parse_buf);
@@ -378,7 +374,7 @@ namespace turbo::cardano::network {
                             continue;
                         break;
                     }
-                    if (typ != 2) // !MsgRollForward
+                    if (typ != 2) [[unlikely]] // !MsgRollForward
                         throw error(fmt::format("unexpected chain_sync message: {}!", typ));
                     {
                         const auto hdr = parsed_header::from_cbor(resp_it.read(), _cfg);

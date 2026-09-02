@@ -21,7 +21,7 @@ namespace turbo::sync::p2p {
             _client{std::move(client)},
             _tip{tip}
         {
-            if (!_client)
+            if (!_client) [[unlikely]]
                 throw error("client instance must be defined for all p2p peers");
         }
 

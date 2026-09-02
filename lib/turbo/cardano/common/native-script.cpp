@@ -78,7 +78,7 @@ namespace turbo::cardano::native_script {
                     if (const auto invalid_after = it.read().uint(); ctx && ctx->slot >= invalid_after)
                         res.validation_error = fmt::format("invalid after {} while the current slot is {}!", invalid_after, ctx->slot);
                     break;
-                default:
+                [[unlikely]] default:
                     res.parse_error = fmt::format("unsupported native script type {}", typ);
                     return res;
             }

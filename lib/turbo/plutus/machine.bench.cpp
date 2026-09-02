@@ -261,7 +261,7 @@ suite plutus_machine_bench_suite = [] {
                         case 0: res += sizeof(uint64_t); break;
                         case 1: res += std::get<std::string>(val).size(); break;
                         case 2: res += std::get<uint8_vector>(val).size(); break;
-                        default: throw error(fmt::format("unsupported variant index: {}", val.index()));
+                        [[unlikely]] default: throw error(fmt::format("unsupported variant index: {}", val.index()));
                     }
                 }
                 ankerl::nanobench::doNotOptimizeAway(res);

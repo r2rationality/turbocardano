@@ -15,7 +15,7 @@ namespace turbo::cardano::conway {
                 case 0: return plutus::costs::cost_arg_names_v1();
                 case 1: return plutus::costs::cost_arg_names_v2();
                 case 2: return plutus::costs::cost_arg_names_v3();
-                default: return empty;
+                [[unlikely]] default: return empty;
             }
         }
 
@@ -29,8 +29,16 @@ namespace turbo::cardano::conway {
                 auto &value = it.read();
                 switch (value.type()) {
                     case cbor::major_type::uint: values.emplace_back(numeric_cast<int64_t>(value.uint())); break;
-                    case cbor::major_type::nint: values.emplace_back(-numeric_cast<int64_t>(value.nint())); break;
-                    default: throw error(fmt::format("unsupported cost model value type: {}", value.type()));
+                    case cbor::major_type::nint: {
+                        const auto magnitude = value.nint();
+                        if (magnitude > uint64_t { 1 } << 63) [[unlikely]]
+                            throw error("cost model integer is smaller than min_int64");
+                        values.emplace_back(magnitude == uint64_t { 1 } << 63
+                            ? std::numeric_limits<int64_t>::min()
+                            : -numeric_cast<int64_t>(magnitude));
+                        break;
+                    }
+                    [[unlikely]] default: throw error(fmt::format("unsupported cost model value type: {}", value.type()));
                 }
             }
             return { std::move(values), cost_model_names(language) };
@@ -49,7 +57,10 @@ namespace turbo::cardano::conway {
             if (key > 255) [[unlikely]]
                 throw error(fmt::format("unsupported Conway language: {}", key));
             auto &value_v = it.read_val(std::move(key_v));
+            const auto before = res.value.items.size();
             res.value.items.emplace_hint(res.value.items.end(), key, cost_model_from_cbor(key, value_v));
+            if (res.value.items.size() == before) [[unlikely]]
+                throw error(fmt::format("duplicate cost model language: {}", key));
         }
         return res;
     }

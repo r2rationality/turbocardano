@@ -3,7 +3,9 @@
  * Copyright (c) 2024-2026 R2 Rationality OÜ (info at r2rationality dot com)
  * License: https://github.com/r2rationality/turbocardano/blob/main/LICENSE */
 
+#include <turbo/cardano/allegra/block.hpp>
 #include <turbo/cardano/babbage/auxiliary-data.hpp>
+#include <turbo/cardano/common/cbor/decode/script.hpp>
 
 namespace turbo::cardano::babbage {
     namespace {
@@ -14,7 +16,8 @@ namespace turbo::cardano::babbage {
             auto &it = v.array();
             while (!it.done()) {
                 auto &script = it.read();
-                scripts.emplace_back(type, type == script_type::native ? script.data_raw() : script.bytes());
+                scripts.emplace_back(::turbo::cardano::detail::script_info_from_cbor(
+                    type, script, allegra::native_script_t::validate_cbor));
             }
         }
     }
@@ -35,7 +38,7 @@ namespace turbo::cardano::babbage {
                 case 1: add_scripts(value_v, script_type::native, res.native_scripts); break;
                 case 2: add_scripts(value_v, script_type::plutus_v1, res.plutus_v1_scripts); break;
                 case 3: add_scripts(value_v, script_type::plutus_v2, res.plutus_v2_scripts); break;
-                default: throw error(fmt::format("unsupported auxiliary_data_map key: {}", key));
+                [[unlikely]] default: throw error(fmt::format("unsupported auxiliary_data_map key: {}", key));
             }
         }
         return res;

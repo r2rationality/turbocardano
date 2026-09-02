@@ -18,7 +18,7 @@ namespace turbo::crypto::secp256k1 {
 
         context(const unsigned flags): _ctx { secp256k1_context_create(flags) }
         {
-            if (!_ctx)
+            if (!_ctx) [[unlikely]]
                 throw error("failure to create a SECP256K1 context");
         }
 
@@ -38,17 +38,17 @@ namespace turbo::crypto::secp256k1 {
     namespace ecdsa {
         bool verify(const buffer &sig, const buffer &vk, const buffer &msg)
         {
-            if (const auto exp_size = 64; sig.size() != exp_size)
+            if (const auto exp_size = 64; sig.size() != exp_size) [[unlikely]]
                 throw error(fmt::format("ECDSA signature size must have {} bytes but got {}", exp_size, sig.size()));
-            if (const auto exp_size = 33; vk.size() != exp_size)
+            if (const auto exp_size = 33; vk.size() != exp_size) [[unlikely]]
                 throw error(fmt::format("ECDSA public key must have {} bytes but got {}", exp_size, vk.size()));
-            if (const auto exp_size = 32; msg.size() != exp_size)
+            if (const auto exp_size = 32; msg.size() != exp_size) [[unlikely]]
                 throw error(fmt::format("ECDSA message hash size must have {} bytes but got {}", exp_size, msg.size()));
             secp256k1_pubkey vk_parsed;
-            if (!secp256k1_ec_pubkey_parse(context::verify(), &vk_parsed, vk.data(), vk.size()))
+            if (!secp256k1_ec_pubkey_parse(context::verify(), &vk_parsed, vk.data(), vk.size())) [[unlikely]]
                 throw error(fmt::format("failed to parse ECDSA signature: {}", sig));
             secp256k1_ecdsa_signature sig_parsed;
-            if (!secp256k1_ecdsa_signature_parse_compact(context::verify(), &sig_parsed, sig.data()))
+            if (!secp256k1_ecdsa_signature_parse_compact(context::verify(), &sig_parsed, sig.data())) [[unlikely]]
                 throw error(fmt::format("failed to parse ECDSA signature: {}", sig));
             return secp256k1_ecdsa_verify(context::verify(), &sig_parsed, msg.data(), &vk_parsed) == 1;
         }
@@ -57,12 +57,12 @@ namespace turbo::crypto::secp256k1 {
     namespace schnorr {
         extern bool verify(const buffer &sig, const buffer &vk, const buffer &msg)
         {
-            if (const auto exp_size = 64; sig.size() != exp_size)
+            if (const auto exp_size = 64; sig.size() != exp_size) [[unlikely]]
                 throw error(fmt::format("Schnorr signature size must have {} bytes but got {}", exp_size, sig.size()));
-            if (const auto exp_size = 32; vk.size() != exp_size)
+            if (const auto exp_size = 32; vk.size() != exp_size) [[unlikely]]
                 throw error(fmt::format("Schnorr public key must have {} bytes but got {}", exp_size, vk.size()));
             secp256k1_xonly_pubkey vk_parsed;
-            if (!secp256k1_xonly_pubkey_parse(context::verify(), &vk_parsed, vk.data()))
+            if (!secp256k1_xonly_pubkey_parse(context::verify(), &vk_parsed, vk.data())) [[unlikely]]
                 throw error(fmt::format("public key is not valid: {}", vk));
             return secp256k1_schnorrsig_verify(context::verify(),sig.data(), msg.data(), msg.size(), &vk_parsed) == 1;
         }

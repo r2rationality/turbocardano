@@ -10,6 +10,14 @@
 
 namespace turbo::cardano {
     using vkey_set = flat_set<vkey>;
+    struct byron_delegate_info {
+        crypto::ed25519::vkey_full issuer {};
+        crypto::ed25519::vkey_full delegate {};
+        crypto::ed25519::signature certificate {};
+        uint64_t epoch = 0;
+        uint8_vector epoch_cbor {};
+    };
+    using byron_delegate_map = flat_map<vkey, byron_delegate_info>;
     using committee_member_map = flat_map<credential_t, uint64_t>;
 
     struct config {
@@ -27,6 +35,7 @@ namespace turbo::cardano {
         const uint64_t &byron_epoch_length;
         const uint64_t &byron_slot_duration;
         const txo_map &byron_utxos;
+        const byron_delegate_map &byron_delegates;
         const vkey_set &byron_issuers;
         const signer_set &byron_delegate_hashes;
         const uint64_t &byron_slots_per_chunk;
@@ -36,6 +45,9 @@ namespace turbo::cardano {
         const uint64_t &shelley_max_lovelace_supply;
         const uint8_t &shelley_network_id;
         const double &shelley_active_slots;
+        const rational_u64 &shelley_active_slots_coeff;
+        const uint64_t &shelley_slots_per_kes_period;
+        const uint64_t &shelley_max_kes_evolutions;
         const uint64_t &shelley_security_param;
         const uint64_t &shelley_epoch_blocks;
         const uint64_t &shelley_rewards_ready_slot;
@@ -97,8 +109,7 @@ namespace turbo::cardano {
         static plutus_cost_models _prep_plutus_cost_models(const turbo::config &genesis);
         static shelley_delegate_map _shelley_prep_delegates(const turbo::config &genesis);
         static txo_map _byron_prep_utxos(const turbo::config &genesis);
-        static vkey_set _byron_prep_heavy(const turbo::config &genesis, std::string_view key);
-        static signer_set _byron_prep_hashes(const vkey_set &);
+        static byron_delegate_map _byron_prep_delegates(const turbo::config &genesis);
         static block_hash _verify_hash_byron(const std::string_view &hash_hex, const turbo::config &genesis);
         static block_hash _verify_hash(const std::string_view &hash_hex, const turbo::config &genesis);
     };

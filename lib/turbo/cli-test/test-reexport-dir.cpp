@@ -35,7 +35,7 @@ namespace turbo::cli::test_reexport_dir {
                         st.save_node(tmp_path, tip);
                         const auto tmp_size = std::filesystem::file_size(tmp_path);
                         const auto tmp_hash = crypto::blake2b::digest(file::read(tmp_path));
-                        if (orig_hash != tmp_hash)
+                        if (orig_hash != tmp_hash) [[unlikely]]
                             throw error(fmt::format("reserialization of {} didn't produce a byte-perfect result orig: {} bytes new: {} bytes!", orig_path, orig_size, tmp_size));
                         std::filesystem::remove(tmp_path);
                         logger::info("{} OK", orig_path);

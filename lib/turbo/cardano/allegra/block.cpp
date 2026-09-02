@@ -12,6 +12,13 @@ namespace turbo::cardano::allegra {
     {
     }
 
+    void tx::parse_witnesses(cbor::zero2::value &v)
+    {
+        auto decoded = transaction_witness_set_t::from_cbor(v);
+        _wits = std::move(decoded.items);
+        _wits_raw = decoded.raw;
+    }
+
     const cert_list &tx::certs() const
     {
         return _body.certs;

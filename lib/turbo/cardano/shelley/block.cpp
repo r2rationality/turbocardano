@@ -99,7 +99,9 @@ namespace turbo::cardano::shelley {
             hdr.body_raw(),
             hdr.op_cert().seq_no,
             hdr.op_cert().period,
-            hdr.slot()
+            hdr.slot(),
+            config().shelley_slots_per_kes_period,
+            config().shelley_max_kes_evolutions
         };
     }
 

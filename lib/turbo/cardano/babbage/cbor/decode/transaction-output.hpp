@@ -13,11 +13,18 @@ namespace turbo::cardano::babbage::detail {
         auto &tag = v.tag();
         if (tag.id() != 24) [[unlikely]]
             throw error(fmt::format("expected a tag with id 24 but got: {}", tag.id()));
-        const auto script_data = tag.read().bytes();
-        auto parsed = cbor::zero2::parse(script_data);
-        auto &script_value = parsed.get();
-        auto script = decode_script(script_value);
-        if (script_value.data_raw().size() != script_data.size()) [[unlikely]]
+        auto &script_bytes = tag.read();
+        uint8_vector storage {};
+        buffer script_data {};
+        if (script_bytes.indefinite()) {
+            script_bytes.to_bytes(storage);
+            script_data = storage;
+        } else {
+            script_data = script_bytes.bytes();
+        }
+        cbor::zero2::decoder dec { script_data };
+        auto script = decode_script(dec.read());
+        if (!dec.done()) [[unlikely]]
             throw error("script_ref contains more than one CBOR value");
         return script;
     }
@@ -33,16 +40,23 @@ namespace turbo::cardano::babbage::detail {
         std::optional<output_value_t> value {};
         std::optional<datum_option_t> datum {};
         std::optional<script_info> script_ref {};
+        uint8_t seen = 0;
         while (!it.done()) {
             auto &key = it.read_key();
             const auto id = key.uint();
+            if (id > 3) [[unlikely]]
+                throw error(fmt::format("unsupported transaction_output key: {}", id));
+            const auto mask = static_cast<uint8_t>(1U << id);
+            if (seen & mask) [[unlikely]]
+                throw error(fmt::format("duplicate transaction_output key: {}", id));
+            seen |= mask;
             auto &item = it.read_val(std::move(key));
             switch (id) {
                 case 0: address.emplace(item.bytes()); break;
                 case 1: value.emplace(decode_value(item)); break;
                 case 2: datum.emplace(datum_option_t::from_cbor(item)); break;
                 case 3: script_ref.emplace(script_ref_from_cbor(item, decode_script)); break;
-                default: throw error(fmt::format("unsupported transaction_output key: {}", id));
+                default: std::unreachable();
             }
         }
         if (!address) [[unlikely]]

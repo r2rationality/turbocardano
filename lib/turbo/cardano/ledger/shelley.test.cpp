@@ -6,6 +6,7 @@
 #include <turbo/cardano/ledger/shelley.hpp>
 #include <turbo/cardano/ledger/state.hpp>
 #include <turbo/cbor/compare.hpp>
+#include <turbo/common/scheduler.hpp>
 #include <turbo/common/test.hpp>
 #include <turbo/json.hpp>
 
@@ -18,10 +19,46 @@ namespace {
 suite cardano_ledger_shelley_suite = [] {
     using boost::ext::ut::v2_1_0::nothrow;
     "cardano::ledger::shelley"_test = [] {
-        //auto &sched = scheduler::get();
         "max_epoch_slot"_test = [] {
             ledger::shelley::vrf_state st {};
             expect_equal(432000 - 129600, st.max_epoch_slot());
+        };
+        "genesis delegation activation"_test = [] {
+            state st {};
+            const auto genesis = st.shelley_delegs().begin()->first;
+            const auto original = st.shelley_delegs().at(genesis);
+            const auto delegate = pool_hash::from_hex(
+                "FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF");
+            const auto vrf = vrf_vkey::from_hex(
+                "FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF");
+            constexpr uint64_t cert_slot = 10;
+            const auto activation = cert_slot + cardano::config::get().shelley_stability_window;
+
+            st.process_cert(cert_t { genesis_deleg_cert { genesis, delegate, vrf } },
+                cert_loc_t { cert_slot, 0, 0 });
+            expect_equal(original, st.shelley_delegs().at(genesis));
+            expect_equal(original, st.shelley_delegs_schedule().at(activation - 1).at(genesis));
+
+            st.process_cert(cert_t { instant_reward_cert {} }, cert_loc_t { activation, 0, 0 });
+            expect_equal(shelley_delegate { delegate, vrf }, st.shelley_delegs().at(genesis));
+            expect_equal(shelley_delegate { delegate, vrf },
+                st.shelley_delegs_schedule().at(activation).at(genesis));
+
+            file::tmp snapshot { "shelley-genesis-delegation" };
+            st.save_zpp(snapshot.path());
+            state restored { cardano::config::get(), scheduler::get(), state::init_mode::empty };
+            restored.load_zpp(snapshot.path());
+            expect(st.shelley_delegs_schedule() == restored.shelley_delegs_schedule());
+        };
+        "genesis delegation uniqueness"_test = [] {
+            state st {};
+            auto genesis = st.shelley_delegs().begin();
+            const auto other = std::next(genesis);
+            expect(throws([&] {
+                st.process_cert(cert_t { genesis_deleg_cert {
+                    genesis->first, other->second.delegate, other->second.vrf
+                } }, cert_loc_t { 10, 0, 0 });
+            }));
         };
         /*"cbor load/save"_test = [&] {
             state st {};

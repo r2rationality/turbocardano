@@ -20,15 +20,6 @@ namespace turbo::cardano::network::miniprotocol::handshake {
         };
     }
 
-    void node_to_node_version_data_t::to_cbor(cbor::encoder &enc) const
-    {
-        enc.array(4);
-        enc.uint(network_magic);
-        enc.boolean(initiator_only_diffusion_mode);
-        enc.uint(peer_sharing);
-        enc.boolean(query);
-    }
-
     struct handler::impl {
         explicit impl(version_map &&versions, const uint64_t promoted_version):
             _versions { std::move(versions) },

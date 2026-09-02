@@ -29,7 +29,7 @@ namespace turbo::cardano::mary {
                 case 7: static_cast<void>(hash_32 { mv.bytes() }); break; // auxiliary_data_hash
                 case 8: res.validity_start.emplace(mv.uint()); break;
                 case 9: res.mints = mint_t::from_cbor(mv); break;
-                default: throw error(fmt::format("unsupported tx element type: {}", typ));
+                [[unlikely]] default: throw error(fmt::format("unsupported tx element type: {}", typ));
             }
         }
         res.raw = v.data_raw();

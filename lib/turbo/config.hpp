@@ -55,7 +55,7 @@ namespace turbo {
         const json::value &_at_impl(const std::string_view &name) const override
         {
             const auto it = _json.find(name);
-            if (it == _json.end())
+            if (it == _json.end()) [[unlikely]]
                 throw error(fmt::format("Config does not have the requested {} element!", name));
             return it->value();
         }

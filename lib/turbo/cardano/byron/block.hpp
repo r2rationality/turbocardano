@@ -163,6 +163,18 @@ namespace turbo::cardano::byron {
             return _consensus.sig.delegate_vkey();
         }
 
+        uint64_t delegation_epoch() const
+        {
+            return _consensus.sig.certificate().epoch;
+        }
+
+        uint64_t protocol_magic() const
+        {
+            return _protocol_magic.magic;
+        }
+
+        bool delegation_certificate_matches(const cardano::byron_delegate_info &) const;
+
         const buffer signature() const
         {
             return _consensus.sig.signature();
@@ -226,6 +238,7 @@ namespace turbo::cardano::byron {
         struct byron_block_sig_t {
             struct delegate_sig_t {
                 uint64_t epoch;
+                buffer epoch_raw;
                 byron_vkey_t issuer;
                 byron_vkey_t dlg;
                 crypto::ed25519::signature cert;
@@ -247,6 +260,11 @@ namespace turbo::cardano::byron {
             buffer delegate_vkey() const
             {
                 return variant::get_nice<delegate_sig_t>(val).dlg.vkey();
+            }
+
+            const delegate_sig_t &certificate() const
+            {
+                return variant::get_nice<delegate_sig_t>(val);
             }
         };
 

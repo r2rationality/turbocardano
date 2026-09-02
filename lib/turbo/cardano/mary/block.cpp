@@ -12,6 +12,13 @@ namespace turbo::cardano::mary {
     {
     }
 
+    void tx_base::parse_witnesses(cbor::zero2::value &v)
+    {
+        auto decoded = transaction_witness_set_t::from_cbor(v);
+        _wits = std::move(decoded.items);
+        _wits_raw = decoded.raw;
+    }
+
     size_t tx_base::foreach_mint(const mint_observer_t &observer) const
     {
         const auto m = mints();

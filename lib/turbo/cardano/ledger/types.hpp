@@ -65,9 +65,9 @@ namespace turbo::cardano::ledger {
         {
             if (stake > 0) {
                 auto it = map_with_get<C>::find(id);
-                if (it == map_with_get<C>::end()) 
+                if (it == map_with_get<C>::end()) [[unlikely]]
                     throw error(fmt::format("request to remove stake from an unknown id: {}", id));
-                if (it->second < stake)
+                if (it->second < stake) [[unlikely]]
                     throw error(fmt::format("request to delete more stake ({}) than id {} has: {}", stake, id, it->second));
                 it->second -= stake;
                 if (it->second == 0 && remove_zero)
@@ -104,7 +104,7 @@ namespace turbo::cardano::ledger {
         void retire(const typename C::key_type &id)
         {
             auto it = distribution<C>::find(id);
-            if (it == distribution<C>::end())
+            if (it == distribution<C>::end()) [[unlikely]]
                 throw error(fmt::format("retiring an unknown id {}", id));
             distribution<C>::_total_stake -= static_cast<uint64_t>(it->second);
             distribution<C>::erase(it);
@@ -112,7 +112,7 @@ namespace turbo::cardano::ledger {
 
         void add(distribution<C>::iterator it, typename C::mapped_type stake)
         {
-            if (it == distribution<C>::end())
+            if (it == distribution<C>::end()) [[unlikely]]
                 throw error(fmt::format("request to increase an unregistered id by {}", stake));
             distribution<C>::add(it, stake);
         }
@@ -120,7 +120,7 @@ namespace turbo::cardano::ledger {
         void add(const typename C::key_type &id, typename C::mapped_type stake)
         {
             auto it = distribution<C>::find(id);
-            if (it == distribution<C>::end())
+            if (it == distribution<C>::end()) [[unlikely]]
                 throw error(fmt::format("request to increase an unregistered id {} by {}", id, stake));
             add(it, stake);
         }
@@ -147,13 +147,7 @@ namespace turbo::cardano::ledger {
             return { it.read().uint() == 0 ? reward_type::member : reward_type::leader, it.read().bytes(), it.read().uint() };
         }
 
-        void to_cbor(era_encoder &enc) const
-        {
-            enc.array(3)
-                .uint(type == reward_type::leader ? 1 : 0)
-                .bytes(pool_id)
-                .uint(amount);
-        }
+        void to_cbor(era_encoder &) const;
 
         static constexpr auto serialize(auto &archive, auto &self)
         {
@@ -327,7 +321,7 @@ namespace turbo::cardano::ledger {
                 case 0: return mark_deleg;
                 case 1: return set_deleg;
                 case 2: return go_deleg;
-                default: throw error(fmt::format("unsupported deleg_copy index: {}", idx));
+                [[unlikely]] default: throw error(fmt::format("unsupported deleg_copy index: {}", idx));
             }
         }
 
@@ -342,7 +336,7 @@ namespace turbo::cardano::ledger {
                 case 0: return mark_stake;
                 case 1: return set_stake;
                 case 2: return go_stake;
-                default: throw error(fmt::format("unsupported stake_copy index: {}", idx));
+                [[unlikely]] default: throw error(fmt::format("unsupported stake_copy index: {}", idx));
             }
         }
 
@@ -419,7 +413,7 @@ namespace fmt {
                 case turbo::cardano::ledger::reward_type::member:
                     return fmt::format_to(ctx.out(), "reward_type::member");
 
-                default:
+                [[unlikely]] default:
                     return fmt::format_to(ctx.out(), "reward_type::unsupported");
             }
         }

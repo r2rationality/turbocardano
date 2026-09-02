@@ -153,7 +153,8 @@ namespace turbo::cardano::ledger::shelley {
         virtual void treasury(uint64_t new_treasury);
 
         virtual const shelley_delegate_map &shelley_delegs() const;
-        virtual void genesis_deleg_update(const key_hash &hash, const pool_hash &pool_id, const vrf_vkey &vrf_vkey);
+        virtual const shelley_delegate_schedule &shelley_delegs_schedule() const;
+        virtual void genesis_deleg_update(uint64_t slot, const key_hash &hash, const pool_hash &pool_id, const vrf_vkey &vrf_vkey);
         virtual void rotate_snapshots();
 
         virtual void process_cert(const stake_reg_cert &, const cert_loc_t &);
@@ -204,8 +205,9 @@ namespace turbo::cardano::ledger::shelley {
 
         // stateBefore.esLState.delegationState
         ptr_to_stake_map _ptr_to_stake {};
-        shelley_delegate_map _future_shelley_delegs {};
+        future_shelley_delegate_map _future_shelley_delegs {};
         shelley_delegate_map _shelley_delegs { _cfg.shelley_delegates };
+        shelley_delegate_schedule _shelley_delegs_schedule {};
         stake_pointer_distribution _stake_pointers {};
 
         // stateBefore.esLState.delegationState.irwd
@@ -241,15 +243,7 @@ namespace turbo::cardano::ledger::shelley {
         mutable flat_set<pool_hash> _pbft_pools = _make_pbft_pools(_shelley_delegs);
 
         template<std::integral T>
-        static size_t _param_to_cbor(era_encoder &enc, const size_t idx, const std::optional<T> &val)
-        {
-            if (val) {
-                enc.uint(idx);
-                enc.uint(numeric_cast<uint64_t>(*val));
-                return 1;
-            }
-            return 0;
-        }
+        static size_t _param_to_cbor(era_encoder &, size_t, const std::optional<T> &);
 
         static uint8_vector _parse_address(buffer buf);
         static size_t _param_to_cbor(era_encoder &enc, size_t idx, const std::optional<rational_u64> &val);
@@ -323,6 +317,8 @@ namespace turbo::cardano::ledger::shelley {
         std::optional<stake_ident> _extract_stake_id(const address &addr) const;
         void _prep_op_stake_dist();
         void _apply_future_pool_params();
+        void _apply_future_shelley_delegs(uint64_t slot);
+        void _reset_shelley_delegs_schedule(bool complete=true);
         void _add_pool_vrf_key_hash(const vrf_vkey &);
         void _remove_pool_vrf_key_hash(const vrf_vkey &);
         void _recompute_caches() const;
@@ -349,3 +345,5 @@ namespace fmt {
         }
     };
 }
+
+#include <turbo/cardano/ledger/shelley/cbor/encode/protocol-parameter.hpp>

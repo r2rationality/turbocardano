@@ -591,11 +591,11 @@ suite cbor_zero2_test = [] {
             {
                 uint8_vector data {};
                 data << 0x7F;
-                for (size_t i = 0; i < 1025; ++i) {
+                for (size_t i = 0; i <= max_indefinite_string_chunks; ++i) {
                     data << 0x61 << 0x65;
                 }
                 data << 0xFF;
-                expect_equal(1025 * 2 + 2, data.size());
+                expect_equal((max_indefinite_string_chunks + 1) * 2 + 2, data.size());
                 expect(throws([&] {
                     std::string res {};
                     parse(data).get().to_text(res);
@@ -636,11 +636,11 @@ suite cbor_zero2_test = [] {
             {
                 uint8_vector data {};
                 data << 0x5F;
-                for (size_t i = 0; i < 1025; ++i) {
+                for (size_t i = 0; i <= max_indefinite_string_chunks; ++i) {
                     data << 0x41 << 0x00;
                 }
                 data << 0xFF;
-                expect_equal(1025 * 2 + 2, data.size());
+                expect_equal((max_indefinite_string_chunks + 1) * 2 + 2, data.size());
                 expect(throws([&] {
                     uint8_vector res {};
                     parse(data).get().to_bytes(res);

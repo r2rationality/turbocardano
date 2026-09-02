@@ -14,6 +14,7 @@ namespace turbo::cardano::conway {
         std::vector<script_info> plutus_v3_scripts {};
 
         static auxiliary_data_map_t from_cbor(cbor::zero2::value &);
+        void to_cbor(era_encoder &) const;
 
         static constexpr auto serialize(auto &archive, auto &self)
         {
@@ -33,6 +34,7 @@ namespace turbo::cardano::conway {
         value_type value;
 
         static auxiliary_data_t from_cbor(cbor::zero2::value &);
+        void to_cbor(era_encoder &) const;
 
         static constexpr auto serialize(auto &archive, auto &self)
         {
@@ -49,5 +51,6 @@ namespace turbo::cardano::conway {
         buffer raw {};
 
         static auxiliary_data_dict_t from_cbor(cbor::zero2::value &);
+        void to_cbor(era_encoder &) const;
     };
 }

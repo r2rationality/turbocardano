@@ -38,6 +38,7 @@ namespace turbo::cardano {
         uint64_t slot = 0;
         block_hash prev_hash {};
         uint64_t op_seq_no {};
+        uint64_t slots_per_kes_period = cardano::config::get().shelley_slots_per_kes_period;
         tx_list txs {};
         cardano::vrf_nonce vrf_nonce = cardano::vrf_nonce::from_hex("1a3be38bcbb7911969283716ad7aa550250226b76a61fc51cc9a9a35d9276d81");
 
@@ -68,16 +69,18 @@ namespace turbo::cardano {
 
         void _gen_op_cert(cbor::encoder &enc) const
         {
+            if (!slots_per_kes_period) [[unlikely]]
+                throw error("slotsPerKESPeriod must be positive");
             const auto &op_vkey = _kes_sk.vkey();
             byte_array<sizeof(vkey) + 2 * sizeof(uint64_t)> ocert_data {};
             memcpy(ocert_data.data(), op_vkey.data(), op_vkey.size());
             const auto ctr = host_to_net<uint64_t>(op_seq_no);
             memcpy(ocert_data.data() + op_vkey.size(), &ctr, sizeof(uint64_t));
-            const auto kp = host_to_net<uint64_t>(op_seq_no);
+            const auto op_period = slot / slots_per_kes_period;
+            const auto kp = host_to_net<uint64_t>(op_period);
             memcpy(ocert_data.data() + op_vkey.size() + sizeof(uint64_t), &kp, sizeof(uint64_t));
             crypto::ed25519::signature op_signature {};
             crypto::ed25519::sign(op_signature, ocert_data, _cold_sk);
-            const auto op_period = slot / cardano::shelley::kes_period_slots;
             enc.array(4);
             enc.bytes(op_vkey);
             enc.uint(op_seq_no);

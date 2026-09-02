@@ -43,7 +43,7 @@ namespace fmt {
                     return fmt::format_to(ctx.out(), "(program {} {}) (cost: {})", s.version, s.expr, s.cost);
                 }
                 case 1: return fmt::format_to(ctx.out(), "{}", std::get<std::string>(v));
-                default: throw error(fmt::format("unsupported script_info index: {}", v.index()));
+                [[unlikely]] default: throw error(fmt::format("unsupported script_info index: {}", v.index()));
             }
         }
     };

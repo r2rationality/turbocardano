@@ -37,7 +37,7 @@ namespace turbo::cli::test_flat_encoder {
                                 const auto exp = file::read(script_path);
                                 flat::script s { alloc, exp };
                                 const auto act = flat::encode_cbor(s.version(), s.program());
-                                if (act != exp) {
+                                if (act != exp) [[unlikely]] {
                                     logger::warn("{}: {}", script_path, stringify_diff(exp, act));
                                     throw error(fmt::format("reencoded value does not match!", script_path));
                                 }

@@ -127,7 +127,7 @@ namespace turbo {
                     if (!rem)
                         return size;
                     const auto padding = alignment - rem;
-                    if (size > std::numeric_limits<size_t>::max() - padding)
+                    if (size > std::numeric_limits<size_t>::max() - padding) [[unlikely]]
                         throw std::bad_array_new_length {};
                     return size + padding;
                 }
@@ -155,7 +155,7 @@ namespace turbo {
             static void _add_arena(bucket_t &bucket)
             {
                 const auto capacity = bucket.next_arena_capacity;
-                if (bucket.stride > std::numeric_limits<size_t>::max() / capacity)
+                if (bucket.stride > std::numeric_limits<size_t>::max() / capacity) [[unlikely]]
                     throw std::bad_array_new_length {};
                 const auto arena_size = capacity * bucket.stride;
                 auto *arena = operator new(arena_size, std::align_val_t { bucket.alignment });
@@ -243,7 +243,7 @@ namespace turbo {
 
         [[nodiscard]] T *allocate(const size_t n=1)
         {
-            if (n > std::numeric_limits<size_t>::max() / sizeof(T))
+            if (n > std::numeric_limits<size_t>::max() / sizeof(T)) [[unlikely]]
                 throw std::bad_array_new_length {};
             return static_cast<T *>(_get_resource().allocate(n * sizeof(T), alignof(T)));
         }

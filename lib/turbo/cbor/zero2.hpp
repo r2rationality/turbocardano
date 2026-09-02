@@ -16,6 +16,7 @@
 #include <array>
 #include <boost/numeric/conversion/cast.hpp>
 #include <optional>
+#include <utility>
 #include <turbo/common/bytes.hpp>
 #include <turbo/common/error.hpp>
 #include <turbo/common/format.hpp>
@@ -55,6 +56,13 @@ namespace turbo::cbor::zero2 {
         virtual void consume() =0;
 
         value *next_chunk(value &);
+
+        [[noreturn]] static void throw_chunk_limit_error()
+        {
+            throw error(fmt::format(
+                "CBOR chunked values may not have more than {} chunks!",
+                max_indefinite_string_chunks));
+        }
     };
 
     struct simple_reader: reader {
@@ -115,6 +123,8 @@ namespace turbo::cbor::zero2 {
         void read(std::pmr::vector<uint8_t> &b) override;
         void read(uint8_vector &b) override;
         buffer read() override;
+        template<typename FUNC>
+        size_t for_each_chunk(FUNC &&);
         void consume() override;
     private:
         value &_dec_level;
@@ -233,7 +243,12 @@ namespace turbo::cbor::zero2 {
         {
             switch (type()) {
                 case major_type::uint: return numeric_cast<int64_t>(uint());
-                case major_type::nint: return -numeric_cast<int64_t>(nint());
+                case major_type::nint: {
+                    const auto magnitude = nint();
+                    if (magnitude == uint64_t { 1 } << 63)
+                        return std::numeric_limits<int64_t>::min();
+                    return -numeric_cast<int64_t>(magnitude);
+                }
                 [[unlikely]] default: throw error(fmt::format("expected for an integer but got: {}!", type()));
             }
         }
@@ -256,6 +271,18 @@ namespace turbo::cbor::zero2 {
         void to_bytes(uint8_vector &res)
         {
             return _reader_cast<bytes_reader>().read(res);
+        }
+
+        template<typename FUNC>
+        size_t for_each_bytes_chunk(FUNC &&func)
+        {
+            if (!indefinite()) [[likely]] {
+                const auto data = bytes();
+                func(data);
+                return data.size();
+            }
+            return _reader_cast<chunked_bytes_reader>().for_each_chunk(
+                std::forward<FUNC>(func));
         }
 
         std::string_view text()
@@ -1019,49 +1046,68 @@ namespace turbo::cbor::zero2 {
         auto *first_chunk = next_chunk(_dec_level);
         if (!first_chunk) [[unlikely]]
             return {};
+        if (first_chunk->type() != major_type::text || first_chunk->indefinite()) [[unlikely]]
+            throw error("CBOR chunked text strings require definite text-string chunks");
+        const auto data = first_chunk->text();
         if (const auto *second_chunk = next_chunk(_dec_level); second_chunk) [[unlikely]]
-            throw error("A conversion from a CBOR chunked string into a sing string_view is unavailable for multi-chunk strings!");
-        return first_chunk->data_special();
-        throw error("a chunked string cannot be represented as a single buffer!");
+            throw error("A conversion from a CBOR chunked string into a single string_view is unavailable for multi-chunk strings!");
+        return data;
     }
 
     inline void chunked_text_reader::read(std::pmr::string &s)
     {
         s.clear();
-        for (size_t i = 0; i < 1024; ++i) {
+        for (size_t i = 0; i < max_indefinite_string_chunks; ++i) {
             auto *chunk = next_chunk(_dec_level);
             if (!chunk)
                 return;
-            const auto bytes = chunk->data_special();
-            s.insert(s.end(), bytes.begin(), bytes.end());
+            if (chunk->type() != major_type::text || chunk->indefinite()) [[unlikely]]
+                throw error("CBOR chunked text strings require definite text-string chunks");
+            const auto text = chunk->text();
+            s.insert(s.end(), text.begin(), text.end());
         }
-        throw error("CBOR chunked values may not have more than 1024 chunks!");
+        if (!next_chunk(_dec_level))
+            return;
+        throw_chunk_limit_error();
     }
 
     inline void chunked_text_reader::read(std::string &s)
     {
         s.clear();
-        for (size_t i = 0; i < 1024; ++i) {
+        for (size_t i = 0; i < max_indefinite_string_chunks; ++i) {
             auto *chunk = next_chunk(_dec_level);
             if (!chunk)
                 return;
-            const auto bytes = chunk->data_special();
-            s.insert(s.end(), bytes.begin(), bytes.end());
+            if (chunk->type() != major_type::text || chunk->indefinite()) [[unlikely]]
+                throw error("CBOR chunked text strings require definite text-string chunks");
+            const auto text = chunk->text();
+            s.insert(s.end(), text.begin(), text.end());
         }
-        throw error("CBOR chunked values may not have more than 1024 chunks!");
+        if (!next_chunk(_dec_level))
+            return;
+        throw_chunk_limit_error();
     }
 
     inline void chunked_text_reader::consume()
     {
-        for (size_t i = 0; i < 1024; ++i) {
+        const auto finish = [&] {
+            _parent(this)._dec.step(1);
+            _parent(this)._dec.pop();
+            _parent(this)._mark_end();
+        };
+        for (size_t i = 0; i < max_indefinite_string_chunks; ++i) {
             if (const auto *chunk = next_chunk(_dec_level); !chunk) {
-                _parent(this)._dec.step(1);
-                _parent(this)._dec.pop();
-                _parent(this)._mark_end();
+                finish();
                 return;
+            } else if (chunk->type() != major_type::text || chunk->indefinite()) [[unlikely]] {
+                throw error("CBOR chunked text strings require definite text-string chunks");
             }
         }
-        throw error("CBOR chunked values may not have more than 1024 chunks!");
+        if (!next_chunk(_dec_level)) {
+            finish();
+            return;
+        }
+        throw_chunk_limit_error();
     }
 
     inline buffer bytes_reader::read()
@@ -1087,48 +1133,65 @@ namespace turbo::cbor::zero2 {
         auto *first_chunk = next_chunk(_dec_level);
         if (!first_chunk) [[unlikely]]
             return {};
+        if (first_chunk->type() != major_type::bytes || first_chunk->indefinite()) [[unlikely]]
+            throw error("CBOR chunked byte strings require definite byte-string chunks");
+        const auto data = first_chunk->bytes();
         if (const auto *second_chunk = next_chunk(_dec_level); second_chunk) [[unlikely]]
             throw error("A conversion of a CBOR chunked value into a single buffer is unavailable for multi-chunk values!");
-        return first_chunk->data_special();
+        return data;
     }
 
     inline void chunked_bytes_reader::read(std::pmr::vector<uint8_t> &b)
     {
         b.clear();
-        for (size_t i = 0; i < 1024; ++i) {
-            auto *chunk = next_chunk(_dec_level);
-            if (!chunk)
-                return;
-            const auto bytes = chunk->data_special();
-            b << bytes;
-        }
-        throw error("CBOR chunked values may not have more than 1024 chunks!");
+        for_each_chunk([&](const buffer bytes) { b << bytes; });
     }
 
     inline void chunked_bytes_reader::read(uint8_vector &b)
     {
         b.clear();
-        for (size_t i = 0; i < 1024; ++i) {
+        for_each_chunk([&](const buffer bytes) { b << bytes; });
+    }
+
+    template<typename FUNC>
+    inline size_t chunked_bytes_reader::for_each_chunk(FUNC &&func)
+    {
+        size_t total = 0;
+        for (size_t i = 0; i < max_indefinite_string_chunks; ++i) {
             auto *chunk = next_chunk(_dec_level);
             if (!chunk)
-                return;
-            const auto bytes = chunk->data_special();
-            b << bytes;
+                return total;
+            if (chunk->type() != major_type::bytes || chunk->indefinite()) [[unlikely]]
+                throw error("CBOR chunked byte strings require definite byte-string chunks");
+            const auto data = chunk->bytes();
+            func(data);
+            total += data.size();
         }
-        throw error("CBOR chunked values may not have more than 1024 chunks!");
+        if (!next_chunk(_dec_level))
+            return total;
+        throw_chunk_limit_error();
     }
 
     inline void chunked_bytes_reader::consume()
     {
-        for (size_t i = 0; i < 1024; ++i) {
+        const auto finish = [&] {
+            _parent(this)._dec.step(1);
+            _parent(this)._dec.pop();
+            _parent(this)._mark_end();
+        };
+        for (size_t i = 0; i < max_indefinite_string_chunks; ++i) {
             if (const auto *chunk = next_chunk(_dec_level); !chunk) {
-                _parent(this)._dec.step(1);
-                _parent(this)._dec.pop();
-                _parent(this)._mark_end();
+                finish();
                 return;
+            } else if (chunk->type() != major_type::bytes || chunk->indefinite()) [[unlikely]] {
+                throw error("CBOR chunked byte strings require definite byte-string chunks");
             }
         }
-        throw error("CBOR chunked values may not have more than 1024 chunks!");
+        if (!next_chunk(_dec_level)) {
+            finish();
+            return;
+        }
+        throw_chunk_limit_error();
     }
 
     inline tag_reader::tag_reader(value &dec_level):

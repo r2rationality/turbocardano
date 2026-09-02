@@ -73,9 +73,9 @@ namespace turbo::cli::validate {
                     timer txwit_timer { fmt::format("{} transaction witness validation", validation_mode), logger::level::info };
                     cardano::optional_point validate_from {};
                     if (validation_mode == sync::validation_mode_t::turbo) {
-                        const auto tail = cr.tail_relative_stake();
-                        if (!tail.empty() && tail.begin()->second > 0.5)
-                            validate_from = tail.begin()->first;
+                        validate_from = cr.core_tip();
+                        if (!validate_from)
+                            logger::warn("turbo found no certified core; validating transaction witnesses from genesis");
                     }
                     const auto new_valid_tip = txwit::validate(cr, validate_from, new_local_tip, txwit::witness_type::all);
                     logger::debug("the new valid tip: {}", new_valid_tip);

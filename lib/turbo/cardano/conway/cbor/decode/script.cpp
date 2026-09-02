@@ -3,6 +3,8 @@
  * Copyright (c) 2024-2026 R2 Rationality OÜ (info at r2rationality dot com)
  * License: https://github.com/r2rationality/turbocardano/blob/main/LICENSE */
 
+#include <turbo/cardano/allegra/block.hpp>
+#include <turbo/cardano/common/cbor/decode/script.hpp>
 #include <turbo/cardano/conway/transaction.hpp>
 
 namespace turbo::cardano::conway {
@@ -14,7 +16,7 @@ namespace turbo::cardano::conway {
                 case 1: return script_type::plutus_v1;
                 case 2: return script_type::plutus_v2;
                 case 3: return script_type::plutus_v3;
-                default: throw error(fmt::format("unsupported script_type: {}", type));
+                [[unlikely]] default: throw error(fmt::format("unsupported script_type: {}", type));
             }
         }
     }
@@ -24,7 +26,8 @@ namespace turbo::cardano::conway {
         auto &it = v.array();
         const auto s_typ = script_type_from_cbor(it.read());
         auto &script = it.read();
-        script_t res { script_info { s_typ, s_typ == script_type::native ? script.data_raw() : script.bytes() } };
+        script_t res { ::turbo::cardano::detail::script_info_from_cbor(
+            s_typ, script, allegra::native_script_t::validate_cbor) };
         if (!it.done()) [[unlikely]]
             throw error("unexpected trailing script elements");
         return res;

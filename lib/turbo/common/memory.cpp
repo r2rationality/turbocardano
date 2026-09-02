@@ -73,7 +73,7 @@ namespace turbo::memory {
             return static_cast<size_t>(pmc.PeakWorkingSetSize >> 20U);
 #       else
             struct rusage ru {};
-            if (getrusage(RUSAGE_SELF, &ru) != 0)
+            if (getrusage(RUSAGE_SELF, &ru) != 0) [[unlikely]]
                 throw error_sys("getrusage failed");
 #           ifdef __APPLE__
             return static_cast<size_t>(ru.ru_maxrss >> 20U); // macOS reports in bytes

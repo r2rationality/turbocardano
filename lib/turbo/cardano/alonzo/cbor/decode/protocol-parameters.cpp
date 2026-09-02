@@ -47,6 +47,9 @@ namespace turbo::cardano {
             it.read().uint(),
             it.read().uint()
         };
+        if (res.mem > std::numeric_limits<int64_t>::max()
+                || res.steps > std::numeric_limits<int64_t>::max()) [[unlikely]]
+            throw error("execution units exceed max_int64");
         if (!it.done()) [[unlikely]]
             throw error("unexpected trailing ex_units elements");
         return res;

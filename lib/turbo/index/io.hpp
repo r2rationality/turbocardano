@@ -74,7 +74,7 @@ namespace turbo::index {
                 _num_parts { num_partitions }, _chunk_size { chunk_size },
                 _os { _path + ".tmp" }
         {
-            if (_num_parts > max_parts)
+            if (_num_parts > max_parts) [[unlikely]]
                 throw error(fmt::format("num_partitions: {} is greater than the pre-configured maximum: {}!", _num_parts, max_parts));
             for (auto &buf: _bufs)
                 buf.resize(chunk_size);
@@ -102,7 +102,7 @@ namespace turbo::index {
         template<typename ...A>
         const T &emplace_part(size_t part_id, A &&...args)
         {
-            if (_commited)
+            if (_commited) [[unlikely]]
                 throw error(fmt::format("writer::emplace_part {} has already been commited!", _path));
             auto &cnt = _cnts.at(part_id);
             auto &buf = _bufs.at(part_id);
@@ -138,11 +138,11 @@ namespace turbo::index {
         void set_meta(const std::string &name, const buffer &data)
         {
             mutex::scoped_lock lock { _write_mutex };
-            if (_commited)
+            if (_commited) [[unlikely]]
                 throw error(fmt::format("set_meta called for {} after it has been commited!", _path));
-            if (name.size() > 255)
+            if (name.size() > 255) [[unlikely]]
                 throw error(fmt::format("name of metadata item is too long: {}!", name.size()));
-            if (data.size() > 255)
+            if (data.size() > 255) [[unlikely]]
                 throw error(fmt::format("size of the metadata item is too big: {}!", data.size()));
             _meta[name] = data;
         }
@@ -166,7 +166,7 @@ namespace turbo::index {
 
         void _commit()
         {
-            if (_commited)
+            if (_commited) [[unlikely]]
                 throw error(fmt::format("writer::commit {} has already been commited!", _path));
             {
                 mutex::scoped_lock lock { _write_mutex };
@@ -177,7 +177,7 @@ namespace turbo::index {
                 _flush_part(i);
             mutex::scoped_lock lock { _write_mutex };
             uint64_t meta_off = _os.tellp();
-            if (_meta.size() > 255)
+            if (_meta.size() > 255) [[unlikely]]
                 throw error(fmt::format("internal error: only up to 255 meta items are supported but got: {}", _meta.size()));
             const uint8_t meta_size = _meta.size();
             uint8_vector meta_buf {};
@@ -185,9 +185,9 @@ namespace turbo::index {
                 << buffer::from(_chunk_size)
                 << buffer::from(meta_size);
             for (const auto &[name, data]: _meta) {
-                if (name.size() > 255)
+                if (name.size() > 255) [[unlikely]]
                     throw error(fmt::format("internal error: metadata name must not exceed 255 bytes but got {}", name.size()));
-                if (data.size() > 255)
+                if (data.size() > 255) [[unlikely]]
                     throw error(fmt::format("internal error: metadata value must not exceed 255 bytes but got {}", data.size()));
                 uint8_t name_size = name.size();
                 uint8_t data_size = data.size();
@@ -217,10 +217,10 @@ namespace turbo::index {
             size_t cnt_flushed = part.size() * _chunk_size;
             if (cnt > cnt_flushed) {
                 size_t cnt_todo = cnt - cnt_flushed;
-                if (!_commited && cnt_todo != _chunk_size)
+                if (!_commited && cnt_todo != _chunk_size) [[unlikely]]
                     throw error("internal_error: only the final chunk may have a size less than chunk_size constant!");
                 auto &buf = _bufs.at(part_id);
-                if (part.size() > 0 && buf.at(cnt_todo - 1) < part.back().max_item)
+                if (part.size() > 0 && buf.at(cnt_todo - 1) < part.back().max_item) [[unlikely]]
                     throw error(fmt::format("{} partition-{} chunks {} and {} are not ordered!", _path, part_id, part.size() - 1, part.size()));
                 const buffer data { reinterpret_cast<uint8_t *>(buf.data()), cnt_todo * sizeof(T) };
                 thread_local uint8_vector comp_data {};
@@ -228,7 +228,7 @@ namespace turbo::index {
 
                 mutex::scoped_lock lock { _write_mutex };
                 size_t fact_off = _os.tellp();
-                if (fact_off != _free_off)
+                if (fact_off != _free_off) [[unlikely]]
                     throw error(fmt::format("internal error with {}: expected file position {} but got {}", _path, (size_t)_free_off, fact_off));
                 auto packed_hash = crypto::blake2b::digest<crypto::blake2b::hash_8>(comp_data);
                 part.emplace_back(_free_off, comp_data.size(), buf.at(cnt_todo - 1), packed_hash);
@@ -255,7 +255,7 @@ namespace turbo::index {
         template<typename ...A>
         const T &emplace_part(size_t part_idx, A &&...args)
         {
-            if (_commited)
+            if (_commited) [[unlikely]]
                 throw error(fmt::format("sorting-writer::emplace_part {} has already been commited!", _writer.path()));
             auto &buf = _bufs.at(part_idx);
             auto &item = buf.emplace_back(std::forward<A>(args)...);
@@ -309,7 +309,7 @@ namespace turbo::index {
             : _path { path }, _is { _path }
         {
             auto data_size = std::filesystem::file_size(_path);
-            if (data_size < sizeof(uint64_t))
+            if (data_size < sizeof(uint64_t)) [[unlikely]]
                 throw error(fmt::format("{} is too small - no metadata can be found", _path));
             _is.seek(data_size - sizeof(uint64_t));
             uint64_t meta_off;
@@ -322,13 +322,13 @@ namespace turbo::index {
             _is.read(meta_buf.data(), meta_buf_size);
             _is.read(&meta_hash, sizeof(meta_hash));
             auto meta_hash_computed = crypto::blake2b::digest<crypto::blake2b::hash_8>(meta_buf);
-            if (meta_hash_computed != meta_hash)
+            if (meta_hash_computed != meta_hash) [[unlikely]]
                 throw error(fmt::format("{}: metadata hash mismatch computed: {} vs stored: {}", _path, meta_hash_computed, meta_hash));
             _is.seek(meta_off);
             _is.read(&_num_parts, sizeof(_num_parts));
-            if (_num_parts == 0)
+            if (_num_parts == 0) [[unlikely]]
                 throw error(fmt::format("num_partitions is {} for {}!", _num_parts, _path));
-            if (_num_parts > max_parts)
+            if (_num_parts > max_parts) [[unlikely]]
                 throw error(fmt::format("num_partitions: {} is greater than the preconfigured maximum: {}!", _num_parts, max_parts));
             _is.read(&_chunk_size, sizeof(_chunk_size));
             uint8_t meta_cnt;
@@ -359,7 +359,7 @@ namespace turbo::index {
                     chunk_list.resize(list_size);
                     _is.read(chunk_list.data(), sizeof(chunk_list[0]) * list_size);
                     for (size_t ci = 1; ci < chunk_list.size(); ci++) {
-                        if (chunk_list.at(ci).max_item < chunk_list.at(ci - 1).max_item)
+                        if (chunk_list.at(ci).max_item < chunk_list.at(ci - 1).max_item) [[unlikely]]
                             throw error(fmt::format("index {}: partition-{} chunks {} and {} are not ordered!", _path, p, ci - 1, ci));
                     }
                     _max_items.at(p) = chunk_list.back().max_item;
@@ -368,7 +368,7 @@ namespace turbo::index {
                 }
             }
             for (size_t pi = 1; pi < _num_parts; ++pi) {
-                if (_max_items.at(pi) < _max_items.at(pi - 1))
+                if (_max_items.at(pi) < _max_items.at(pi - 1)) [[unlikely]]
                     throw error(fmt::format("index {}: partitions {} and {} are not ordered!", _path, pi - 1, pi));
             }
         }
@@ -456,7 +456,7 @@ namespace turbo::index {
         buffer get_meta(const std::string &name) const
         {
             auto it = _meta.find(name);
-            if (it == _meta.end())
+            if (it == _meta.end()) [[unlikely]]
                 throw error(fmt::format("unknown metadata item: {}!", name));
             return it->second;
         }
@@ -482,7 +482,7 @@ namespace turbo::index {
             size_t t_part_idx = _thread_part_idx(part_idx, t);
             const auto &cnt = _cnts.at(part_idx);
             auto &offset = t.offsets.at(t_part_idx);
-            if (new_offset >= cnt)
+            if (new_offset >= cnt) [[unlikely]]
                 throw error(fmt::format("offset is larger than the number of available elements: {} >= {}", new_offset, cnt));
             offset = new_offset;
         }
@@ -548,7 +548,7 @@ namespace turbo::index {
         static size_t _thread_part_idx(size_t part_idx, thread_data &t)
         {
             if (t.single_part_idx != max_parts) {
-                if (part_idx != t.single_part_idx)
+                if (part_idx != t.single_part_idx) [[unlikely]]
                     throw error(fmt::format("reader configured for a single partition {} but got request for data from partition {}!", t.single_part_idx, part_idx));
                 part_idx = 0;
             }
@@ -575,7 +575,7 @@ namespace turbo::index {
                 _is.read(t.read_buf.data(), t.read_buf.size());
             }
             auto packed_hash = crypto::blake2b::digest<crypto::blake2b::hash_8>(t.read_buf);
-            if (packed_hash != chunk.packed_hash)
+            if (packed_hash != chunk.packed_hash) [[unlikely]]
                 throw error(fmt::format("corrupted chunk data in index {} part {} chunk {} at offset {} size {} hash {} while expected hash {}",
                         _path, part_idx, new_chunk_idx, chunk.file_offset, chunk.packed_size, packed_hash, chunk.packed_hash));
             std::span<uint8_t> cache_buf { reinterpret_cast<uint8_t *>(cache.data()), sizeof(T) * cache.size() };
@@ -683,12 +683,12 @@ namespace turbo::index {
             for (size_t ri = 0; ri < _readers.size(); ++ri) {
                 auto &reader = _readers.at(ri);
                 if (n_parts) {
-                    if (*n_parts != reader->num_parts())
+                    if (*n_parts != reader->num_parts()) [[unlikely]]
                         throw error("index slices have differing number of partitions!");
                 } else
                     n_parts.emplace(reader->num_parts());
             }
-            if (!n_parts)
+            if (!n_parts) [[unlikely]]
                 throw error("can't determine the number of partitions in a multi-slice index");
             return *n_parts;
         }
@@ -815,7 +815,7 @@ namespace turbo::index {
         static size_t _thread_part_no(size_t part_no, thread_data &t)
         {
             if (t.single_part_no != max_parts) {
-                if (part_no != t.single_part_no)
+                if (part_no != t.single_part_no) [[unlikely]]
                     throw error(fmt::format("reader configured for a single partition {} but got request for data from partition {}!", t.single_part_no, part_no));
                 part_no = 0;
             }

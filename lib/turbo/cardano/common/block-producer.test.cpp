@@ -33,6 +33,16 @@ suite cardano_block_producer_suite = [] {
             expect_equal(0, blk->slot());
             expect(blk->signature_ok());
         };
+        "nonzero KES start period"_test = [] {
+            const auto seed = blake2b::digest<ed25519::seed>(std::string_view { "kes-period" });
+            const auto cold_sk = ed25519::create_sk_from_seed(seed);
+            block_producer bp { cold_sk, seed, vrf03_create_sk_from_seed(seed) };
+            bp.slot = bp.slots_per_kes_period;
+            const auto raw_data = bp.cbor();
+            auto block_tuple = cbor::zero2::parse(raw_data);
+            const block_container blk { 0, block_tuple.get() };
+            expect(blk->signature_ok());
+        };
         "two producers"_test = [] {
             uint8_vector chain {};
 

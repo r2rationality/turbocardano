@@ -255,7 +255,7 @@ namespace turbo::plutus::flat {
 
         type_tag _decode_next_type_tag()
         {
-            if (!_next_bit())
+            if (!_next_bit()) [[unlikely]]
                 throw error("type list too short!");
             return static_cast<type_tag>(_decode_fixed_uint<4>());
         }
@@ -284,7 +284,7 @@ namespace turbo::plutus::flat {
                 }
                 case type_tag::application:
                     return _decode_type_application();
-                default:
+                [[unlikely]] default:
                     throw error(fmt::format("unsupported container type for an application: {}", container_tag));
             }
         }
@@ -308,7 +308,7 @@ namespace turbo::plutus::flat {
                     throw error("list and pair types are supported only within a type application");
                 case type_tag::application:
                     return _decode_type_application();
-                default: throw error(fmt::format("unsupported constant type: {}", static_cast<int>(typ)));
+                [[unlikely]] default: throw error(fmt::format("unsupported constant type: {}", static_cast<int>(typ)));
             }
         }
 
@@ -365,13 +365,13 @@ namespace turbo::plutus::flat {
                     auto snd = _decode_constant_val(typ->nested.back());
                     return { _alloc, constant_pair { _alloc, std::move(fst), std::move(snd) } };
                 }
-                default: throw error(fmt::format("unsupported constant type: {}", static_cast<int>(typ->typ)));
+                [[unlikely]] default: throw error(fmt::format("unsupported constant type: {}", static_cast<int>(typ->typ)));
             }
         }
 
         constant _decode_constant()
         {
-            if (!_next_bit())
+            if (!_next_bit()) [[unlikely]]
                 throw error(fmt::format("no type is defined at byte: {}!", _byte_pos()));
             auto typ = _decode_constant_type(static_cast<type_tag>(_decode_fixed_uint<4>()));
             while (_next_bit())
@@ -517,7 +517,7 @@ namespace turbo::plutus::flat {
                 case term_tag::acase:
                     script_validation::check_term_version(_ver, typ);
                     return { _alloc, _decode_case() };
-                default: throw error(fmt::format("unexpected term: {}", static_cast<int>(typ)));
+                [[unlikely]] default: throw error(fmt::format("unexpected term: {}", static_cast<int>(typ)));
             }
         }
 

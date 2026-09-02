@@ -538,7 +538,7 @@ namespace turbo::plutus {
 
         static bstr_type from_hex(allocator &alloc, const std::string_view hex)
         {
-            if (hex.size() % 2 != 0)
+            if (hex.size() % 2 != 0) [[unlikely]]
                 throw error(fmt::format("hex string must have an even number of characters but got {}!", hex.size()));
             bstr_type::value_type data { alloc, hex.size() / 2 };
             init_from_hex(data, hex);
@@ -586,6 +586,8 @@ namespace turbo::plutus {
         using value_type = std::variant<data_constr, map_type, list_type, int_type, bstr_type>;
 
         static data from_cbor(allocator &alloc, buffer);
+        static void validate_cbor(cbor::zero2::value &);
+        static void validate_cbor(buffer);
         static data bstr(allocator &alloc, const bstr_type &);
         static data bstr(allocator &alloc, buffer);
         static data bint(allocator &alloc, uint64_t);
@@ -1163,7 +1165,7 @@ namespace turbo::plutus {
                     case term_tag::delay: return visitor(t_delay { v.expr });
                     case term_tag::force: return visitor(force { v.expr });
                     case term_tag::lambda: return visitor(t_lambda { v.expr });
-                    default: throw error(fmt::format("invalid unary term tag: {}", v.tag));
+                    [[unlikely]] default: throw error(fmt::format("invalid unary term tag: {}", v.tag));
                 }
             }
             case storage_tag::apply:

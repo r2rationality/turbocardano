@@ -109,7 +109,7 @@ namespace turbo {
             }
 
             const_iterator &operator++() {
-                if (_part_it == _container->partition(_part_idx).end())
+                if (_part_it == _container->partition(_part_idx).end()) [[unlikely]]
                     throw error("attempt to iterate beyond the end of the container");
                 ++_part_it;
                 _next_valid();
@@ -181,7 +181,7 @@ namespace turbo {
             }
 
             iterator &operator++() {
-                if (_part_it == _container->partition(_part_idx).end())
+                if (_part_it == _container->partition(_part_idx).end()) [[unlikely]]
                     throw error("attempt to iterate beyond the end of the container");
                 ++_part_it;
                 _next_valid();
@@ -252,7 +252,7 @@ namespace turbo {
             if (!empty())
                 clear();
             for (const auto &[k, v]: m) {
-                if (auto [it, created] = try_emplace(k, v); !created)
+                if (auto [it, created] = try_emplace(k, v); !created) [[unlikely]]
                     throw error(fmt::format("duplicate key {}", k));
             }
             return *this;
@@ -417,7 +417,7 @@ namespace turbo {
         {
             auto &part = _parts[partition_idx(k)];
             auto it = part.find(k);
-            if (it == part.end())
+            if (it == part.end()) [[unlikely]]
                 throw error(fmt::format("unknown key: {}", k));
             return it->second;
         }
@@ -426,7 +426,7 @@ namespace turbo {
         {
             auto &part = _parts[partition_idx(k)];
             auto it = part.find(k);
-            if (it == part.end())
+            if (it == part.end()) [[unlikely]]
                 throw error(fmt::format("unknown key: {}", k));
             return it->second;
         }
@@ -479,7 +479,7 @@ namespace turbo {
 
         static void _check_part_idx(size_t part_idx)
         {
-            if (part_idx >= num_parts)
+            if (part_idx >= num_parts) [[unlikely]]
                 throw error(fmt::format("partition idx is too big {}", part_idx));
         }
 

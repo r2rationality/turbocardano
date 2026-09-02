@@ -45,13 +45,13 @@ namespace turbo::json {
     inline json::value parse_signed(const buffer &buf, const buffer &vk, json::storage_ptr sp={})
     {
         auto j_signed = boost::json::parse(static_cast<std::string_view>(buf), sp).as_object();
-        if (!j_signed.contains("signature"))
+        if (!j_signed.contains("signature")) [[unlikely]]
             throw error("a signed json must contain signature!");
         const auto sig = crypto::ed25519::signature::from_hex(static_cast<std::string_view>(j_signed.at("signature").as_string()));
         j_signed.erase("signature");
         const auto content = json::serialize(j_signed);
         const auto hash = crypto::blake2b::digest(static_cast<std::string_view>(content));
-        if (!crypto::ed25519::verify(sig, vk, hash))
+        if (!crypto::ed25519::verify(sig, vk, hash)) [[unlikely]]
             throw error("Verification of a signed JSON response has failed!");
         return j_signed;
     }

@@ -13,6 +13,7 @@ namespace turbo::cardano::babbage {
 
     struct block_header: block_header_base {
         block_header(uint64_t era, cbor::zero2::value &hdr, const cardano::config &cfg);
+        void to_cbor(era_encoder &) const;
 
         const block_hash &hash() const override
         {
@@ -99,6 +100,7 @@ namespace turbo::cardano::babbage {
         struct body_t {
             uint64_t block_number;
             uint64_t slot;
+            bool prev_hash_is_null = false;
             block_hash prev_hash;
             vkey issuer_vkey;
             cardano::vrf_vkey vrf_vkey;

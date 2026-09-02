@@ -45,7 +45,7 @@ namespace turbo::cli::sync_p2p {
             auto max_inflight_bytes = sync::p2p::syncer::auto_max_inflight_bytes;
             if (const auto opt_it = opts.find("max-inflight-mib"); opt_it != opts.end() && opt_it->second) {
                 const auto max_inflight_mib = std::stoull(*opt_it->second);
-                if (!max_inflight_mib || max_inflight_mib > (std::numeric_limits<size_t>::max() >> 20U))
+                if (!max_inflight_mib || max_inflight_mib > (std::numeric_limits<size_t>::max() >> 20U)) [[unlikely]]
                     throw error(fmt::format("invalid max-inflight-mib value: {}", max_inflight_mib));
                 max_inflight_bytes = static_cast<size_t>(max_inflight_mib) << 20U;
             }

@@ -11,12 +11,14 @@ namespace turbo::cardano::shelley {
 
     struct metadatum_t {
         using array_t = std::vector<metadatum_t>;
-        using map_t = flat_map<metadatum_t, metadatum_t>;
+        // Metadata maps preserve their CBOR order and may contain duplicate keys.
+        using map_t = std::vector<std::pair<metadatum_t, metadatum_t>>;
         using value_type = std::variant<int64_t, nint64_t, uint8_vector, std::string, array_t, map_t>;
 
         value_type value;
 
         static metadatum_t from_cbor(cbor::zero2::value &);
+        void to_cbor(era_encoder &) const;
 
         static constexpr auto serialize(auto &archive, auto &self)
         {
@@ -47,6 +49,7 @@ namespace turbo::cardano::shelley {
         flat_map<metadatum_label_t, metadatum_t> dict {};
 
         static metadata_t from_cbor(cbor::zero2::value &);
+        void to_cbor(era_encoder &) const;
 
         static constexpr auto serialize(auto &archive, auto &self)
         {

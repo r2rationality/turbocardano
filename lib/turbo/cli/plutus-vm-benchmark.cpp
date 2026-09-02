@@ -54,11 +54,11 @@ namespace turbo::cli::plutus_vm_benchmark {
             const auto min_time = parse_duration(opts.at("min-time").value());
             const auto max_iterations = parse_positive_size(opts, "max-iterations");
             const auto warmup = from_str<size_t>(opts.at("warmup").value());
-            if (max_iterations < min_iterations)
+            if (max_iterations < min_iterations) [[unlikely]]
                 throw error("--max-iterations must be greater than or equal to --iterations");
             auto paths = file::files_with_ext_path(args.at(0), ".flat");
             std::ranges::sort(paths);
-            if (paths.empty())
+            if (paths.empty()) [[unlikely]]
                 throw error(fmt::format("no .flat scripts found in {}", args.at(0)));
 
             std::string csv { "vm,script,mean_ns,median_ns,min_ns,max_ns,stddev_ns,iterations\n" };
@@ -98,7 +98,7 @@ namespace turbo::cli::plutus_vm_benchmark {
         static size_t parse_positive_size(const options &opts, const std::string_view name)
         {
             const auto value = from_str<size_t>(opts.at(std::string { name }).value());
-            if (value == 0)
+            if (value == 0) [[unlikely]]
                 throw error(fmt::format("--{} must be greater than zero", name));
             return value;
         }
@@ -123,12 +123,12 @@ namespace turbo::cli::plutus_vm_benchmark {
                 } catch (const std::exception &) {
                     throw error(fmt::format("invalid --min-time value: {}", text));
                 }
-                if (parsed != number.size() || !std::isfinite(value) || value <= 0.0)
+                if (parsed != number.size() || !std::isfinite(value) || value <= 0.0) [[unlikely]]
                     throw error(fmt::format("invalid --min-time value: {}", text));
                 const auto nanos = value * multiplier;
-                if (!std::isfinite(nanos) || nanos > static_cast<double>(std::numeric_limits<int64_t>::max()))
+                if (!std::isfinite(nanos) || nanos > static_cast<double>(std::numeric_limits<int64_t>::max())) [[unlikely]]
                     throw error(fmt::format("--min-time value is too large: {}", text));
-                if (nanos < 1.0)
+                if (nanos < 1.0) [[unlikely]]
                     throw error(fmt::format("--min-time must be at least 1ns: {}", text));
                 return std::chrono::nanoseconds { numeric_cast<int64_t>(std::llround(nanos)) };
             }

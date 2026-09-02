@@ -47,7 +47,7 @@ namespace turbo::indexer {
                     end_offset = slice.offset + slice.size;
                 }
             }
-            if (end_offset != indexed_bytes())
+            if (end_offset != indexed_bytes()) [[unlikely]]
                 throw error(fmt::format("internal error: indexed size calculation is incorrect: {} vs {}", end_offset, indexed_bytes()));
             _cr.register_processor(_proc);
             logger::info("indices have data up to offset {}", end_offset);
@@ -167,7 +167,7 @@ namespace turbo::indexer {
 
         void _schedule_final_merge(mutex::unique_lock &epoch_slices_lk, const bool force=false)
         {
-            if (!epoch_slices_lk)
+            if (!epoch_slices_lk) [[unlikely]]
                 throw error("_cr.schedule_final_merge requires epoch_slices_mutex to be locked!");
             while (!_epoch_slices.empty()) {
                 uint64_t total_size = 0;
@@ -295,7 +295,7 @@ namespace turbo::indexer {
 
         void _idx_commit_tx()
         {
-            if (!std::filesystem::exists(_index_state_pre_path))
+            if (!std::filesystem::exists(_index_state_pre_path)) [[unlikely]]
                 throw error(fmt::format("the prepared chunk_registry state file is missing: {}!", _index_state_pre_path));
             std::filesystem::rename(_index_state_pre_path, _index_state_path);
             for (const auto &s: _slices_truncated) {

@@ -137,7 +137,7 @@ namespace turbo::cli::txwit_plutus {
                         continue;
                     auto it = std::upper_bound(epoch_cost_models.begin(), epoch_cost_models.end(), *epoch,
                         [&](const auto val, const auto &e) { return val < e.epoch; });
-                    if (it == epoch_cost_models.begin())
+                    if (it == epoch_cost_models.begin()) [[unlikely]]
                         throw error("internal error: can't find a passing epoch cost model!");
                     it = std::prev(it);
                     ctx.cost_models(it->models);

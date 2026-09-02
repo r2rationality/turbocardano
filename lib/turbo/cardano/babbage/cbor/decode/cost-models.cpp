@@ -19,13 +19,13 @@ namespace turbo::cardano::babbage {
                 switch (value.type()) {
                     case cbor::major_type::uint: values.emplace_back(numeric_cast<int64_t>(value.uint())); break;
                     case cbor::major_type::nint: values.emplace_back(-numeric_cast<int64_t>(value.nint())); break;
-                    default: throw error(fmt::format("unsupported cost model value type: {}", value.type()));
+                    [[unlikely]] default: throw error(fmt::format("unsupported cost model value type: {}", value.type()));
                 }
             }
             switch (language) {
                 case 0: return { std::move(values), plutus::costs::cost_arg_names_v1() };
                 case 1: return { std::move(values), plutus::costs::cost_arg_names_v2() };
-                default: throw error(fmt::format("unsupported Babbage language: {}", language));
+                [[unlikely]] default: throw error(fmt::format("unsupported Babbage language: {}", language));
             }
         }
     }

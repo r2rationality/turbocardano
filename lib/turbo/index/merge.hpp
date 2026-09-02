@@ -58,7 +58,7 @@ namespace turbo::index {
             auto &reader = readers.emplace_back(std::make_shared<reader_mt<T>>(chunks[i]));
             if (num_parts == 0)
                 num_parts = reader->num_parts();
-            if (num_parts != reader->num_parts())
+            if (num_parts != reader->num_parts()) [[unlikely]]
                 throw error(fmt::format("chunk {} has a partition count: {} different from the one found in other chunks: {}!",
                         chunks[i], reader->num_parts(), num_parts));
         }

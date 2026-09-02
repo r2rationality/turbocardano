@@ -13,7 +13,7 @@ using namespace turbo;
 namespace {
     static void my_setenv(const char *name, const char *val)
     {
-        if (name == nullptr)
+        if (name == nullptr) [[unlikely]]
             throw error("my_setenv: name cannot be null!");
 #if _WIN32
         std::string putexpr { fmt::format("{}={}", name, val != nullptr ? val : "") };

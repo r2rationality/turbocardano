@@ -65,7 +65,7 @@ namespace turbo {
     const json::value &config_file::_at_impl(const std::string_view &name) const
     {
         const auto it = _parsed.find(name);
-        if (it == _parsed.end())
+        if (it == _parsed.end()) [[unlikely]]
             throw error(fmt::format("configuration file does not have the element {}!", name));
         return it->value();
     }
@@ -110,7 +110,7 @@ namespace turbo {
     const config &configs_dir::_at_impl(const std::string &name) const
     {
         const auto it = _configs.find(name);
-        if (it == _configs.end())
+        if (it == _configs.end()) [[unlikely]]
             throw error(fmt::format("there is no config named {}!", name));
         return it->second;
     }

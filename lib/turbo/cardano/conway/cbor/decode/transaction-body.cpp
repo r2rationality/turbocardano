@@ -12,10 +12,17 @@ namespace turbo::cardano::conway {
     {
         transaction_body_t res {};
         std::optional<proposal_procedures_t> proposals {};
+        uint32_t seen = 0;
         auto &it = v.map();
         while (!it.done()) {
             auto &mk = it.read_key();
             const auto typ = mk.uint();
+            if (typ > 22) [[unlikely]]
+                throw error(fmt::format("unsupported Conway transaction body key: {}", typ));
+            const auto mask = uint32_t { 1 } << typ;
+            if (seen & mask) [[unlikely]]
+                throw error(fmt::format("duplicate Conway transaction body key: {}", typ));
+            seen |= mask;
             auto &mv = it.read_val(std::move(mk));
             switch (typ) {
                 case 0: res.inputs = transaction_inputs_t::from_cbor(mv); break;
@@ -26,25 +33,66 @@ namespace turbo::cardano::conway {
                 }
                 case 2: res.fee = mv.uint(); break;
                 case 3: res.validity_end.emplace(mv.uint()); break;
-                case 4: res.certs = certificates_t::from_cbor(mv); break;
-                case 5: res.withdrawals = shelley::withdrawals_t::from_cbor(mv); break;
-                case 7: static_cast<void>(hash_32 { mv.bytes() }); break; // auxiliary_data_hash
+                case 4:
+                    res.certs = certificates_t::from_cbor(mv);
+                    if (res.certs.empty()) [[unlikely]]
+                        throw error("Conway certificates must be nonempty when supplied");
+                    break;
+                case 5:
+                    res.withdrawals = shelley::withdrawals_t::from_cbor(mv);
+                    if (res.withdrawals.empty()) [[unlikely]]
+                        throw error("Conway withdrawals must be nonempty when supplied");
+                    break;
+                case 7: static_cast<void>(hash_32 { mv.bytes() }); break;
                 case 8: res.validity_start.emplace(mv.uint()); break;
-                case 9: res.mints = mint_t::from_cbor(mv); break;
-                case 11: static_cast<void>(hash_32 { mv.bytes() }); break; // script_data_hash
-                case 13: res.collateral_inputs = transaction_inputs_t::from_cbor(mv); break;
-                case 14: res.required_signers = required_signers_t::from_cbor(mv); break;
-                case 15: if (mv.uint() > 1) [[unlikely]] throw error("network_id must be 0 or 1"); break;
+                case 9:
+                    res.mints = mint_t::from_cbor(mv);
+                    if (res.mints.empty()) [[unlikely]]
+                        throw error("Conway mint must be nonempty when supplied");
+                    break;
+                case 11: static_cast<void>(hash_32 { mv.bytes() }); break;
+                case 13:
+                    res.collateral_inputs = transaction_inputs_t::from_cbor(mv);
+                    if (res.collateral_inputs.empty()) [[unlikely]]
+                        throw error("Conway collateral inputs must be nonempty when supplied");
+                    break;
+                case 14:
+                    res.required_signers = required_signers_t::from_cbor(mv);
+                    if (res.required_signers.empty()) [[unlikely]]
+                        throw error("Conway required signers must be nonempty when supplied");
+                    break;
+                case 15: {
+                    const auto network_id = mv.uint();
+                    if (network_id > 1) [[unlikely]]
+                        throw error("network_id must be 0 or 1");
+                    break;
+                }
                 case 16: res.collateral_return.emplace(std::move(transaction_output_t::from_cbor(mv).value)); break;
                 case 17: res.collateral_value.emplace(mv.uint()); break;
-                case 18: res.ref_inputs = transaction_inputs_t::from_cbor(mv); break;
-                case 19: res.votes = voting_procedures_t::from_cbor(mv); break;
-                case 20: proposals.emplace(proposal_procedures_t::from_cbor(mv)); break;
+                case 18:
+                    res.ref_inputs = transaction_inputs_t::from_cbor(mv);
+                    if (res.ref_inputs.empty()) [[unlikely]]
+                        throw error("Conway reference inputs must be nonempty when supplied");
+                    break;
+                case 19:
+                    res.votes = voting_procedures_t::from_cbor(mv);
+                    if (res.votes.empty()) [[unlikely]]
+                        throw error("Conway voting procedures must be nonempty when supplied");
+                    break;
+                case 20:
+                    proposals.emplace(proposal_procedures_t::from_cbor(mv));
+                    if (proposals->empty()) [[unlikely]]
+                        throw error("Conway proposal procedures must be nonempty when supplied");
+                    break;
                 case 21: res.current_treasury = mv.uint(); break;
                 case 22: res.donation = static_cast<uint64_t>(positive_coin_t { mv.uint() }); break;
-                default: throw error(fmt::format("unsupported conway::tx_body element type: {}", typ));
+                [[unlikely]] default: throw error(fmt::format("unsupported Conway transaction body key: {}", typ));
             }
         }
+        constexpr uint32_t required =
+            (uint32_t { 1 } << 0) | (uint32_t { 1 } << 1) | (uint32_t { 1 } << 2);
+        if ((seen & required) != required) [[unlikely]]
+            throw error("Conway transaction body is missing a required field");
         res.raw = v.data_raw();
         if (proposals) {
             res.proposals.reserve(proposals->size());

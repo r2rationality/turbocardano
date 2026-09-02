@@ -23,9 +23,9 @@ namespace turbo::cardano::ledger {
         void merge(const subchain &right)
         {
             right.check_coherency();
-            if (end_offset() != right.offset)
+            if (end_offset() != right.offset) [[unlikely]]
                 throw error(fmt::format("unmergeable sub-chains: left end: {} right start: {}", end_offset(), right.offset));
-            if (right.first_block_slot < last_block_slot)
+            if (right.first_block_slot < last_block_slot) [[unlikely]]
                 throw error(fmt::format("unmergeable sub-chains: left last_block_slot: {} right first_block_slot: {}", last_block_slot, right.first_block_slot));
             num_bytes += right.num_bytes;
             num_blocks += right.num_blocks;
@@ -86,10 +86,10 @@ namespace turbo::cardano::ledger {
         {
             sc.check_coherency();
             const auto last_byte_offset = sc.offset + sc.num_bytes - 1;
-            if (auto it = lower_bound(sc.offset); it != end() && it->second.offset <= last_byte_offset)
+            if (auto it = lower_bound(sc.offset); it != end() && it->second.offset <= last_byte_offset) [[unlikely]]
                 throw fmt_error(std::source_location::current(), "intersecting subchains: existing: {} new: {}", it->second, sc);
             auto [it, created] = emplace(last_byte_offset, std::move(sc));
-            if (!created)
+            if (!created) [[unlikely]]
                 throw fmt_error(std::source_location::current(), "a duplicate subchain: existing: {} new: {}", it->second, sc);
             if (it->second)
                 merge_valid();
@@ -118,7 +118,7 @@ namespace turbo::cardano::ledger {
         iterator find(uint64_t offset)
         {
             auto it = lower_bound(offset);
-            if (it == end() || !(it->second.offset <= offset && it->first >= offset))
+            if (it == end() || !(it->second.offset <= offset && it->first >= offset)) [[unlikely]]
                 throw error(fmt::format("internal error: can't find a sub-chain for the blockchain offset {}", offset));
             return it;
         }
@@ -158,12 +158,12 @@ namespace turbo::cardano::ledger {
                 while (next_it != end() && it->second.end_offset() == next_it->second.offset) {
                     const auto first_block_slot = cardano::slot { it->second.first_block_slot, cfg };
                     const auto last_block_slot = cardano::slot { it->second.last_block_slot, cfg };
-                    if (!it->second && first_block_slot.epoch() != last_block_slot.epoch())
+                    if (!it->second && first_block_slot.epoch() != last_block_slot.epoch()) [[unlikely]]
                         throw error(fmt::format("an unvalidated subchain at [{}:{})) has slots from different epochs: first slot: {} last_slot: {}",
                             it->second.offset, it->second.end_offset(), first_block_slot, last_block_slot));
                     const auto next_first_block_slot = cardano::slot { next_it->second.first_block_slot, cfg };
                     const auto next_last_block_slot = cardano::slot { next_it->second.last_block_slot, cfg };
-                    if (!next_it->second && next_first_block_slot.epoch() != next_last_block_slot.epoch())
+                    if (!next_it->second && next_first_block_slot.epoch() != next_last_block_slot.epoch()) [[unlikely]]
                         throw error(fmt::format("an unvalidated subchain at [{}:{}) has slots from different epochs: first slot: {} last_slot: {}",
                             next_it->second.offset, next_it->second.end_offset(), next_first_block_slot, next_last_block_slot));
                     if (static_cast<bool>(it->second) != static_cast<bool>(next_it->second))
@@ -198,7 +198,7 @@ namespace turbo::cardano::ledger {
                 auto node = extract(it);
                 node.key() = last_offset;
                 auto [new_it, created, nt] = insert(std::move(node));
-                if (!created)
+                if (!created) [[unlikely]]
                     throw error(fmt::format("duplicate subchain found with last_offset {}", last_offset));
             }
         }

@@ -179,7 +179,7 @@ namespace turbo::cli::plutus_benchmark {
             while (std::getline (ss, item, '-')) {
                 items.emplace_back(item);
             }
-            if (items.size() != 4 && items.size() != 5)
+            if (items.size() != 4 && items.size() != 5) [[unlikely]]
                 throw error(fmt::format("script name must encode 4 or 5 fields but got: {}", stem));
             std::optional<uint64_t> protocol {};
             if (items.size() == 5) {

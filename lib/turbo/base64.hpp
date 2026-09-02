@@ -16,7 +16,7 @@ namespace turbo::base64 {
         for (size_t pos = 0; pos < in.size(); ++pos) {
             signed char c = in[pos];
             if (c == '=') break;
-            if (c < 0 || codes[c] == -1) throw error(fmt::format("unsupported encoding character: '0x{:x}' at pos {} in {}!", c, pos, in));
+            if (c < 0 || codes[c] == -1) [[unlikely]] throw error(fmt::format("unsupported encoding character: '0x{:x}' at pos {} in {}!", c, pos, in));
             val = (val << 6) + codes[c];
             valb += 6;
             if (valb >= 0) {

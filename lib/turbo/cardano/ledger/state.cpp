@@ -84,71 +84,6 @@ namespace turbo::cardano::ledger {
         return deserialize_node(buf);
     }
 
-    void state::_serialize_node_state(cbor_encoder &ser, const point &tip) const
-    {
-        ser.add([&](auto enc) {
-            enc.array(_eras.size());
-            for (size_t era = 0; era < _eras.size(); ++era) {
-                enc.array(2);
-                slot { _eras[era], _cfg }.to_cbor(enc);
-                if (era + 1 < _eras.size()) {
-                    slot { _eras[era + 1], _cfg }.to_cbor(enc);
-                } else {
-                    enc.array(2)
-                        .uint(2)
-                        .array(3)
-                            .array(1).array(3).uint(tip.slot).uint(tip.height).bytes(tip.hash);
-                }
-            }
-            return std::move(enc.cbor());
-        });
-        _state->to_cbor(ser);
-    }
-
-    void state::_serialize_node_vrf_state(cbor_encoder &ser, const point &tip) const
-    {
-        ser.add([this, tip](auto enc) {
-            enc.array(2);
-            if (!_eras.empty()) {
-                enc.array(1)
-                    .array(2)
-                        .uint(_eras.size() - 1)
-                        .array(3)
-                            .uint(tip.slot)
-                            .bytes(tip.hash)
-                            .uint(tip.height);
-            } else {
-                enc.array(0);
-            }
-            enc.array(_eras.size());
-            for (size_t era = 0; era < _eras.size(); ++era) {
-                enc.array(2);
-                slot { _eras[era], _cfg }.to_cbor(enc);
-                if (era + 1 < _eras.size()) {
-                    slot { _eras[era + 1], _cfg }.to_cbor(enc);
-                }
-            }
-            return std::move(enc.cbor());
-        });
-        _vrf_state->to_cbor(ser);
-    }
-
-    cbor_encoder state::to_cbor(const point &tip, const int prio) const
-    {
-        timer t { "serialize the state into the Cardano Node format", logger::level::info };
-        cbor_encoder ser { [&] { return era_encoder { era_from_number(_eras.size()) }; } };
-        ser.add([](auto enc) {
-            enc.array(2); // versioned encoding tuple
-            enc.uint(1); // version number
-            enc.array(2);
-            return std::move(enc.cbor());
-        });
-        _serialize_node_state(ser, tip);
-        _serialize_node_vrf_state(ser, tip);
-        ser.run(_sched, "ledger-export", prio, true);
-        return ser;
-    }
-
     void state::save_node(const std::string &path, const point &tip, const int prio) const
     {
         const auto ser = to_cbor(tip, prio);
@@ -182,14 +117,14 @@ namespace turbo::cardano::ledger {
                         sc.valid_blocks = sc.num_blocks;
                 }
                 _subchains.merge_valid();
-                if (_subchains.size() > 1)
+                if (_subchains.size() > 1) [[unlikely]]
                     throw error(fmt::format("inconsistent subschain list: {}", _subchains));
                 const auto &sc = _subchains.rbegin()->second;
-                if (sc.offset != 0 || sc.end_offset() != end_offset())
+                if (sc.offset != 0 || sc.end_offset() != end_offset()) [[unlikely]]
                     throw error(fmt::format("the local subchain range: [{}:{}] does not match the chain: [0:{}]",
                         sc.offset, sc.end_offset(), end_offset()));
             }
-            if (end_offset() != valid_end_offset())
+            if (end_offset() != valid_end_offset()) [[unlikely]]
                 throw error(fmt::format("validator state from {} is in inconsistent state valid_end_offset: {} vs end_offset: {}",
                     path, valid_end_offset(), end_offset()));
         } catch (const std::exception &ex) {
@@ -276,7 +211,10 @@ namespace turbo::cardano::ledger {
                 case 7:
                     _state = std::make_unique<conway::state>(std::move(dynamic_cast<babbage::state &>(*_state)));
                     break;
-                default: throw error(fmt::format("unsupported era: {}", new_era));
+                case 8:
+                    // Dijkstra currently reuses the Conway ledger-state implementation.
+                    break;
+                [[unlikely]] default: throw error(fmt::format("unsupported era: {}", new_era));
             }
         }
     }
@@ -300,7 +238,10 @@ namespace turbo::cardano::ledger {
                 case 7:
                     _vrf_state = std::make_unique<conway::vrf_state>(std::move(dynamic_cast<babbage::vrf_state &>(*_vrf_state)));
                     break;
-                default: throw error(fmt::format("unsupported era: {}", new_era));
+                case 8:
+                    // Dijkstra currently reuses the Conway VRF-state implementation.
+                    break;
+                [[unlikely]] default: throw error(fmt::format("unsupported era: {}", new_era));
             }
         }
     }

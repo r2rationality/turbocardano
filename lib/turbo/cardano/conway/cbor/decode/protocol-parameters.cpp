@@ -45,7 +45,7 @@ namespace turbo::cardano {
                 case 31: upd.drep_deposit.emplace(u.uint()); break;
                 case 32: upd.drep_activity.emplace(numeric_cast<uint32_t>(u.uint())); break;
                 case 33: upd.min_fee_ref_script_cost_per_byte = decltype(upd.min_fee_ref_script_cost_per_byte)::value_type::from_cbor(u); break;
-                default: throw error(fmt::format("unsupported conway param update: {}", u.to_string()));
+                [[unlikely]] default: throw error(fmt::format("unsupported conway param update: {}", u.to_string()));
             }
         }
         return upd;

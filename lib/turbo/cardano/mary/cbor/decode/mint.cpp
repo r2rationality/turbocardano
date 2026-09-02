@@ -28,19 +28,37 @@ namespace turbo::cardano::mary {
                     switch (coin_v.type()) {
                         case cbor::major_type::uint: {
                             const auto amount = numeric_cast<int64_t>(coin_v.uint());
-                            if (amount != 0)
+                            if (amount != 0) {
+                                const auto before = p_m.size();
                                 p_m.emplace_hint(p_m.end(), name_bytes, amount);
-                            else if (on_invalid) [[unlikely]]
+                                if (p_m.size() == before) [[unlikely]]
+                                    throw error("duplicate mint asset name");
+                            } else if (on_invalid) [[unlikely]]
                                 on_invalid(invalid_mint::zero_amount);
                             break;
                         }
-                        case cbor::major_type::nint: p_m.emplace_hint(p_m.end(), name_bytes, -numeric_cast<int64_t>(coin_v.nint())); break;
+                        case cbor::major_type::nint: {
+                            const auto magnitude = coin_v.nint();
+                            if (magnitude > uint64_t { 1 } << 63) [[unlikely]]
+                                throw error("mint amount is smaller than min_int64");
+                            const auto amount = magnitude == uint64_t { 1 } << 63
+                                ? std::numeric_limits<int64_t>::min()
+                                : -numeric_cast<int64_t>(magnitude);
+                            const auto before = p_m.size();
+                            p_m.emplace_hint(p_m.end(), name_bytes, amount);
+                            if (p_m.size() == before) [[unlikely]]
+                                throw error("duplicate mint asset name");
+                            break;
+                        }
                         [[unlikely]] default: throw error(fmt::format("expecting an int but got {}", coin_v.type()));
                     }
                 }
-                if (!p_m.empty()) [[likely]]
+                if (!p_m.empty()) [[likely]] {
+                    const auto before = m.size();
                     m.emplace_hint(m.end(), policy_id_bytes, std::move(p_m));
-                else if (on_invalid) [[unlikely]]
+                    if (m.size() == before) [[unlikely]]
+                        throw error("duplicate mint policy");
+                } else if (on_invalid) [[unlikely]]
                     on_invalid(invalid_mint::empty_policy);
             }
         }

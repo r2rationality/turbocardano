@@ -25,47 +25,6 @@ namespace turbo::cardano::ledger::babbage {
         _prev_epoch_lab_prev_hash = decltype(_prev_epoch_lab_prev_hash)::from_cbor(rit.read());
     }
 
-    void vrf_state::to_cbor(cbor_encoder &ser) const
-    {
-        ser.add([&](auto enc) {
-            enc.array(2)
-                .uint(0)
-                .array(7)
-                    .array(2)
-                        .uint(1)
-                        .uint(_slot_last)
-                    .custom([this] (auto &enc) {
-                        enc.map(_kes_counters.size());
-                        for (const auto &[pool_id, cnt]: _kes_counters) {
-                            enc.bytes(pool_id);
-                            enc.uint(cnt);
-                        }
-                    })
-                    .array(2)
-                        .uint(1)
-                        .bytes(_nonce_evolving)
-                    .array(2)
-                        .uint(1)
-                        .bytes(_nonce_candidate)
-                    .array(2)
-                        .uint(1)
-                        .bytes(_nonce_epoch)
-                    .array(2)
-                        .uint(1)
-                        .bytes(_lab_prev_hash)
-                    .custom([this](auto &enc) {
-                        if (_prev_epoch_lab_prev_hash) {
-                            enc.array(2)
-                                .uint(1)
-                                .bytes(*_prev_epoch_lab_prev_hash);
-                        } else {
-                            enc.array(1).uint(0);
-                        }
-                    });
-            return enc.cbor();
-        });
-    }
-
     state::state(alonzo::state &&o): alonzo::state { std::move(o) }
     {
         _apply_babbage_params(_params);
@@ -115,31 +74,4 @@ namespace turbo::cardano::ledger::babbage {
         params.max_collateral_inputs = it.read().uint();
     }
 
-    void state::_params_to_cbor(era_encoder &enc, const protocol_params &params) const
-    {
-        enc.array(23);
-        enc.uint(params.min_fee_a);
-        enc.uint(params.min_fee_b);
-        enc.uint(params.max_block_body_size);
-        enc.uint(params.max_transaction_size);
-        enc.uint(params.max_block_header_size);
-        enc.uint(params.key_deposit);
-        enc.uint(params.pool_deposit);
-        enc.uint(params.e_max);
-        enc.uint(params.n_opt);
-        params.pool_pledge_influence.to_cbor(enc);
-        params.expansion_rate.to_cbor(enc);
-        params.treasury_growth_rate.to_cbor(enc);
-        enc.uint(params.protocol_ver.major);
-        enc.uint(params.protocol_ver.minor);
-        enc.uint(params.min_pool_cost);
-        enc.uint(params.lovelace_per_utxo_byte);
-        params.plutus_cost_models.to_cbor(enc);
-        params.ex_unit_prices.to_cbor(enc);
-        params.max_tx_ex_units.to_cbor(enc);
-        params.max_block_ex_units.to_cbor(enc);
-        enc.uint(params.max_value_size);
-        enc.uint(params.max_collateral_pct);
-        enc.uint(params.max_collateral_inputs);
-    }
 }

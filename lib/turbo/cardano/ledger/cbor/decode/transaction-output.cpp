@@ -22,7 +22,7 @@ namespace turbo::cardano {
                     [](auto &script) {
                         return std::move(conway::script_t::from_cbor(script).value);
                     });
-            default:
+            [[unlikely]] default:
                 throw error(fmt::format("unsupported cbor type in transaction_output: {}", type));
         }
     }

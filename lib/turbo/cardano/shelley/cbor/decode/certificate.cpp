@@ -41,7 +41,7 @@ namespace turbo::cardano {
         switch (const auto source_raw = v.uint(); source_raw) {
             case 0: return reward_source::reserves;
             case 1: return reward_source::treasury;
-            default: throw error(fmt::format("unexpected value of reward source: {}!", source_raw));
+            [[unlikely]] default: throw error(fmt::format("unexpected value of reward source: {}!", source_raw));
         }
     }
 

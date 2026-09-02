@@ -9,12 +9,20 @@ namespace turbo::cardano {
     tx_wit_shelley_vkey tx_wit_shelley_vkey::from_cbor(cbor::zero2::value &v)
     {
         auto &it = v.array();
-        return { it.read().bytes(), it.read().bytes() };
+        tx_wit_shelley_vkey res { it.read().bytes(), it.read().bytes() };
+        if (!it.done()) [[unlikely]]
+            throw error("unexpected trailing Shelley vkey witness elements");
+        return res;
     }
 
     tx_wit_shelley_bootstrap tx_wit_shelley_bootstrap::from_cbor(cbor::zero2::value &v)
     {
         auto &it = v.array();
-        return { it.read().bytes(), it.read().bytes(), it.read().bytes(), it.read().bytes() };
+        tx_wit_shelley_bootstrap res {
+            it.read().bytes(), it.read().bytes(), it.read().bytes(), it.read().bytes()
+        };
+        if (!it.done()) [[unlikely]]
+            throw error("unexpected trailing Shelley bootstrap witness elements");
+        return res;
     }
 }

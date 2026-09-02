@@ -167,7 +167,7 @@ namespace turbo::cardano::network {
             find_response iresp {};
             _find_intersection_impl({}, [&](auto &&r) { iresp = std::move(r); });
             process();
-            if (std::holds_alternative<error_msg>(iresp.res))
+            if (std::holds_alternative<error_msg>(iresp.res)) [[unlikely]]
                 throw error(fmt::format("find_tip error: {}", std::get<error_msg>(iresp.res)));
             return variant::get_nice<intersection_info_t>(iresp.res).tip;
         }
@@ -177,7 +177,7 @@ namespace turbo::cardano::network {
             find_response iresp {};
             _find_intersection_impl(points, [&](auto &&r) { iresp = std::move(r); });
             process();
-            if (std::holds_alternative<error_msg>(iresp.res))
+            if (std::holds_alternative<error_msg>(iresp.res)) [[unlikely]]
                 throw error(fmt::format("find_intersection error: {}", std::get<error_msg>(iresp.res)));
             return variant::get_nice<intersection_info_t>(iresp.res);
         }
@@ -189,12 +189,12 @@ namespace turbo::cardano::network {
                 iresp = r;
             });
             process();
-            if (std::holds_alternative<client::error_msg>(iresp.res))
+            if (std::holds_alternative<client::error_msg>(iresp.res)) [[unlikely]]
                 throw error(fmt::format("fetch_headers error: {}", std::get<client::error_msg>(iresp.res)));
-            if (!iresp.tip)
+            if (!iresp.tip) [[unlikely]]
                 throw error("no tip information received!");
             const auto &headers = std::get<header_list>(iresp.res);
-            if (headers.empty() && !allow_empty)
+            if (headers.empty() && !allow_empty) [[unlikely]]
                 throw error("received an empty header list");
             return std::make_pair(std::move(headers), std::move(*iresp.tip));
         }

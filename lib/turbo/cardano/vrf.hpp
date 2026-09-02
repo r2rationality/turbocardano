@@ -32,5 +32,5 @@ namespace turbo::cardano {
     extern void vrf03_extract_vk(const write_buffer &vk, const buffer &sk);
     extern vrf_vkey vrf03_extract_vk(const buffer &sk);
     extern vrf_skey vrf03_create_sk_from_seed(const buffer &seed);
-    extern bool vrf_leader_is_eligible(const buffer &result, const double f, const rational_u64 &leader_stake_rel);
+    extern bool vrf_leader_is_eligible(const buffer &result, const rational_u64 &f, const rational_u64 &leader_stake_rel);
 }

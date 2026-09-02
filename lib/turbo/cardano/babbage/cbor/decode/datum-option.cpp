@@ -4,6 +4,7 @@
  * License: https://github.com/r2rationality/turbocardano/blob/main/LICENSE */
 
 #include <turbo/cardano/common/types.hpp>
+#include <turbo/plutus/types.hpp>
 
 namespace turbo::cardano {
     datum_option_t datum_option_t::from_cbor(cbor::zero2::value &v)
@@ -16,10 +17,16 @@ namespace turbo::cardano {
                 auto &tag = it.read().tag();
                 if (tag.id() != 24) [[unlikely]]
                     throw error(fmt::format("expected a tag with id 24 but got: {}", tag.id()));
-                res.val = uint8_vector { tag.read().bytes() };
+                uint8_vector data {};
+                tag.read().to_bytes(data);
+                cbor::zero2::decoder data_dec { data };
+                plutus::data::validate_cbor(data_dec.read());
+                if (!data_dec.done()) [[unlikely]]
+                    throw error("inline datum contains trailing CBOR values");
+                res.val = std::move(data);
                 break;
             }
-            default: throw error(fmt::format("unsupported datum_option id: {}", id));
+            [[unlikely]] default: throw error(fmt::format("unsupported datum_option id: {}", id));
         }
         if (!it.done()) [[unlikely]]
             throw error("unexpected trailing datum_option elements");

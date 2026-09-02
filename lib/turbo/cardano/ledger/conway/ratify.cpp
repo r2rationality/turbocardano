@@ -240,7 +240,7 @@ namespace turbo::cardano::ledger::conway {
                     case vote_t::abstain: abstain += stake; break;
                     case vote_t::no: break;
                     case vote_t::yes: yes += stake; break;
-                    default:
+                    [[unlikely]] default:
                         throw error(fmt::format(
                             "unsupported vote value: {}",
                             static_cast<int>(vote_it->second.vote)));
@@ -358,7 +358,7 @@ namespace turbo::cardano::ledger::conway {
                                     break;
                                 case vote_t::abstain:
                                     break;
-                                default:
+                                [[unlikely]] default:
                                     throw error(fmt::format(
                                         "unsupported vote value: {}",
                                         static_cast<int>(vote_it->second.vote)));

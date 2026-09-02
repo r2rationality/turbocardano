@@ -83,6 +83,11 @@ namespace turbo::cardano::ledger {
             return _state->shelley_delegs();
         }
 
+        const shelley_delegate_schedule &shelley_delegs_schedule() const
+        {
+            return _state->shelley_delegs_schedule();
+        }
+
         void proposal_vote(const uint64_t slot, const param_update_vote &vote)
         {
             _state->proposal_vote(slot, vote);

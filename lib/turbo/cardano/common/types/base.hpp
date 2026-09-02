@@ -21,7 +21,7 @@ namespace turbo::cardano {
     using datum_hash = byte_array<32>;
 
     enum class era_t: uint8_t {
-        byron, shelley, allegra, mary, alonzo, babbage, conway
+        byron, shelley, allegra, mary, alonzo, babbage, conway, dijkstra
     };
     extern era_t era_from_number(uint64_t era);
 
@@ -40,6 +40,7 @@ namespace turbo::cardano {
         {
             return _era;
         }
+
     private:
         const era_t _era;
     };
@@ -86,23 +87,7 @@ namespace turbo::cardano {
     }
 
     template<typename T, typename ENC>
-    void value_to_cbor(ENC &enc, const T &v) {
-        if constexpr (std::is_same_v<uint64_t, T>) {
-            enc.uint(v);
-        } else if constexpr (std::is_same_v<uint32_t, T>) {
-            enc.uint(v);
-        }  else if constexpr (std::is_same_v<uint16_t, T>) {
-            enc.uint(v);
-        }  else if constexpr (std::is_same_v<uint8_t, T>) {
-            enc.uint(v);
-        } else if constexpr (std::is_convertible_v<T, buffer>) {
-            enc.bytes(v);
-        } else if constexpr (std::is_same_v<float, T>) {
-            enc.float32(v);
-        } else {
-            v.to_cbor(enc);
-        }
-    }
+    void value_to_cbor(ENC &, const T &);
 
     template<typename T>
     struct set_t: flat_set<T> {
@@ -116,7 +101,7 @@ namespace turbo::cardano {
             switch (const auto typ = v.type(); typ) {
                 case cbor::major_type::array: return foreach_item_array(v, std::move(observer), std::move(sz_observer));
                 case cbor::major_type::tag: return foreach_item_array(v.tag().read(), std::move(observer), std::move(sz_observer));
-                default: throw error(fmt::format("unsupported set value type {}", typ));
+                [[unlikely]] default: throw error(fmt::format("unsupported set value type {}", typ));
             }
         }
 
@@ -142,15 +127,7 @@ namespace turbo::cardano {
             throw error(fmt::format("set index out of range: {}", idx));
         }
 
-        void to_cbor(era_encoder &enc) const
-        {
-            if (enc.era() == era_t::conway)
-                enc.tag(258);
-            enc.array_compact(base_type::size(), [&] {
-                for (const auto &v: *this)
-                    value_to_cbor(enc, v);
-            });
-        }
+        void to_cbor(era_encoder &) const;
     private:
         static void foreach_item_array(cbor::zero2::value &v, const item_observer_t &observer, const size_observer_t &sz_observer)
         {
@@ -163,6 +140,8 @@ namespace turbo::cardano {
         }
     };
 }
+
+#include <turbo/cardano/common/cbor/encode/value.hpp>
 
 namespace fmt {
     template<typename T>

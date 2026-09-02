@@ -194,7 +194,7 @@ namespace turbo::cardano::network {
             auto ex = co_await boost::asio::this_coro::executor;
             tcp::resolver resolver { _iow->io_context() };
             const auto results = co_await resolver.async_resolve(_addr.host, _addr.port, boost::asio::use_awaitable);
-            if (results.empty())
+            if (results.empty()) [[unlikely]]
                 throw error(fmt::format("DNS resolve for {}:{} returned no results!", _addr.host, _addr.port));
             tcp::acceptor acceptor { _iow->io_context(), *results.begin() };
             while (!_destroy.load(std::memory_order_relaxed)) {

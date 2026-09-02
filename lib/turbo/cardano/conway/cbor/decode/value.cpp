@@ -34,11 +34,17 @@ namespace turbo::cardano::conway {
                 const auto amount = policy_assets_it.read_val(std::move(name_v)).uint();
                 if (!amount) [[unlikely]]
                     throw error("Conway asset amounts must be positive");
+                const auto before = policy_assets.size();
                 policy_assets.emplace_hint(policy_assets.end(), name, amount);
+                if (policy_assets.size() == before) [[unlikely]]
+                    throw error("duplicate Conway multiasset asset name");
             }
             if (policy_assets.empty()) [[unlikely]]
                 throw error("a multiasset policy must contain at least one asset");
+            const auto before = assets.size();
             assets.emplace_hint(assets.end(), policy_id, std::move(policy_assets));
+            if (assets.size() == before) [[unlikely]]
+                throw error("duplicate Conway multiasset policy");
         }
         if (!it.done()) [[unlikely]]
             throw error("unexpected trailing value elements");

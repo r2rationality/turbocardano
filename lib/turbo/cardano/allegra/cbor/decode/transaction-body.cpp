@@ -24,7 +24,7 @@ namespace turbo::cardano::allegra {
                 case 6: res.updates = shelley::update_t::from_cbor(val); break;
                 case 7: static_cast<void>(hash_32 { val.bytes() }); break;
                 case 8: res.validity_start.emplace(val.uint()); break;
-                default: throw error(fmt::format("unsupported allegra::transaction_body element type: {}", type));
+                [[unlikely]] default: throw error(fmt::format("unsupported allegra::transaction_body element type: {}", type));
             }
         }
         res.raw = v.data_raw();

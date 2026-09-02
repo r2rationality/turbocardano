@@ -4,6 +4,7 @@
  * Copyright (c) 2024-2026 R2 Rationality OÜ (info at r2rationality dot com)
  * License: https://github.com/r2rationality/turbocardano/blob/main/LICENSE */
 
+#include <cstddef>
 #include <cstdint>
 #include <span>
 #include <string>
@@ -12,6 +13,8 @@
 #include <vector>
 
 namespace turbo::cbor {
+    inline constexpr size_t max_indefinite_string_chunks = 1024;
+
     enum class major_type: uint8_t {
         uint = 0,
         nint = 1,
@@ -81,7 +84,7 @@ namespace fmt {
                 case special_val::four_bytes: return fmt::format_to(ctx.out(), "four_bytes");
                 case special_val::eight_bytes: return fmt::format_to(ctx.out(), "eight_bytes");
                 case special_val::s_break: return fmt::format_to(ctx.out(), "break");
-                default: return fmt::format_to(ctx.out(), "special_value: {}", static_cast<int>(v));
+                [[unlikely]] default: return fmt::format_to(ctx.out(), "special_value: {}", static_cast<int>(v));
             }
         }
     };
@@ -100,7 +103,7 @@ namespace fmt {
                 case major_type::map: return fmt::format_to(ctx.out(), "map");
                 case major_type::tag: return fmt::format_to(ctx.out(), "tag");
                 case major_type::simple: return fmt::format_to(ctx.out(), "simple");
-                default: throw fmt::format_to(ctx.out(), "major_type: {}", static_cast<int>(v));
+                [[unlikely]] default: throw fmt::format_to(ctx.out(), "major_type: {}", static_cast<int>(v));
             }
         }
     };

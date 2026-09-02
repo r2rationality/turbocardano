@@ -26,24 +26,24 @@ namespace turbo::cardano::ledger::pool_rank {
 
     inline double leader_probability(const double active_slot_k, const double rel_stake, const double d)
     {
-        if (active_slot_k <= 0.0 || active_slot_k > 1.0)
+        if (active_slot_k <= 0.0 || active_slot_k > 1.0) [[unlikely]]
             throw error(fmt::format("active_slot_k is out of range: {}", active_slot_k));
-        if (rel_stake < 0.0 || rel_stake > 1.0)
+        if (rel_stake < 0.0 || rel_stake > 1.0) [[unlikely]]
             throw error(fmt::format("rel_stake is out of range: {}", active_slot_k));
-        if (d < 0.0 || d > 1.0)
+        if (d < 0.0 || d > 1.0) [[unlikely]]
             throw error(fmt::format("d is out of range: {}", active_slot_k));
         return (1.0 - std::pow(1.0 - active_slot_k, rel_stake)) * (1.0 - d);
     }
 
     inline float likelihood(const uint64_t num_blocks, const uint64_t epoch_slots, const double t, const double x)
     {
-        if (!epoch_slots)
+        if (!epoch_slots) [[unlikely]]
             throw error("epoch slots can't be zero!");
-        if (num_blocks > epoch_slots)
+        if (num_blocks > epoch_slots) [[unlikely]]
             throw error(fmt::format("num blocks cannot be greater than the number of epoch slots: {}!", epoch_slots));
-        if (t < 0.0 || t > 1.0)
+        if (t < 0.0 || t > 1.0) [[unlikely]]
             throw error(fmt::format("block producing probability is out of the allowed range: {}!", t));
-        if (x < 0.0 || x > 1.0)
+        if (x < 0.0 || x > 1.0) [[unlikely]]
             throw error(fmt::format("evaluated hit rate is out of the allowed range: {}!", x));
         const uint64_t m = epoch_slots - num_blocks;
         return static_cast<double>(num_blocks) * std::log(x) + static_cast<double>(m) * std::log(1.0 - t * x);
@@ -69,7 +69,7 @@ namespace turbo::cardano::ledger::pool_rank {
             lks.emplace_back(likelihood(num_blocks, epoch_slots, t, x));
         if (prior) {
             const auto &prior_lks = prior->get();
-            if (prior_lks.size() != lks.size())
+            if (prior_lks.size() != lks.size()) [[unlikely]]
                 throw error(fmt::format("prior size {} does not match the sample size: {}!", prior_lks.size(), lks.size()));
             normalize(lks);
             for (size_t i = 0; i < lks.size(); ++i)

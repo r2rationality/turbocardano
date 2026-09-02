@@ -36,14 +36,15 @@ namespace turbo::sync {
         }
         {
             auto shelley_genesis = json::load("./etc/mainnet/shelley-genesis.json").as_object();
+            shelley_genesis.insert_or_assign("activeSlotsCoeff", 1.0);
             shelley_genesis.insert_or_assign("genDelegs", json::object {
                 { "00000000000000000000000000000000000000000000000000000000", json::object {
                     { "delegate", fmt::format("{}", crypto::blake2b::digest<pool_hash>(crypto::ed25519::extract_vk(sk1))) },
-                    { "vrf", fmt::format("{}", vrf03_extract_vk(vrf_sk1)) }
+                    { "vrf", fmt::format("{}", crypto::blake2b::digest<vrf_vkey>(vrf03_extract_vk(vrf_sk1))) }
                 } },
                 { "11111111111111111111111111111111111111111111111111111111", json::object {
                     { "delegate", fmt::format("{}", crypto::blake2b::digest<pool_hash>(crypto::ed25519::extract_vk(sk2))) },
-                    { "vrf", fmt::format("{}", vrf03_extract_vk(vrf_sk2)) }
+                    { "vrf", fmt::format("{}", crypto::blake2b::digest<vrf_vkey>(vrf03_extract_vk(vrf_sk2))) }
                 } }
             });
             cfg.emplace("shelley-genesis", std::move(shelley_genesis));
@@ -82,13 +83,13 @@ namespace turbo::sync {
                         bp.prev_hash = block_hash {};
                         break;
                     case failure_type::slot_no:
-                        if (chain.blocks.empty())
+                        if (chain.blocks.empty()) [[unlikely]]
                             throw error("slot_no failure cannot be set up in the first block!");
-                        if (!chain.blocks.back()->blk->slot())
+                        if (!chain.blocks.back()->blk->slot()) [[unlikely]]
                             throw error("slot_no failure cannot be set up when the previous block has a slot of 0!");
                         bp.slot = chain.blocks.back()->blk->slot() - 1;
                         break;
-                    default:
+                    [[unlikely]] default:
                         throw error(fmt::format("unsupported failure_type: {}", static_cast<int>(mock_cfg.failure_type)));
                 }
             }
@@ -182,7 +183,7 @@ namespace turbo::sync {
             auto &blk_tuple = dec.read();
             _blocks.emplace_back(std::make_unique<block_container>(numeric_cast<uint64_t>(blk_tuple.data_begin() - _raw_data.data()), blk_tuple));
         }
-        if (_blocks.empty())
+        if (_blocks.empty()) [[unlikely]]
             throw error("test chain cannot be empty!");
     }
 

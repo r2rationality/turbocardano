@@ -65,8 +65,10 @@ namespace turbo::cardano::byron {
         auto &it = v.array();
         auto &dlg = it.read();
         auto &d_it = dlg.array();
+        auto &epoch = d_it.read();
         return {
-            d_it.read().uint(),
+            epoch.uint(),
+            epoch.data_raw(),
             byron_vkey_t::from_cbor(d_it.read()),
             byron_vkey_t::from_cbor(d_it.read()),
             d_it.read().bytes(),

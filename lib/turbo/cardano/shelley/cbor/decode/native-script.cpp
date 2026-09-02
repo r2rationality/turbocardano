@@ -29,7 +29,7 @@ namespace turbo::cardano::shelley {
                         parse_script(scripts.read());
                     break;
                 }
-                default:
+                [[unlikely]] default:
                     throw error(fmt::format("unsupported native script type {}", type));
             }
             if (!it.done()) [[unlikely]]
@@ -39,7 +39,12 @@ namespace turbo::cardano::shelley {
 
     native_script_t native_script_t::from_cbor(cbor::zero2::value &script)
     {
-        parse_script(script);
+        validate_cbor(script);
         return {};
+    }
+
+    void native_script_t::validate_cbor(cbor::zero2::value &script)
+    {
+        parse_script(script);
     }
 }

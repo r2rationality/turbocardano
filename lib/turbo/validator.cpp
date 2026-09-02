@@ -4,6 +4,7 @@
  * License: https://github.com/r2rationality/turbocardano/blob/main/LICENSE */
 
 #include <turbo/common/mutex.hpp>
+#include <boost/multiprecision/cpp_int.hpp>
 #include <turbo/cardano/common/common.hpp>
 #include <turbo/cardano/ledger/state.hpp>
 #include <turbo/cardano/ledger/updates.hpp>
@@ -18,6 +19,47 @@
 namespace turbo::validator {
     using namespace cardano::ledger;
 
+    struct overlay_slot {
+        bool reserved = false;
+        const cardano::key_hash *genesis_key = nullptr;
+        const cardano::shelley_delegate *delegate = nullptr;
+    };
+
+    static uint64_t _ceil_product(const uint64_t n, const rational_u64 &r)
+    {
+        if (!r.denominator) [[unlikely]]
+            throw error("invalid rational with a zero denominator");
+        const auto product = boost::multiprecision::uint128_t { n } * r.numerator;
+        return static_cast<uint64_t>((product + r.denominator - 1) / r.denominator);
+    }
+
+    static overlay_slot _overlay_slot(const uint64_t epoch, const uint64_t slot,
+        const rational_u64 &d, const cardano::shelley_delegate_map &delegs,
+        const cardano::config &cfg)
+    {
+        if (!d.denominator || d.numerator > d.denominator) [[unlikely]]
+            throw error("invalid decentralization parameter");
+        if (!d.numerator)
+            return {};
+        const auto first = static_cast<uint64_t>(cardano::slot::from_epoch(epoch, cfg));
+        if (slot < first) [[unlikely]]
+            throw error(fmt::format("slot {} precedes epoch {}", slot, epoch));
+        const auto s = slot - first;
+        const auto position = _ceil_product(s, d);
+        if (position >= _ceil_product(s + 1, d))
+            return {};
+        const auto &f = cfg.shelley_active_slots_coeff;
+        if (!f.denominator || !f.numerator || f.numerator > f.denominator
+                || delegs.empty()) [[unlikely]]
+            throw error("the overlay schedule has no active-slot coefficient or genesis delegates");
+        const auto asc_inv = f.denominator / f.numerator;
+        if (!asc_inv || position % asc_inv)
+            return { true, nullptr, nullptr };
+        const auto idx = position / asc_inv % delegs.size();
+        const auto it = std::next(delegs.begin(), idx);
+        return { true, &it->first, &it->second };
+    }
+
     snapshot snapshot::from_json(const json::value &j)
     {
         const auto &obj = j.as_object();
@@ -26,21 +68,36 @@ namespace turbo::validator {
             json::value_to<uint64_t>(obj.at("endOffset")),
             json::value_to<uint64_t>(obj.at("lastSlot")),
             json::value_to<bool>(obj.at("exportable")),
+            !obj.contains("trustedAuthorityEpoch") || obj.at("trustedAuthorityEpoch").is_null()
+                ? std::optional<uint64_t> {}
+                : std::optional<uint64_t> { json::value_to<uint64_t>(obj.at("trustedAuthorityEpoch")) },
+            obj.contains("certifiedCoreOffset")
+                ? json::value_to<uint64_t>(obj.at("certifiedCoreOffset")) : uint64_t { 0 },
             obj.contains("formatVersion")
                 ? json::value_to<uint64_t>(obj.at("formatVersion"))
                 : uint64_t { 0 }
         };
     }
 
-    snapshot::snapshot(const cardano::ledger::state &st)
-        : epoch { st.epoch() }, end_offset { st.end_offset() }, last_slot { st.last_slot() }, exportable { st.exportable() }
+    snapshot::snapshot(const cardano::ledger::state &st,
+            std::optional<uint64_t> trusted_authority_epoch_, const uint64_t certified_core_offset_)
+        : epoch { st.epoch() }, end_offset { st.end_offset() }, last_slot { st.last_slot() }, exportable { st.exportable() },
+        trusted_authority_epoch { trusted_authority_epoch_ }, certified_core_offset { certified_core_offset_ }
     {
     }
 
     snapshot::snapshot(const uint64_t epoch_, const uint64_t end_offset_, const uint64_t last_slot_,
             const bool exportable_, const uint64_t format_version_)
+        : snapshot { epoch_, end_offset_, last_slot_, exportable_, {}, 0, format_version_ }
+    {
+    }
+
+    snapshot::snapshot(const uint64_t epoch_, const uint64_t end_offset_, const uint64_t last_slot_,
+            const bool exportable_, std::optional<uint64_t> trusted_authority_epoch_, const uint64_t certified_core_offset_,
+            const uint64_t format_version_)
         : epoch { epoch_ }, end_offset { end_offset_ }, last_slot { last_slot_ },
-        exportable { exportable_ }, format_version { format_version_ }
+        exportable { exportable_ }, trusted_authority_epoch { trusted_authority_epoch_ }, certified_core_offset { certified_core_offset_ },
+        format_version { format_version_ }
     {
     }
 
@@ -51,6 +108,9 @@ namespace turbo::validator {
             { "endOffset", end_offset },
             { "lastSlot", last_slot },
             { "exportable", exportable },
+            { "trustedAuthorityEpoch", trusted_authority_epoch
+                ? json::value(*trusted_authority_epoch) : json::value(nullptr) },
+            { "certifiedCoreOffset", certified_core_offset },
             { "formatVersion", format_version }
         };
     }
@@ -149,6 +209,9 @@ namespace turbo::validator {
                     _load_state_snapshot(last_snapshot);
                 } else {
                     _state.clear();
+                    _trusted_shelley_authority_epoch.reset();
+                    _certified_core.reset();
+                    _certified_core_offset = 0;
                     logger::info("validator has no applicable snapshots, reprocessing the chain data to create one");
                 }
                 _apply_ledger_updates_fast();
@@ -181,11 +244,11 @@ namespace turbo::validator {
                 _save_state_snapshot();
                 _cr.sched().process(true);
             }
-            if (_state.valid_end_offset() < _state.end_offset()) {
+            if (_state.valid_end_offset() < _state.end_offset()) [[unlikely]] {
                 throw error(fmt::format("valid subchain end offset: {} is less than the final state end offset: {}",
                     _state.valid_end_offset(), _state.end_offset()));
             }
-            if (_reserve_snapshot && _state.valid_end_offset() < _reserve_snapshot->end_offset)
+            if (_reserve_snapshot && _state.valid_end_offset() < _reserve_snapshot->end_offset) [[unlikely]]
                 throw error(fmt::format("valid subchain end offset: {} is less than the reserve state end offset: {}",
                     _state.valid_end_offset(), _reserve_snapshot->end_offset));
         }
@@ -202,6 +265,7 @@ namespace turbo::validator {
             if (_reserve_snapshot) {
                 std::filesystem::rename(_storage_path("ledger-reserve", _reserve_snapshot->end_offset),
                     _storage_path("ledger", _reserve_snapshot->end_offset));
+                _snapshots.erase(*_reserve_snapshot);
                 _snapshots.emplace(*_reserve_snapshot);
             }
             _snapshots.remove_excessive(
@@ -234,52 +298,43 @@ namespace turbo::validator {
             return _state.unspent_reward(id);
         }
 
-        cardano::tail_relative_stake_map tail_relative_stake() const
-        {
-            const auto &stake_dist = _state.pool_stake_dist();
-            const auto &genesis_pools = _state.pbft_pools();
-            cardano::tail_relative_stake_map tail_stake {};
-            flat_set<cardano::pool_hash> seen_pools {};
-            seen_pools.reserve(stake_dist.size() + genesis_pools.size());
-            double signing_stake = 0.0;
-            size_t total_blocks = 0;
-            size_t repeated_signer_blocks = 0;
-            size_t obsolete_signer_blocks = 0;
-            const auto log_stats = [&] {
-                logger::debug("tail estimation: total_blocks: {} repeated_signer_blocks: {} obsolete_signer_blocks: {} edge signing stake: {}",
-                    total_blocks, repeated_signer_blocks, obsolete_signer_blocks, signing_stake);
-            };
-            for (auto rit = _cr.crbegin(), rend = _cr.crend(); rit != rend; ++rit) {
-                ++total_blocks;
-                if (rit->era >= 2) [[likely]] {
-                    if (const auto pool_it = stake_dist.find(rit->pool_id); pool_it != stake_dist.end()) [[likely]] {
-                        if (const auto [it, added] = seen_pools.emplace(rit->pool_id); added) {
-                            signing_stake += static_cast<double>(pool_it->second.rel_stake);
-                        } else {
-                            ++repeated_signer_blocks;
-                        }
-                    } else if (!genesis_pools.contains(rit->pool_id)) {
-                        ++obsolete_signer_blocks;
-                    }
-                    tail_stake.emplace_hint(tail_stake.begin(), rit->point(), signing_stake);
-                    if (signing_stake > 0.5) {
-                        log_stats();
-                        return tail_stake;
-                    }
-                }
-            }
-            log_stats();
-            return tail_stake;
-        }
-
         cardano::optional_point core_tip() const
         {
             timer t { "core_tip estimation", logger::level::debug };
-            for (const auto &[point, rel_stake]: tail_relative_stake()) {
-                if (rel_stake > 0.5)
-                    return point;
+            if (!_validate_vrf || _cr.empty())
+                return {};
+            if (_cr.crbegin()->era < 2)
+                return _byron_core_tip();
+            const auto epoch = _state.epoch();
+            if (!_trusted_shelley_authority_epoch || *_trusted_shelley_authority_epoch < epoch)
+                return _saved_certified_core();
+            if (const auto current = _shelley_core_tip(epoch, _state.pool_stake_dist(),
+                    _state.params().decentralization, _state.shelley_delegs_schedule()); current)
+                return current;
+            return _saved_certified_core();
+        }
+
+        cardano::optional_point _saved_certified_core() const
+        {
+            if (_certified_core)
+                return _certified_core;
+            if (_certified_core_offset) {
+                try {
+                    const auto block = _cr.find_block_by_offset(_certified_core_offset - 1);
+                    if (block.end_offset() != _certified_core_offset) [[unlikely]]
+                        throw error("not a block boundary");
+                    return block.point();
+                } catch (const std::exception &ex) {
+                    logger::warn("ignoring certified core offset {}: {}", _certified_core_offset, ex.what());
+                }
             }
             return {};
+        }
+
+        void _set_certified_core(cardano::optional_point core)
+        {
+            _certified_core = std::move(core);
+            _certified_core_offset = _certified_core ? _certified_core->end_offset : 0;
         }
 
         void my_on_block_validate(const cardano::block_base &blk) const
@@ -292,13 +347,11 @@ namespace turbo::validator {
             switch (blk.era()) {
                 case 0: {
                     static auto boundary_issuer_vkey = cardano::vkey::from_hex("0000000000000000000000000000000000000000000000000000000000000000");
-                    if (blk.issuer_vkey() != boundary_issuer_vkey)
+                    if (blk.issuer_vkey() != boundary_issuer_vkey) [[unlikely]]
                         throw error(fmt::format("boundary block contains an unexpected issuer_vkey: {}", blk.issuer_vkey()));
                     break;
                 }
                 case 1: {
-                    if (!_cr.config().byron_issuers.contains(blk.issuer_vkey())) [[unlikely]]
-                        throw error(fmt::format("unexpected Byron issuer_vkey: {}", blk.issuer_vkey()));
                     break;
                 }
                 case 2:
@@ -309,7 +362,7 @@ namespace turbo::validator {
                 case 7:
                     // do nothing here, the block signer's eligibility is tested later process_vrf_chunks
                     break;
-                default:
+                [[unlikely]] default:
                     throw error(fmt::format("unsupported block era: {}", blk.era()));
             }
         }
@@ -374,9 +427,9 @@ namespace turbo::validator {
         void load_snapshot(cardano::ledger::state &st, const snapshot &snap) const
         {
             st.load_zpp(_storage_path("ledger", snap.end_offset));
-            if (st.end_offset() != snap.end_offset)
+            if (st.end_offset() != snap.end_offset) [[unlikely]]
                 throw error(fmt::format("loaded state does not match the recorded end offset: {} != {}", st.end_offset(), snap.end_offset));
-            if (st.end_offset() != st.valid_end_offset())
+            if (st.end_offset() != st.valid_end_offset()) [[unlikely]]
                 throw error(fmt::format("validator state is in inconsistent state valid_end_offset: {} vs end_offset: {}", st.valid_end_offset(), st.end_offset()));
         }
     private:
@@ -384,7 +437,6 @@ namespace turbo::validator {
         static constexpr uint64_t snapshot_hifreq_distance = static_cast<uint64_t>(1) << 27;
         static constexpr uint64_t snapshot_normal_distance = indexer::merger::part_size * 2;
 
-        using timed_update_list = std::vector<index::timed_update::item>;
         using epoch_task_map = std::map<uint64_t, cardano::slot_range>;
 
         chunk_registry &_cr;
@@ -393,6 +445,9 @@ namespace turbo::validator {
         const std::string _state_path;
         const std::string _state_pre_path;
         cardano::ledger::state _state;
+        std::optional<uint64_t> _trusted_shelley_authority_epoch {};
+        cardano::optional_point _certified_core {};
+        uint64_t _certified_core_offset = 0;
         std::atomic_bool _validation_running { false };
         mutable mutex::unique_lock::mutex_type _next_task_mutex alignas(mutex::alignment) {};
         uint64_t _next_end_offset = 0;
@@ -411,6 +466,224 @@ namespace turbo::validator {
             [this](const auto epoch, const auto &info) { my_on_epoch_update(epoch, info); },
         };
 
+        using authority_control_map = std::map<uint64_t, uint64_t>;
+
+        authority_control_map _authority_controls(const cardano::ledger::timed_update_list &updates) const
+        {
+            authority_control_map controls {};
+            for (const auto &item: updates) {
+                std::visit([&](const auto &update) {
+                    using T = std::decay_t<decltype(update)>;
+                    uint64_t activation = 0;
+                    if constexpr (std::is_same_v<T, cardano::genesis_deleg_cert>) {
+                        if (item.loc.slot > std::numeric_limits<uint64_t>::max()
+                                - _cr.config().shelley_stability_window) [[unlikely]]
+                            throw error("shelley genesis delegation activation slot overflows");
+                        activation = item.loc.slot + _cr.config().shelley_stability_window;
+                    } else if constexpr (std::is_same_v<T, cardano::param_update_proposal>) {
+                        if (_state.params().protocol_ver.major >= 2 && update.update.decentralization) {
+                            const auto epoch = _cr.make_slot(item.loc.slot).epoch();
+                            if (!update.epoch || *update.epoch == epoch) {
+                                const auto next_epoch = cardano::slot::from_epoch(epoch + 1, _cr.config());
+                                if (item.loc.slot < next_epoch - 2 * _cr.config().shelley_stability_window)
+                                    activation = next_epoch;
+                            } else if (*update.epoch == epoch + 1) {
+                                activation = cardano::slot::from_epoch(epoch + 2, _cr.config());
+                            }
+                        }
+                    }
+                    if (activation) {
+                        const auto [it, created] = controls.try_emplace(item.loc.slot, activation);
+                        if (!created && activation < it->second)
+                            it->second = activation;
+                    }
+                }, item.update);
+            }
+            return controls;
+        }
+
+        void _certify_authority_controls(const authority_control_map &controls, const uint64_t epoch)
+        {
+            for (const auto &[slot, activation]: controls) {
+                if (_authority_control_confirmed(slot, activation, epoch)) {
+                    logger::debug("authority control at slot {} was certified before activation at slot {}",
+                        slot, activation);
+                    continue;
+                }
+                logger::warn("authority control at slot {} was not certified before activation at slot {}; "
+                    "freezing the certified core at end offset {}", slot, activation, _certified_core_offset);
+                _trusted_shelley_authority_epoch.reset();
+                return;
+            }
+        }
+
+        struct quorum_weight {
+            using wide = boost::multiprecision::uint256_t;
+            wide signed_weight = 0;
+            wide pool_unit;
+            wide genesis_unit;
+            wide threshold;
+
+            quorum_weight(const operating_pool_map &dist, const rational_u64 &d, const size_t num_genesis)
+            {
+                if (!d.denominator || d.numerator > d.denominator) [[unlikely]]
+                    throw error("invalid decentralization parameter");
+                if (d.numerator && !num_genesis) [[unlikely]]
+                    throw error("a positive decentralization parameter requires genesis delegates");
+                const wide n = num_genesis ? num_genesis : 1;
+                const wide total = dist.total_stake ? dist.total_stake : 1;
+                pool_unit = wide { d.denominator - d.numerator } * n;
+                genesis_unit = wide { d.numerator } * total;
+                threshold = wide { d.denominator } * total * n;
+            }
+
+            bool majority() const
+            {
+                return 2 * signed_weight > threshold;
+            }
+        };
+
+        void _add_shelley_signer(const cardano::block_info &block, const uint64_t epoch,
+            const operating_pool_map &dist, const rational_u64 &d,
+            const cardano::shelley_delegate_map &delegs, flat_set<cardano::pool_hash> &seen_pools,
+            flat_set<cardano::key_hash> &seen_genesis, quorum_weight &weight) const
+        {
+            if (block.era < 2)
+                return;
+            const auto overlay = _overlay_slot(epoch, block.slot, d, delegs, _cr.config());
+            if (overlay.reserved) {
+                if (overlay.delegate && block.pool_id == overlay.delegate->delegate
+                        && seen_genesis.emplace(*overlay.genesis_key).second)
+                    weight.signed_weight += weight.genesis_unit;
+            } else if (const auto pool_it = dist.find(block.pool_id); pool_it != dist.end()) {
+                if (seen_pools.emplace(block.pool_id).second)
+                    weight.signed_weight += quorum_weight::wide { pool_it->second.active_stake } * weight.pool_unit;
+            }
+        }
+
+        bool _authority_control_confirmed(const uint64_t source_slot, const uint64_t activation_slot,
+            const uint64_t epoch) const
+        {
+            if (!_validate_vrf || !_trusted_shelley_authority_epoch
+                    || *_trusted_shelley_authority_epoch < epoch || activation_slot <= source_slot)
+                return false;
+            const auto &delegs = _state.shelley_delegs_schedule();
+            const auto &d = _state.params().decentralization;
+            if (!delegs.complete && d.numerator)
+                return false;
+            const auto epoch_end = static_cast<uint64_t>(cardano::slot::from_epoch(
+                epoch + 1, _cr.config())) - 1;
+            auto last_slot = std::min(activation_slot - 1, epoch_end);
+            if (d.numerator) {
+                if (const auto next = delegs.changes.upper_bound(source_slot);
+                        next != delegs.changes.end() && next->first <= last_slot)
+                    last_slot = next->first - 1;
+            }
+            if (last_slot <= source_slot)
+                return false;
+
+            const auto &dist = _state.pool_stake_dist();
+            flat_set<cardano::pool_hash> seen_pools {};
+            flat_set<cardano::key_hash> seen_genesis {};
+            quorum_weight weight { dist, d, delegs.initial.size() };
+            auto end = _cr.latest_block_before_or_at_slot(last_slot);
+            if (end == _cr.cend())
+                return false;
+            for (storage::const_reverse_iterator rit { ++end }, rend = _cr.crend(); rit != rend; ++rit) {
+                if (rit->slot <= source_slot || _cr.make_slot(rit->slot).epoch() < epoch)
+                    break;
+                const auto &block_delegs = d.numerator ? delegs.at(rit->slot) : delegs.initial;
+                _add_shelley_signer(*rit, epoch, dist, d, block_delegs,
+                    seen_pools, seen_genesis, weight);
+                if (weight.majority())
+                    return true;
+            }
+            return false;
+        }
+
+        cardano::optional_point _shelley_core_tip(const uint64_t epoch, const operating_pool_map &dist,
+            const rational_u64 &d, const cardano::shelley_delegate_schedule &delegs) const
+        {
+            if (!delegs.complete && d.numerator)
+                return {};
+            const auto epoch_start = static_cast<uint64_t>(
+                cardano::slot::from_epoch(epoch, _cr.config()));
+            const auto authority_start = d.numerator && !delegs.changes.empty()
+                ? std::max(epoch_start, delegs.changes.rbegin()->first) : epoch_start;
+            flat_set<cardano::pool_hash> seen_pools {};
+            flat_set<cardano::key_hash> seen_genesis {};
+            quorum_weight weight { dist, d, delegs.initial.size() };
+            auto end = _cr.latest_block_before_or_at_slot(
+                static_cast<uint64_t>(cardano::slot::from_epoch(epoch + 1, _cr.config())) - 1);
+            if (end == _cr.cend())
+                return {};
+            for (storage::const_reverse_iterator rit { ++end }, rend = _cr.crend(); rit != rend; ++rit) {
+                const auto block_epoch = _cr.make_slot(rit->slot).epoch();
+                if (block_epoch < epoch || rit->slot < authority_start)
+                    return weight.majority() ? cardano::optional_point { rit->point() } : cardano::optional_point {};
+                if (weight.majority())
+                    return rit->point();
+                const auto &block_delegs = d.numerator ? delegs.at(rit->slot) : delegs.initial;
+                _add_shelley_signer(*rit, epoch, dist, d, block_delegs,
+                    seen_pools, seen_genesis, weight);
+            }
+            return {};
+        }
+
+        cardano::optional_point _byron_core_tip() const
+        {
+            flat_set<cardano::pool_hash> issuers {};
+            for (const auto &issuer: _cr.config().byron_issuers)
+                issuers.emplace(crypto::blake2b::digest<cardano::pool_hash>(issuer));
+            flat_set<cardano::pool_hash> seen {};
+            auto rit = _cr.crbegin();
+            if (_cr.config().shelley_started()) {
+                const auto shelley_start = _cr.config().shelley_start_slot();
+                if (!shelley_start)
+                    return {};
+                auto end = _cr.latest_block_before_or_at_slot(shelley_start - 1);
+                if (end == _cr.cend())
+                    return {};
+                rit = storage::const_reverse_iterator { ++end };
+            }
+            for (const auto rend = _cr.crend(); rit != rend; ++rit) {
+                if (2 * seen.size() > issuers.size())
+                    return rit->point();
+                if (rit->era == 1 && issuers.contains(rit->pool_id))
+                    seen.emplace(rit->pool_id);
+            }
+            return {};
+        }
+
+        void _advance_trusted_authority(const uint64_t new_epoch)
+        {
+            if (!_validate_vrf)
+                return;
+            const auto &cfg = _cr.config();
+            if (!cfg.shelley_started() || new_epoch < cfg.shelley_start_epoch())
+                return;
+            const auto root = cfg.shelley_start_epoch() + 1;
+            if (new_epoch == cfg.shelley_start_epoch()) {
+                _set_certified_core(_byron_core_tip());
+                _trusted_shelley_authority_epoch = root;
+                return;
+            }
+            bool previous_epoch_certified = false;
+            if (_trusted_shelley_authority_epoch
+                    && *_trusted_shelley_authority_epoch >= new_epoch - 1) {
+                if (const auto core = _shelley_core_tip(new_epoch - 1, _state.pool_stake_dist(),
+                        _state.params().decentralization, _state.shelley_delegs_schedule()); core) {
+                    _set_certified_core(core);
+                    previous_epoch_certified = true;
+                }
+            }
+            if (new_epoch > root && _trusted_shelley_authority_epoch
+                    && *_trusted_shelley_authority_epoch >= new_epoch - 1
+                    && previous_epoch_certified) {
+                _trusted_shelley_authority_epoch = new_epoch;
+            }
+        }
+
         const snapshot *_best_exportable_snapshot(const cardano::optional_point &imm_tip) const
         {
             if (!_snapshots.empty() && imm_tip)
@@ -422,6 +695,9 @@ namespace turbo::validator {
         {
             uint64_t end_offset = 0;
             bool loaded = false;
+            _trusted_shelley_authority_epoch.reset();
+            _certified_core.reset();
+            _certified_core_offset = 0;
             if (reset_state)
                 _state.clear(cardano::ledger::state::init_mode::empty);
             _snapshots.clear();
@@ -430,7 +706,7 @@ namespace turbo::validator {
                 known_files.emplace(_state_path);
                 const auto j_snapshots = json::load(_state_path).as_array();
                 for (const auto &j_s: j_snapshots) {
-                    const auto snap = snapshot::from_json(j_s.as_object());
+                    auto snap = snapshot::from_json(j_s.as_object());
                     if (snap.format_version != snapshot_format_version) {
                         logger::warn("ignoring validator snapshot {}: format version {} is older than the required format {}",
                             snap, snap.format_version, snapshot_format_version);
@@ -451,6 +727,9 @@ namespace turbo::validator {
                         logger::warn("ignoring validator snapshot {}: {}", *snap_it, ex.what());
                         _snapshots.erase(snap_it);
                         _state.clear(cardano::ledger::state::init_mode::empty);
+                        _trusted_shelley_authority_epoch.reset();
+                        _certified_core.reset();
+                        _certified_core_offset = 0;
                     }
                 }
             }
@@ -474,7 +753,12 @@ namespace turbo::validator {
 
         uint64_t _load_state_snapshot(const snapshot &snap)
         {
+            if (snap.certified_core_offset > snap.end_offset) [[unlikely]]
+                throw error("the certified core is beyond its validator snapshot");
             load_snapshot(_state, snap);
+            _trusted_shelley_authority_epoch = snap.trusted_authority_epoch;
+            _certified_core.reset();
+            _certified_core_offset = snap.certified_core_offset;
             return _state.end_offset();
         }
 
@@ -498,7 +782,8 @@ namespace turbo::validator {
             if (_state.end_offset() && !_cr.empty()) {
                 auto tmp_sc = _snapshot_subchains();
                 _state.save_zpp(_storage_path("ledger-reserve", _state.end_offset()), std::make_unique<subchain_list>(std::move(tmp_sc)));
-                _reserve_snapshot.emplace(_state);
+                _reserve_snapshot.emplace(_state, _trusted_shelley_authority_epoch,
+                    _certified_core_offset);
             }
         }
 
@@ -517,7 +802,9 @@ namespace turbo::validator {
                 _state.save_zpp(_storage_path("ledger", _state.end_offset()));
             }
             logger::debug("recording the new snapshot");
-            snapshot latest { _state };
+            snapshot latest { _state, _trusted_shelley_authority_epoch,
+                _certified_core_offset };
+            _snapshots.erase(latest);
             _snapshots.emplace(std::move(latest));
         }
 
@@ -553,7 +840,7 @@ namespace turbo::validator {
             const auto state_start_offset = _state.end_offset();
             if (state_start_offset < _cr.num_bytes()) {
                 auto it = _cr.find_offset_it(state_start_offset);
-                if (it->second.offset != state_start_offset)
+                if (it->second.offset != state_start_offset) [[unlikely]]
                     throw error("internal error: a chunk that doesn't begin right after the snapshot's end");
                 for (; it != _cr.chunks().end(); ++it) {
                     const auto &chunk = it->second;
@@ -699,6 +986,7 @@ namespace turbo::validator {
                 const auto last_offset = _state.end_offset();
                 if (!last_offset || last_epoch < e) {
                     turbo::timer t { fmt::format("validator epoch {} start_epoch", e), logger::level::trace };
+                    _advance_trusted_authority(e);
                     _state.start_epoch(e);
                 }
 
@@ -715,6 +1003,7 @@ namespace turbo::validator {
                         turbo::timer t { fmt::format("validator epoch {} gather timed updates", e), logger::level::trace };
                         _gather_updates<index::timed_update::indexer>(updates.timed, "timed-update", slots, last_offset);
                     }
+                    const auto authority_controls = _authority_controls(updates.timed);
                     const auto utxo_chunks = dynamic_cast<index::utxo::indexer &>(*_cr.indexer().indexers().at("utxo")).chunks(slots);
                     {
                         turbo::timer t { fmt::format("validator epoch {} load utxo updates", e), logger::level::trace };
@@ -725,6 +1014,7 @@ namespace turbo::validator {
                             e, updates.blocks.size(), updates.timed.size(), updates.utxos.size()), logger::level::trace };
                         _state.process_updates(std::move(updates));
                     }
+                    _certify_authority_controls(authority_controls, e);
 
                     const auto vrf_chunks = dynamic_cast<index::vrf::indexer &>(*_cr.indexer().indexers().at("vrf")).chunks(slots);
                     if (!vrf_chunks.empty()) {
@@ -779,35 +1069,59 @@ namespace turbo::validator {
 
         void _validate_epoch_leaders(const uint64_t epoch, const uint64_t epoch_min_offset, const std::shared_ptr<std::vector<index::vrf::item>> &vrf_updates_ptr,
             const std::shared_ptr<operating_pool_map> &pool_dist_ptr,
+            const std::shared_ptr<cardano::shelley_delegate_schedule> &genesis_delegs_ptr, const rational_u64 decentralization,
+            const cardano::protocol_version active_protocol_ver,
             const cardano::vrf_nonce &nonce_epoch, const cardano::vrf_nonce &uc_nonce, const cardano::vrf_nonce &uc_leader,
             const size_t start_idx, const size_t end_idx)
         {
             timer t { fmt::format("validate_leaders for epoch {} block indices from {} to {}", epoch, start_idx, end_idx), logger::level::trace };
+            const auto active_era = active_protocol_ver.major >= 2 ? active_protocol_ver.era() : 0;
             for (size_t vi = start_idx; vi < end_idx; ++vi) {
                 const auto &item = vrf_updates_ptr->at(vi);
+                if (active_protocol_ver.major >= 2 && item.era != active_era) [[unlikely]]
+                    throw error(fmt::format("block at slot {} has era {} but the active protocol version {} requires era {}",
+                        item.slot, item.era, active_protocol_ver, active_era));
+                if (_cr.config().shelley_network_id && active_protocol_ver.major >= 9
+                        && item.protocol_ver.major > active_protocol_ver.major + 1) [[unlikely]]
+                    throw error(fmt::format("block at slot {} advertises protocol version {} above the allowed major version {}",
+                        item.slot, item.protocol_ver, active_protocol_ver.major + 1));
                 if (item.era < 6) {
                     const auto leader_input = cardano::vrf_make_seed(uc_leader, item.slot, nonce_epoch);
-                    if (!cardano::vrf03_verify(item.leader_result, item.vkey, item.leader_proof, leader_input))
+                    if (!cardano::vrf03_verify(item.leader_result, item.vkey, item.leader_proof, leader_input)) [[unlikely]]
                         throw error(fmt::format("leader VRF verification failed: epoch: {} slot {} era {}", epoch, item.slot, item.era));
                     auto nonce_input = cardano::vrf_make_seed(uc_nonce, item.slot, nonce_epoch);
-                    if (!cardano::vrf03_verify(item.nonce_result, item.vkey, item.nonce_proof, nonce_input))
+                    if (!cardano::vrf03_verify(item.nonce_result, item.vkey, item.nonce_proof, nonce_input)) [[unlikely]]
                         throw error(fmt::format("nonce VRF verification failed: epoch: {} slot {} era {}", epoch, item.slot, item.era));
                 } else {
                     const auto vrf_input = cardano::vrf_make_input(item.slot, nonce_epoch);
-                    if (!cardano::vrf03_verify(item.leader_result, item.vkey, item.leader_proof, vrf_input))
+                    if (!cardano::vrf03_verify(item.leader_result, item.vkey, item.leader_proof, vrf_input)) [[unlikely]]
                         throw error(fmt::format("VRF verification failed: epoch: {} slot {} era {}", epoch, item.slot, item.era));
                 }
-                if (!_state.pbft_pools().contains(item.pool_id)) {
+                const auto &genesis_delegs = decentralization.numerator
+                    ? genesis_delegs_ptr->at(item.slot) : genesis_delegs_ptr->initial;
+                const auto overlay = _overlay_slot(epoch, item.slot, decentralization,
+                    genesis_delegs, _cr.config());
+                const auto vrf_hash = crypto::blake2b::digest<cardano::vrf_vkey>(item.vkey);
+                if (overlay.reserved) {
+                    if (!overlay.delegate) [[unlikely]]
+                        throw error(fmt::format("block at slot {} occupies an inactive overlay slot", item.slot));
+                    if (item.pool_id != overlay.delegate->delegate || vrf_hash != overlay.delegate->vrf) [[unlikely]]
+                        throw error(fmt::format("block at slot {} is not issued by the scheduled genesis delegate", item.slot));
+                } else {
                     const auto pool_it = pool_dist_ptr->find(item.pool_id);
-                    if (pool_it == pool_dist_ptr->end())
+                    if (pool_it == pool_dist_ptr->end()) [[unlikely]]
                         throw error(fmt::format("epoch {} pool-stake distribution misses block-issuing pool id {}!", epoch, item.pool_id));
+                    if (vrf_hash != pool_it->second.vrf_vkey) [[unlikely]]
+                        throw error(fmt::format("block at slot {} uses an unregistered VRF key", item.slot));
                     const auto &rel_stake = pool_it->second.rel_stake;
                     if (item.era < 6) {
-                        if (!cardano::vrf_leader_is_eligible(item.leader_result, 0.05, rel_stake))
+                        if (!cardano::vrf_leader_is_eligible(item.leader_result,
+                                _cr.config().shelley_active_slots_coeff, rel_stake)) [[unlikely]]
                             throw error(fmt::format("Leader-eligibility check failed for block at slot {} issued by {}: leader_result: {} rel_stake: {}",
                                 item.slot, item.pool_id, item.leader_result, rel_stake));
                     } else {
-                        if (!cardano::vrf_leader_is_eligible(cardano::vrf_leader_value(item.leader_result), 0.05, rel_stake))
+                        if (!cardano::vrf_leader_is_eligible(cardano::vrf_leader_value(item.leader_result),
+                                _cr.config().shelley_active_slots_coeff, rel_stake)) [[unlikely]]
                             throw error(fmt::format("era 6 Leader-eligibility check failed for block at slot {} issued by {}: leader_result: {} rel_stake: {}",
                                 item.slot, item.pool_id, item.leader_result, rel_stake));
                     }
@@ -839,6 +1153,10 @@ namespace turbo::validator {
                 std::sort(vrf_updates_ptr->begin(), vrf_updates_ptr->end());
                 if (!fast && _validate_vrf) {
                     const auto pool_dist_ptr = std::make_shared<operating_pool_map>(_state.pool_stake_dist());
+                    const auto genesis_delegs_ptr = std::make_shared<cardano::shelley_delegate_schedule>(
+                        _state.shelley_delegs_schedule());
+                    const auto decentralization = _state.params().decentralization;
+                    const auto active_protocol_ver = _state.params().protocol_ver;
                     const auto &nonce_epoch = _state.vrf_state().nonce_epoch();
                     const auto &uc_nonce = _state.vrf_state().uc_nonce();
                     const auto &uc_leader = _state.vrf_state().uc_leader();
@@ -846,8 +1164,9 @@ namespace turbo::validator {
                     static const std::string task_name{validate_leaders_task};
                     for (size_t start = 0; start < vrf_updates_ptr->size(); start += batch_size) {
                         auto end = std::min(start + batch_size, vrf_updates_ptr->size());
-                        _cr.sched().submit(task_name, -static_cast<int64_t>(epoch), [this, epoch, epoch_min_offset, vrf_updates_ptr, pool_dist_ptr, nonce_epoch, uc_nonce, uc_leader, start, end] {
-                            _validate_epoch_leaders(epoch, epoch_min_offset, vrf_updates_ptr, pool_dist_ptr, nonce_epoch, uc_nonce, uc_leader, start, end);
+                        _cr.sched().submit(task_name, -static_cast<int64_t>(epoch), [this, epoch, epoch_min_offset, vrf_updates_ptr, pool_dist_ptr, genesis_delegs_ptr, decentralization, active_protocol_ver, nonce_epoch, uc_nonce, uc_leader, start, end] {
+                            _validate_epoch_leaders(epoch, epoch_min_offset, vrf_updates_ptr, pool_dist_ptr, genesis_delegs_ptr,
+                                decentralization, active_protocol_ver, nonce_epoch, uc_nonce, uc_leader, start, end);
                         }, chunk_offset_t { epoch_min_offset });
                     }
                 }
@@ -871,11 +1190,6 @@ namespace turbo::validator {
     cardano::amount incremental::unspent_reward(const cardano::stake_ident &id) const
     {
         return _impl->unspent_reward(id);
-    }
-
-    cardano::tail_relative_stake_map incremental::tail_relative_stake() const
-    {
-        return _impl->tail_relative_stake();
     }
 
     cardano::optional_slot incremental::can_export(const cardano::optional_point &immutable_tip) const
