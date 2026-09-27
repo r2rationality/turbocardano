@@ -53,3 +53,4 @@ doc/**/*.synctex.gz
 doc/**/figures/*.svg
 doc/**/figures/*.pdf
 src/adhoc*.*
+.smtp-password
