@@ -17,9 +17,4 @@ namespace turbo::cardano::ledger::conway {
     {
         return _pulsing_data;
     }
-
-    // Applies the effects produced by RATIFY inside the Agda EPOCH transition.
-
-    // EPOCH. This method is called for every Conway epoch except the first.
-
 }

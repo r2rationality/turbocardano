@@ -3,7 +3,7 @@
  * Copyright (c) 2024-2026 R2 Rationality OÜ (info at r2rationality dot com)
  * License: https://github.com/r2rationality/turbocardano/blob/main/LICENSE */
 
-#include <condition_variable>
+#include <exception>
 
 #ifdef _MSC_VER
 #   include <SDKDDKVer.h>
@@ -24,6 +24,7 @@
 
 namespace turbo::cardano::network {
     using boost::asio::ip::tcp;
+    static constexpr auto response_timeout = std::chrono::seconds { 10 };
 
     void client::fetch_blocks(const point2 &from, const point2 &to, const block_handler &handler)
     {
@@ -43,37 +44,48 @@ namespace turbo::cardano::network {
         ~impl()
         {
             process_impl(nullptr, _asio_worker.get());
-            if (_conn) {
-                _conn->cancel();
-                _conn->close();
-            }
         }
 
         void find_intersection_impl(const optional_point2_list &points, const find_handler &handler)
         {
             std::scoped_lock lk { _futures_mutex };
-            _futures.emplace_back(boost::asio::co_spawn(_asio_worker->io_context(), _find_intersection(points, handler), boost::asio::use_future));
+            _futures.emplace_back(boost::asio::co_spawn(_strand, _find_intersection(points, handler), boost::asio::use_future));
         }
 
         void fetch_headers_impl(const optional_point2_list &points, const size_t max_blocks, const header_handler &handler)
         {
             std::scoped_lock lk { _futures_mutex };
-            _futures.emplace_back(boost::asio::co_spawn(_asio_worker->io_context(), _fetch_headers(points, max_blocks, handler), boost::asio::use_future));
+            _futures.emplace_back(boost::asio::co_spawn(_strand, _fetch_headers(points, max_blocks, handler), boost::asio::use_future));
         }
 
         void fetch_blocks_impl(const point2 &from, const point2 &to, const block_handler &handler)
         {
             logger::debug("fetch_blocks from: {} to: {}", from, to);
             std::scoped_lock lk { _futures_mutex };
-            _futures.emplace_back(boost::asio::co_spawn(_asio_worker->io_context(), _fetch_blocks(from, to, handler), boost::asio::use_future));
+            _futures.emplace_back(boost::asio::co_spawn(_strand, _fetch_blocks(from, to, handler), boost::asio::use_future));
         }
 
         chain_update next_header_sync(const std::stop_token stop, const std::function<void()> &idle)
         {
-            auto f = boost::asio::co_spawn(_asio_worker->io_context(), _next_header(stop), boost::asio::use_future);
+            std::stop_source request;
+            std::stop_callback forward_stop { stop, [&] { request.request_stop(); } };
+            auto f = boost::asio::co_spawn(_strand, _next_header(request.get_token()), boost::asio::use_future);
+            std::exception_ptr idle_failure;
             while (f.wait_for(std::chrono::milliseconds { 100 }) != std::future_status::ready) {
-                if (idle)
-                    logger::run_log_errors(idle);
+                if (idle_failure) {
+                    _asio_worker->io_context().poll();
+                } else if (idle) {
+                    try {
+                        idle();
+                    } catch (...) {
+                        idle_failure = std::current_exception();
+                        request.request_stop();
+                    }
+                }
+            }
+            if (idle_failure) {
+                _conn.reset();
+                std::rethrow_exception(idle_failure);
             }
             return f.get();
         }
@@ -100,6 +112,8 @@ namespace turbo::cardano::network {
                 throw error(fmt::format("a client instances can be reset only when there are no active requests but there are: {}", _futures.size()));
             _conn.reset();
         }
+
+        void set_stop_token(const std::stop_token stop) { _stop = stop; }
     private:
         struct perf_stats {
             std::atomic<std::chrono::system_clock::time_point> last_report_time = std::chrono::system_clock::now();
@@ -128,18 +142,40 @@ namespace turbo::cardano::network {
         const address _addr;
         const uint64_t _protocol_magic;
         asio::worker_ptr _asio_worker;
-        tcp::resolver _resolver { _asio_worker->io_context() };
-        std::optional<tcp::socket> _conn {};
+        boost::asio::strand<boost::asio::io_context::executor_type> _strand { boost::asio::make_strand(_asio_worker->io_context()) };
+        std::shared_ptr<tcp::resolver> _resolver = std::make_shared<tcp::resolver>(_strand);
+        std::shared_ptr<tcp::socket> _conn {};
+        std::stop_token _stop {};
         perf_stats _stats {};
         std::mutex _futures_mutex alignas(mutex::alignment) {};
         std::vector<std::future<void>> _futures {};
 
+        // Queued cancellation owns its targets even if the operation finishes first.
+        static auto _cancel_on_stop(const std::stop_token stop, const std::shared_ptr<tcp::socket> &socket,
+            std::shared_ptr<tcp::resolver> resolver={})
+        {
+            return std::stop_callback { stop, [executor=socket->get_executor(), socket, resolver] {
+                boost::asio::post(executor, [socket, resolver] {
+                    if (resolver) resolver->cancel();
+                    boost::system::error_code ec;
+                    socket->close(ec);
+                });
+            } };
+        }
+
+        static void _check_stop(const std::stop_token stop)
+        {
+            if (stop.stop_requested()) throw error("network operation stopped");
+        }
+
         static boost::asio::awaitable<uint8_vector> _read_response(tcp::socket &socket, const mini_protocol mp_id)
         {
+            const auto deadline = std::chrono::steady_clock::now() + response_timeout;
             segment_info recv_info {};
             co_await _wait_with_deadline(boost::asio::async_read(socket, boost::asio::buffer(&recv_info, sizeof(recv_info)), boost::asio::use_awaitable));
             uint8_vector recv_payload(recv_info.payload_size());
-            co_await _wait_with_deadline(boost::asio::async_read(socket, boost::asio::buffer(recv_payload.data(), recv_payload.size()), boost::asio::use_awaitable));
+            co_await _wait_with_deadline(boost::asio::async_read(socket, boost::asio::buffer(recv_payload.data(), recv_payload.size()), boost::asio::use_awaitable),
+                deadline - std::chrono::steady_clock::now());
             if (recv_info.mode() != channel_mode::responder || recv_info.mini_protocol_id() != mp_id) [[unlikely]] {
                 logger::error("unexpected message: mode: {} mini_protocol_id: {} body size: {} body: {}",
                     static_cast<int>(recv_info.mode()), static_cast<uint16_t>(recv_info.mini_protocol_id()), recv_payload.size(),
@@ -168,14 +204,18 @@ namespace turbo::cardano::network {
             co_return co_await _read_response(socket, mp_id);
         }
 
-        boost::asio::awaitable<tcp::socket> _connect_and_handshake()
+        boost::asio::awaitable<std::shared_ptr<tcp::socket>> _connect_and_handshake()
         {
-            auto results = co_await _wait_with_deadline(_resolver.async_resolve(_addr.host, _addr.port, boost::asio::use_awaitable));
+            _check_stop(_stop);
+            auto socket = std::make_shared<tcp::socket>(_strand);
+            auto cancel = _cancel_on_stop(_stop, socket, _resolver);
+            auto results = co_await _wait_with_deadline(_resolver->async_resolve(_addr.host, _addr.port, boost::asio::use_awaitable));
+            _check_stop(_stop);
             if (results.empty()) [[unlikely]]
                 throw error(fmt::format("DNS resolve for {}:{} returned no results!", _addr.host, _addr.port));
-            tcp::socket socket { _asio_worker->io_context() };
-            co_await _wait_with_deadline(socket.async_connect(*results.begin(), boost::asio::use_awaitable));
-            if (!socket.is_open()) [[unlikely]] {
+            co_await _wait_with_deadline(socket->async_connect(*results.begin(), boost::asio::use_awaitable));
+            _check_stop(_stop);
+            if (!socket->is_open()) [[unlikely]] {
                 throw error(fmt::format("failed to connect to {} within the allotted timeframe", _addr));
             }
 
@@ -188,7 +228,7 @@ namespace turbo::cardano::network {
             miniprotocol::handshake::msg_propose_versions_t {
                 std::move(versions)
             }.to_cbor(enc);
-            auto resp = co_await _send_request(socket, mini_protocol::handshake, enc.cbor());
+            auto resp = co_await _send_request(*socket, mini_protocol::handshake, enc.cbor());
             auto resp_cbor = cbor::zero2::parse(resp);
             const auto msg = miniprotocol::handshake::msg_t::from_cbor(resp_cbor.get());
             std::visit([&](const auto &mv) {
@@ -206,8 +246,10 @@ namespace turbo::cardano::network {
         boost::asio::awaitable<intersection_info_t>
         _find_intersection_do(optional_point2_list points)
         {
+            _check_stop(_stop);
             if (!_conn)
                 _conn = co_await _connect_and_handshake();
+            auto cancel = _cancel_on_stop(_stop, _conn);
             intersection_info_t isect {};
             cbor::encoder enc {};
             miniprotocol::chainsync::msg_find_intersect_t { std::move(points) }.to_cbor(enc);
@@ -246,7 +288,7 @@ namespace turbo::cardano::network {
         }
 
         struct timer_stopped_t {};
-        static boost::asio::awaitable<timer_stopped_t> _wait_for_timer(const std::chrono::seconds deadline)
+        static boost::asio::awaitable<timer_stopped_t> _wait_for_timer(const std::chrono::steady_clock::duration deadline)
         {
             auto executor = co_await boost::asio::this_coro::executor;
             auto timer = boost::asio::steady_timer { executor, deadline };
@@ -255,21 +297,41 @@ namespace turbo::cardano::network {
         }
 
         template<typename T>
-        static boost::asio::awaitable<T> _wait_with_deadline(boost::asio::awaitable<T> action, const std::chrono::seconds deadline=std::chrono::seconds { 10 })
+        static boost::asio::awaitable<T> _wait_with_deadline(boost::asio::awaitable<T> action, const std::chrono::steady_clock::duration deadline=response_timeout)
         {
             using namespace boost::asio::experimental::awaitable_operators;
-            auto res = co_await (std::move(action) || _wait_for_timer(deadline));
+            if (deadline <= std::chrono::steady_clock::duration::zero())
+                throw error("network response deadline expired");
+            std::exception_ptr failure;
+            std::optional<std::conditional_t<std::is_void_v<T>, std::monostate, T>> result;
+            const auto complete = [&]() -> boost::asio::awaitable<void> {
+                try {
+                    if constexpr (std::is_void_v<T>) {
+                        co_await std::move(action);
+                        result.emplace();
+                    } else {
+                        result.emplace(co_await std::move(action));
+                    }
+                } catch (...) {
+                    failure = std::current_exception();
+                }
+            };
+            auto res = co_await (complete() || _wait_for_timer(deadline));
             if (std::holds_alternative<timer_stopped_t>(res)) [[unlikely]]
-                throw error(fmt::format("network operation timed out after {} seconds", deadline.count()));
+                throw error(fmt::format("network operation timed out after {} ms", std::chrono::duration_cast<std::chrono::milliseconds>(deadline).count()));
+            if (failure)
+                std::rethrow_exception(failure);
             if constexpr (!std::is_same_v<T, void>)
-                co_return std::move(std::get<T>(res));
+                co_return std::move(*result);
         }
 
-        static boost::asio::awaitable<void> _receive_blocks(tcp::socket &socket, uint8_vector parse_buf, const block_handler &handler)
+        boost::asio::awaitable<void> _receive_blocks(tcp::socket &socket, uint8_vector parse_buf, const block_handler &handler)
         {
             bool deliver = true;
             for (;;) {
+                _check_stop(_stop);
                 while (!parse_buf.empty()) {
+                    _check_stop(_stop);
                     try {
                         auto resp_cbor = cbor::zero2::parse(parse_buf);
                         auto msg = miniprotocol::blockfetch::msg_t::from_cbor(resp_cbor.get());
@@ -296,7 +358,7 @@ namespace turbo::cardano::network {
                         break;
                     }
                 }
-                parse_buf << co_await _wait_with_deadline(_read_response(socket, mini_protocol::block_fetch), std::chrono::seconds { 5 });
+                parse_buf << co_await _read_response(socket, mini_protocol::block_fetch);
             }
         }
 
@@ -304,8 +366,10 @@ namespace turbo::cardano::network {
         boost::asio::awaitable<void> _fetch_blocks(const point2 from, const point2 to, const block_handler handler)
         {
             try {
+                _check_stop(_stop);
                 if (!_conn)
                     _conn = co_await _connect_and_handshake();
+                auto cancel = _cancel_on_stop(_stop, _conn);
                 cbor::encoder enc {};
                 miniprotocol::blockfetch::msg_request_range_t { from, to }.to_cbor(enc);
                 auto resp = co_await _send_request(*_conn, mini_protocol::block_fetch, enc.cbor());
@@ -347,8 +411,10 @@ namespace turbo::cardano::network {
         // delayed ChainSync response, but no second coroutine reads the stream.
         boost::asio::awaitable<chain_update> _next_header(const std::stop_token stop)
         {
+            _check_stop(stop);
             if (!_conn)
                 throw error("ChainSync requires an established intersection");
+            auto cancel = _cancel_on_stop(stop, _conn);
             cbor::encoder req {};
             miniprotocol::chainsync::msg_request_next_t {}.to_cbor(req);
             co_await _write_request(*_conn, mini_protocol::chain_sync, req.cbor());
@@ -358,7 +424,7 @@ namespace turbo::cardano::network {
             std::optional<chain_update> result;
             bool keepalive_pending = false;
             auto last_keepalive = std::chrono::steady_clock::now();
-            auto last_progress = last_keepalive;
+            const auto request_started = last_keepalive;
             for (;;) {
                 if (stop.stop_requested())
                     throw error("ChainSync stopped");
@@ -400,16 +466,16 @@ namespace turbo::cardano::network {
                     if (result && !keepalive_pending) co_return *result;
                 }
                 const auto now = std::chrono::steady_clock::now();
-                if (!awaiting && now - last_progress > std::chrono::seconds { 30 })
+                if (!awaiting && now - request_started >= response_timeout)
                     throw error("ChainSync response timed out");
-                if (keepalive_pending && now - last_keepalive > std::chrono::seconds { 60 })
+                if (keepalive_pending && now - last_keepalive >= response_timeout)
                     throw error("KeepAlive response timed out");
-                if (!result && awaiting && !keepalive_pending && now - last_keepalive > std::chrono::seconds { 30 }) {
+                if (!result && awaiting && !keepalive_pending && now - last_keepalive >= response_timeout) {
                     cbor::encoder enc {};
                     enc.array(2).uint(0).uint(0);
                     co_await _write_request(*_conn, mini_protocol::keep_alive, enc.cbor());
                     keepalive_pending = true;
-                    last_keepalive = now;
+                    last_keepalive = std::chrono::steady_clock::now();
                 }
                 if (!_conn->available()) {
                     boost::asio::steady_timer timer { co_await boost::asio::this_coro::executor };
@@ -419,17 +485,21 @@ namespace turbo::cardano::network {
                         || timer.async_wait(boost::asio::use_awaitable));
                     if (ready.index() != 0) continue;
                 }
+                auto deadline = std::chrono::steady_clock::now() + response_timeout;
+                if (!awaiting) deadline = std::min(deadline, request_started + response_timeout);
+                if (keepalive_pending) deadline = std::min(deadline, last_keepalive + response_timeout);
                 segment_info hdr {};
-                co_await _wait_with_deadline(boost::asio::async_read(*_conn, boost::asio::buffer(&hdr, sizeof(hdr)), boost::asio::use_awaitable));
+                co_await _wait_with_deadline(boost::asio::async_read(*_conn, boost::asio::buffer(&hdr, sizeof(hdr)), boost::asio::use_awaitable),
+                    deadline - std::chrono::steady_clock::now());
                 uint8_vector bytes(hdr.payload_size());
-                co_await _wait_with_deadline(boost::asio::async_read(*_conn, boost::asio::buffer(bytes.data(), bytes.size()), boost::asio::use_awaitable));
+                co_await _wait_with_deadline(boost::asio::async_read(*_conn, boost::asio::buffer(bytes.data(), bytes.size()), boost::asio::use_awaitable),
+                    deadline - std::chrono::steady_clock::now());
                 if (hdr.mode() != channel_mode::responder)
                     throw error("unexpected mux direction");
                 if (hdr.mini_protocol_id() == mini_protocol::chain_sync) {
                     pending << bytes;
                     if (pending.size() > (1U << 20))
                         throw error("oversized ChainSync response");
-                    last_progress = now;
                 } else if (hdr.mini_protocol_id() == mini_protocol::keep_alive) {
                     keepalive_bytes << bytes;
                     if (keepalive_bytes.size() > 32)
@@ -456,9 +526,11 @@ namespace turbo::cardano::network {
             try {
                 header_list headers {};
                 auto isect = co_await _find_intersection_do(std::move(points));
+                auto cancel = _cancel_on_stop(_stop, _conn);
                 cbor::encoder msg_req_next {};
                 miniprotocol::chainsync::msg_request_next_t {}.to_cbor(msg_req_next);
                 while (headers.size() < max_blocks) {
+                    _check_stop(_stop);
                     auto parse_buf = co_await _send_request(*_conn, mini_protocol::chain_sync, msg_req_next.cbor());
                     auto resp_cbor = cbor::zero2::parse(parse_buf);
                     auto &resp_it = resp_cbor.get().array();
@@ -501,6 +573,11 @@ namespace turbo::cardano::network {
     }
 
     client_connection::~client_connection() =default;
+
+    void client_connection::set_stop_token(const std::stop_token stop)
+    {
+        _impl->set_stop_token(stop);
+    }
 
     void client_connection::_find_intersection_impl(const optional_point2_list &points, const find_handler &handler)
     {

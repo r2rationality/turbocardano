@@ -174,6 +174,8 @@ namespace turbo::cardano::ledger::conway {
 
     void state::_protocol_state_to_cbor(era_encoder &enc) const
     {
+        if (!_ratify_ready)
+            throw error("complete governance ratification before encoding the ledger state");
         enc.array(7);
         {
             enc.array(2);
@@ -207,13 +209,15 @@ namespace turbo::cardano::ledger::conway {
                 enc.array(4);
                 {
                     auto proposals_copy = _pulsing_data.proposals;
+                    std::erase_if(proposals_copy, [&](const auto &entry) {
+                        return _epoch <= entry.second.proposed_in;
+                    });
                     std::sort(proposals_copy.begin(), proposals_copy.end(), [&](const auto &l, const auto &r) {
                         return l.second.loc < r.second.loc;
                     });
                     enc.array_compact(proposals_copy.size(), [&] {
                         for (const auto &[id, action]: proposals_copy) {
-                            if (_epoch > action.proposed_in)
-                                action.to_cbor(enc, id);
+                            action.to_cbor(enc, id);
                         }
                     });
                 }
@@ -299,4 +303,3 @@ namespace turbo::cardano::ledger::conway {
         enc.uint(_num_dormant_epochs);
     }
 }
-

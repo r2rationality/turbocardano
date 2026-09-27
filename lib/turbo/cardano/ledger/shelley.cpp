@@ -15,6 +15,7 @@
 #include <turbo/cardano/ledger/updates.hpp>
 #include <turbo/cardano/shelley/block.hpp>
 #include <turbo/common/timer.hpp>
+#include <turbo/common/scope-exit.hpp>
 #include <turbo/cbor/zero2.hpp>
 #include <turbo/math/big-int.hpp>
 #include <turbo/zpp.hpp>
@@ -283,6 +284,7 @@ namespace turbo::cardano::ledger::shelley {
 
     void state::_decode_possible_update(cbor::zero2::value &v)
     {
+        _rewards_ready = false;
         auto &v_it = v.array();
         if (!v_it.done()) {
             decode_versioned(v.at(0), [&](auto &dv) {
@@ -290,8 +292,6 @@ namespace turbo::cardano::ledger::shelley {
                 _delta_treasury = it.read().uint();
                 _delta_reserves = it.read().uint();
                 _potential_rewards = map_from_cbor<decltype(_potential_rewards)>(it.read());
-                if (!_potential_rewards.empty())
-                    _rewards_ready = true;
                 _delta_fees = it.read().uint();
                 {
                     auto &nm_v = it.read();
@@ -300,6 +300,7 @@ namespace turbo::cardano::ledger::shelley {
                     _reward_pot = nm_it.read().uint();
                 }
             });
+            _rewards_ready = true;
         }
     }
 
@@ -335,6 +336,7 @@ namespace turbo::cardano::ledger::shelley {
         _decode_snapshot(it.read());
         _blocks_past_voting_deadline = it.read().uint();
         _pulsing_snapshot_slot = slot::from_epoch(_epoch, _cfg) + _cfg.shelley_randomness_stabilization_window;
+        _reward_pulsing_snapshot_ready = _rewards_ready || _epoch_slot > _cfg.shelley_randomness_stabilization_window;
         _recompute_caches();
         _reset_shelley_delegs_schedule(false);
         return tip;
@@ -346,6 +348,7 @@ namespace turbo::cardano::ledger::shelley {
             && _end_offset == o._end_offset
             && _epoch_slot == o._epoch_slot
             && _pulsing_snapshot_slot == o._pulsing_snapshot_slot
+            && _reward_pulsing_snapshot_ready == o._reward_pulsing_snapshot_ready
             && _reward_pulsing_snapshot == o._reward_pulsing_snapshot
             && _active_pool_dist == o._active_pool_dist
             && _active_inv_delegs == o._active_inv_delegs
@@ -828,6 +831,7 @@ namespace turbo::cardano::ledger::shelley {
         v(_epoch_slot);
 
         v(_pulsing_snapshot_slot);
+        v(_reward_pulsing_snapshot_ready);
         v(_reward_pulsing_snapshot);
         v(_active_pool_dist);
         v(_active_inv_delegs);

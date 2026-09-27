@@ -180,7 +180,7 @@ namespace turbo::indexer {
                 }
                 if (total_size == 0)
                     break;
-                if (total_size < merger::part_size && !force/* && _merge_next_offset + total_size < _cr.tx()->target_offset()*/)
+                if (total_size < merger::part_size && !force)
                     break;
                 std::vector<std::string> input_slices {};
                 uint64_t max_slot = 0;
@@ -202,6 +202,7 @@ namespace turbo::indexer {
                         mutex::scoped_lock lk { _slices_mutex };
                         const auto old_indexed_size = _slices.continuous_size();
                         _slices.add(output_slice);
+                        _slices_added.emplace_back(output_slice);
                         const auto new_indexed_size = _slices.continuous_size();
                         if (new_indexed_size > old_indexed_size) {
                             for (auto slice_it = _slices.find(old_indexed_size); slice_it != _slices.end() && slice_it->second.end_offset() <= new_indexed_size; ++slice_it)
@@ -209,8 +210,6 @@ namespace turbo::indexer {
                         }
                         merged_max_slot = _slices.continuous_max_slot();
                         merged_end_offset = _slices.continuous_size();
-                        // experimental support for on-the-go checkpoints
-                        _save_json_slices(_index_state_path);
                     }
                     _cr.report_progress("merge", { merged_max_slot, merged_end_offset });
                     for (const auto &ns: notify_slices) {

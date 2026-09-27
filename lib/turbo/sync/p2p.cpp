@@ -41,19 +41,21 @@ namespace turbo::sync::p2p {
                 throw error("the sync in-flight memory budget must be greater than zero");
         }
 
-        std::shared_ptr<lease> acquire(const uint64_t amount)
+        std::shared_ptr<lease> acquire(const uint64_t amount, const std::stop_token stop={})
         {
             std::unique_lock lk { _mutex };
-            _cv.wait(lk, [&] {
+            _cv.wait(lk, stop, [&] {
                 // Always admit one oversized item when the budget is otherwise empty.
                 return _used == 0 || (amount <= _limit && _used <= _limit - amount);
             });
+            if (stop.stop_requested())
+                throw error("sync memory-budget wait stopped");
             _used += amount;
             return std::make_shared<lease>(shared_from_this(), amount);
         }
     private:
         std::mutex _mutex {};
-        std::condition_variable _cv {};
+        std::condition_variable_any _cv {};
         const uint64_t _limit;
         uint64_t _used = 0;
 
@@ -77,12 +79,14 @@ namespace turbo::sync::p2p {
         }
 
         // Finds a peer and the best intersection point
-        [[nodiscard]] std::shared_ptr<sync::peer_info> find_peer(std::optional<network::address> addr, const version_config_t &versions) const
+        [[nodiscard]] std::shared_ptr<sync::peer_info> find_peer(std::optional<network::address> addr,
+            const version_config_t &versions, const std::stop_token stop={}) const
         {
             if (!addr)
                 addr = _parent.peer_list().next_cardano();
             logger::info("connecting to peer {} requesting versions [{};{}]", *addr, versions.min, versions.max);
             auto client = _client_manager.connect(*addr, versions, _parent.local_chain().config());
+            client->set_stop_token(stop);
             // Try to fit into a single packet of 1460 bytes : 37 * (33 + 5) + message header + segment header (8 bytes)
             static constexpr ptrdiff_t points_per_query = 37;
             auto first_it = _parent.local_chain().cbegin();
@@ -117,7 +121,7 @@ namespace turbo::sync::p2p {
             return std::make_shared<peer_info>(std::move(client), *tip, first_it->point());
         }
 
-        void sync_attempt(peer_info &peer, const cardano::optional_slot max_slot)
+        void sync_attempt(peer_info &peer, const cardano::optional_slot max_slot, const std::stop_token stop={})
         {
             // target offset is unbounded since the cardano network protocol does not provide the size information
             _invalid_first_offset.store(no_recorded_value, std::memory_order_relaxed);
@@ -128,9 +132,7 @@ namespace turbo::sync::p2p {
 
             if (peer.intersection())
                 _next_chunk_offset = _parent.local_chain().get_block_info(*peer.intersection()).end_offset();
-            _sync(peer, peer.intersection(), max_slot);
-            _add_last_chunk_if_not_empty();
-            _parent.local_chain().sched().process();
+            _sync(peer, peer.intersection(), max_slot, stop);
         }
 
         void follow(const std::stop_token stop, const std::function<void(const optional_point &)> &publish,
@@ -147,14 +149,14 @@ namespace turbo::sync::p2p {
             }};
             auto last_checkpoint = std::chrono::steady_clock::now();
             auto checkpoint_tip = cr.tip();
-            if (cr.checkpoint().partial_groups_merged)
+            if (cr.checkpoint(false).partial_groups_merged)
                 publish(cr.tip());
             const auto maybe_checkpoint = [&] {
                 const auto now = std::chrono::steady_clock::now();
                 if (cr.tip() == checkpoint_tip || now - last_checkpoint < checkpoint_interval) return;
                 last_checkpoint = now;
                 try {
-                    if (cr.checkpoint().partial_groups_merged)
+                    if (cr.checkpoint(false).partial_groups_merged)
                         publish(cr.tip());
                     checkpoint_tip = cr.tip();
                 } catch (const std::exception &ex) {
@@ -163,7 +165,7 @@ namespace turbo::sync::p2p {
             };
             while (!stop.stop_requested()) {
                 try {
-                    auto base_peer = find_peer(addr, versions);
+                    auto base_peer = find_peer(addr, versions, stop);
                     auto &peer = dynamic_cast<peer_info &>(*base_peer);
                     optional_point2_list points;
                     if (peer.intersection()) points.emplace_back(*peer.intersection());
@@ -174,6 +176,8 @@ namespace turbo::sync::p2p {
                         throw error("empty upstream cannot replace a populated local chain");
                     optional_point isect;
                     if (intersection.isect) isect = cr.get_block_info(*intersection.isect).point();
+                    auto highest_tip = cr.tip();
+                    std::chrono::steady_clock::duration peer_wait {};
                     if (isect != cr.tip()) {
                         cr.truncate(isect);
                         publish(isect);
@@ -185,7 +189,19 @@ namespace turbo::sync::p2p {
                         // Bound each transaction. At the tip, a single block is
                         // processed immediately instead of waiting for a full batch.
                         while (headers.size() < 256 && !stop.stop_requested()) {
-                            const auto update = peer.client().next_header_sync(stop, maybe_checkpoint);
+                            auto wait_started = std::chrono::steady_clock::now();
+                            const auto check_progress = [&] {
+                                if (peer_wait + (std::chrono::steady_clock::now() - wait_started) >= std::chrono::seconds { 30 })
+                                    throw error("peer supplied no advancing chain after 30 seconds waiting for headers");
+                            };
+                            const auto update = peer.client().next_header_sync(stop, [&] {
+                                const auto checkpoint_started = std::chrono::steady_clock::now();
+                                maybe_checkpoint();
+                                wait_started += std::chrono::steady_clock::now() - checkpoint_started;
+                                check_progress();
+                            });
+                            check_progress();
+                            peer_wait += std::chrono::steady_clock::now() - wait_started;
                             remote_tip = update.tip;
                             if (update.rollback) {
                                 auto buffered = update.point ? std::ranges::find(headers, *update.point) : headers.end();
@@ -219,23 +235,34 @@ namespace turbo::sync::p2p {
                         const auto start = cr.tip();
                         point2 target = bulk ? remote_tip.value() : headers.back();
                         peer.intersection(start);
-                        _follow_range = std::make_pair(headers.front(), target);
-                        cr.before_commit([&] {
-                            const auto tip = cr.tip();
-                            if (!tip || tip->hash != target.hash)
-                                throw error("block fetch did not reach the announced boundary");
-                        });
+                        std::exception_ptr failure;
                         {
                             scope_exit clear { [&] { cr.before_commit({}); _follow_range.reset(); } };
-                            cr.accept_anything_or_throw(start, progress_point { target.slot }, [&] {
-                                cr.validation_failure_handler([this](uint64_t offset) { cancel_tasks(offset); });
-                                sync_attempt(peer, target.slot);
+                            _follow_range = std::make_pair(headers.front(), target);
+                            progress_point progress_target { target.slot };
+                            progress_target.height = remote_tip.height;
+                            failure = _parent.accept_progress(start, progress_target, [&] {
+                                sync_attempt(peer, target.slot, stop);
+                                cr.before_commit([&] {
+                                    if (stop.stop_requested()) return;
+                                    const auto tip = cr.tip();
+                                    if (!tip || (tip->hash != target.hash && !cr.checkpoint_requested()))
+                                        throw error("block fetch did not reach the announced boundary");
+                                });
                             });
                         }
-                        publish(start);
-                        cr.remover().remove();
+                        if (const auto tip = cr.tip(); tip && (!highest_tip || tip->height > highest_tip->height)) {
+                            highest_tip = tip;
+                            peer_wait = {};
+                        }
+                        if (cr.tip() != start)
+                            publish(start);
+                        if (stop.stop_requested()) break;
                         maybe_checkpoint();
+                        if (failure)
+                            std::rethrow_exception(failure);
                         if (bulk) {
+                            target = static_cast<point2>(*cr.tip());
                             // BlockFetch advanced beyond our one-header ChainSync cursor.
                             // Reposition the existing session without disconnecting.
                             const auto found = peer.client().find_intersection_sync(optional_point2_list { target });
@@ -244,20 +271,18 @@ namespace turbo::sync::p2p {
                         }
                     }
                 } catch (const std::exception &ex) {
-                    cr.before_commit({});
-                    _follow_range.reset();
                     if (stop.stop_requested()) break;
                     logger::warn("continuous sync peer failed: {}", ex.what());
-                    // A rejected import may have restored only the on-disk
-                    // validator snapshot. Rebuild the accepted in-memory tail.
                     cr.recover();
                     publish(cr.tip());
-                    for (size_t i = 0; i < 50 && !stop.stop_requested(); ++i)
+                    for (size_t i = 0; i < 10 && !stop.stop_requested(); ++i)
                         std::this_thread::sleep_for(std::chrono::milliseconds { 100 });
                 }
             }
-            if (cr.tip() != checkpoint_tip && cr.checkpoint().partial_groups_merged)
+            logger::info("continuous sync stopped; saving final checkpoint");
+            if (cr.checkpoint().partial_groups_merged)
                 publish(cr.tip());
+            logger::info("continuous sync final checkpoint complete");
         }
 
         void cancel_tasks(const uint64_t max_valid_offset)
@@ -274,15 +299,7 @@ namespace turbo::sync::p2p {
             }
         }
     private:
-        static constexpr size_t max_retries = 3;
         static constexpr uint64_t no_recorded_value = std::numeric_limits<uint64_t>::max();
-
-        struct ready_chunk {
-            std::string path {};
-            std::string name {};
-            uint64_t size {};
-            block_hash hash {};
-        };
 
         syncer &_parent;
         client_manager &_client_manager;
@@ -332,16 +349,16 @@ namespace turbo::sync::p2p {
             _parent.local_chain().report_progress("download", progress);
         }
 
-        void _sync(peer_info &peer, const std::optional<point> &local_tip, const std::optional<uint64_t> &max_slot)
+        void _sync(peer_info &peer, const std::optional<point> &local_tip, const std::optional<uint64_t> &max_slot,
+            const std::stop_token stop)
         {
-            std::optional<point> continue_from = local_tip;
             const std::optional<uint64_t> target_chunk_id = max_slot.transform([&](const auto slot) {
                 return cardano::slot{slot, _parent.local_chain().config()}.chunk_id();
             });
             const auto [headers, tip] = [&]() -> std::pair<header_list, optional_point2> {
                 if (_follow_range)
                     return { header_list { _follow_range->first }, _follow_range->second };
-                auto [headers, tip] = peer.client().fetch_headers_sync(continue_from, 1, true);
+                auto [headers, tip] = peer.client().fetch_headers_sync(local_tip, 1, true);
                 return { std::move(headers), tip };
             }();
             if (!headers.empty() && (!max_slot || headers.front().slot <= *max_slot)) {
@@ -359,6 +376,7 @@ namespace turbo::sync::p2p {
                                 err = std::move(rv);
                                 return false;
                             } else if constexpr (std::is_same_v<T, client::msg_block_t>) {
+                                if (stop.stop_requested() || _parent.local_chain().checkpoint_requested()) return false;
                                 auto blk = std::make_unique<parsed_block>(rv.bytes);
                                 if (_invalid_first_offset.load(std::memory_order_relaxed) != no_recorded_value
                                         || (max_slot && blk->blk->slot() > *max_slot))
@@ -366,6 +384,7 @@ namespace turbo::sync::p2p {
                                 _add_block(blk->blk);
                                 return true;
                             } else if constexpr (std::is_same_v<T, client::msg_compressed_blocks_t>) {
+                                if (stop.stop_requested() || _parent.local_chain().checkpoint_requested()) return false;
                                 if (rv.encoding != T::encoding_zstd_fast && rv.encoding != T::encoding_zstd_max) [[unlikely]] {
                                     logger::error("unsupported encoding: {}", rv.encoding);
                                     return false;
@@ -375,7 +394,7 @@ namespace turbo::sync::p2p {
                                 // The compressed protocol emits one message per storage chunk, in slot order.
                                 const auto compression_level = rv.compression_level();
                                 _add_compressed_chunk(std::move(rv.payload), compression_level,
-                                    _parse_priority(_parse_next_chunk_id++));
+                                    _parse_priority(_parse_next_chunk_id++), stop);
                                 if (target_chunk_id && !_follow_range) {
                                     const auto last_slot = _last_block_slot.load(std::memory_order_relaxed);
                                     if (last_slot != no_recorded_value
@@ -393,10 +412,10 @@ namespace turbo::sync::p2p {
                     if (!err)
                         err = ex.what();
                 }
-                _add_last_chunk_if_not_empty();
                 peer.client().process(&_parent.local_chain().sched());
+                _add_last_chunk_if_not_empty();
                 _parent.local_chain().sched().process();
-                if (err) [[unlikely]]
+                if (err && !stop.stop_requested()) [[unlikely]]
                     throw error(fmt::format("fetch_block has failed with error: {}", err));
             }
         }
@@ -421,15 +440,16 @@ namespace turbo::sync::p2p {
             return priority_min + static_cast<int64_t>(static_cast<long double>(priority_spread) * remaining / span);
         }
 
-        void _add_compressed_chunk(uint8_vector compressed, const int32_t compression_level, const int64_t priority)
+        void _add_compressed_chunk(uint8_vector compressed, const int32_t compression_level, const int64_t priority,
+            const std::stop_token stop)
         {
             const auto uncompressed_size = zstd::decompressed_size(compressed);
             if (uncompressed_size > zstd::max_zstd_buffer) [[unlikely]]
                 throw error(fmt::format("compressed chunk expands to {} bytes, exceeding the maximum of {}",
                     uncompressed_size, zstd::max_zstd_buffer));
+            auto budget_lease = _inflight_budget->acquire(_inflight_cost(uncompressed_size, compressed.capacity()), stop);
             const auto chunk_offset = _next_chunk_offset;
             _next_chunk_offset += uncompressed_size;
-            auto budget_lease = _inflight_budget->acquire(_inflight_cost(uncompressed_size, compressed.capacity()));
             auto compressed_ptr = std::make_shared<uint8_vector>(std::move(compressed));
             _parent.local_chain().sched().submit("parse", priority,
                 [this, compressed=std::move(compressed_ptr), chunk_offset=chunk_offset,

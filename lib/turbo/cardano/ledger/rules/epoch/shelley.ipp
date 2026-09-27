@@ -9,7 +9,7 @@
     void state::start_epoch(std::optional<uint64_t> new_epoch)
     {
         logger::debug("state::start_epoch: prev_epoch: {} new_epoch: {}", _epoch, new_epoch);
-        run_pulser_if_ready();
+        complete_pulsers();
         if (!new_epoch) {
             // increment the epoch only if seen some data
             if (_end_offset)
@@ -75,6 +75,7 @@
         _blocks_before = std::move(_blocks_current);
         _blocks_current.clear();
         _reward_pulsing_snapshot.clear();
+        _reward_pulsing_snapshot_ready = false;
         if (potential_rewards_size) {
             const std::string task_group = fmt::format("ledger-state:clean-potential-rewards:epoch-{}", _epoch);
             _sched.wait_all(task_group,

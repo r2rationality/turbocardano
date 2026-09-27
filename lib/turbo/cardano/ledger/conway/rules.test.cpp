@@ -23,6 +23,10 @@ namespace {
         using state::_committee_hot_keys;
         using state::_enact_state;
         using state::_ratify_state;
+        using state::_ratify_ready;
+        using state::_epoch;
+        using state::_treasury;
+        using state::_gov_make_pulsing_snapshot;
         using state::_params;
         using state::_proposals;
         using state::_deposited;
@@ -263,10 +267,11 @@ suite cardano_ledger_conway_rules_suite = [] {
         expect(st.num_dormant_epochs() == 1_u);
     };
 
-    "Conway pool default votes survive pulser serialization"_test = [] {
+    "Conway frozen inputs survive pulser serialization"_test = [] {
         const file::tmp path { "conway-pool-default-votes.zpp" };
         pulsing_data_t original {};
         original.pool_default_votes.emplace(pool_hash {}, pool_default_vote_t::abstain);
+        original.treasury = 123;
         ledger::zpp_encoder enc {};
         original.to_zpp(enc);
         enc.run(scheduler::get(), "encode-pool-vote-test");
@@ -276,6 +281,72 @@ suite cardano_ledger_conway_rules_suite = [] {
         restored.from_zpp(dec);
         dec.run(scheduler::get(), "decode-pool-vote-test");
         expect(restored.pool_default_votes.at(pool_hash {}) == pool_default_vote_t::abstain);
+        expect_equal(restored.treasury, original.treasury);
+    };
+
+    "early governance completion is retained without applying proposals"_test = [] {
+        gap_test_state st {};
+        st._epoch = 2;
+        st._treasury = 100;
+        const gov_action_id_t expired_id {};
+        gov_action_state_t expired {};
+        expired.proposal.action.val = gov_action_t::info_action_t {};
+        expired.proposed_in = 0;
+        expired.expires_after = 1;
+        st._proposals.emplace(expired_id, expired);
+        st._gov_make_pulsing_snapshot();
+        expect_equal(st._pulsing_data.treasury, 100);
+        st.complete_pulsers();
+        expect(st._ratify_ready);
+        expect(st._ratify_state.expired.contains(expired_id));
+        expect(st._proposals.contains(expired_id));
+        expect_equal(st._treasury, 100);
+
+        const file::tmp path { "conway-completed-pulser.zpp" };
+        ledger::zpp_encoder enc {};
+        st.to_zpp(enc);
+        enc.run(scheduler::get(), "encode-completed-governance");
+        enc.save(path.path(), true);
+        gap_test_state restored {};
+        ledger::parallel_decoder dec { path.path() };
+        restored.from_zpp(dec);
+        dec.run(scheduler::get(), "decode-completed-governance");
+        expect(restored._ratify_ready);
+        expect(restored._ratify_state.expired.contains(expired_id));
+        restored._pulsing_data.proposals.clear();
+        restored.complete_pulsers();
+        expect(restored._ratify_state.expired.contains(expired_id));
+        expect(restored._proposals.contains(expired_id));
+    };
+
+    "ratification uses frozen treasury regardless of completion time"_test = [] {
+        for (const uint64_t live_treasury: { 0, 1'000 }) {
+            gap_test_state st {};
+            st._epoch = 2;
+            st._treasury = 100;
+            st._enact_state.params.protocol_ver = { 11, 0 };
+            st._enact_state.params.committee_min_size = 0;
+            st._enact_state.params.drep_voting_thresholds.treasury_withdrawal = { 0, 1 };
+            st._enact_state.committee = committee_t { {}, { 0, 1 } };
+            st._ratify_state.new_state = st._enact_state;
+            gov_action_state_t action {};
+            action.proposed_in = 1;
+            action.expires_after = 10;
+            gov_action_t::treasury_withdrawals_t withdrawals {};
+            withdrawals.withdrawals.emplace(gap_reward(1), 75);
+            action.proposal.action.val = withdrawals;
+            const gov_action_id_t gid {};
+            st._proposals.emplace(gid, action);
+            st._gov_make_pulsing_snapshot();
+            st._treasury = live_treasury;
+            st.complete_pulsers();
+            expect(st._ratify_ready);
+            expect_equal(st._ratify_state.enacted.size(), 1);
+            expect_equal(st._ratify_state.new_state.withdrawals.at(static_cast<stake_ident>(gap_reward(1))), 75);
+            expect_equal(st._treasury, live_treasury);
+            st.complete_pulsers();
+            expect_equal(st._ratify_state.enacted.size(), 1);
+        }
     };
 
     "RATIFY exempts committee replacement without a committee"_test = [] {

@@ -26,10 +26,10 @@ namespace turbo::cardano::ledger {
 
         void load_zpp(const std::string &path);
         void save_zpp(const std::string &path, std::unique_ptr<subchain_list> tmp_sc={});
-        cbor_encoder to_cbor(const point &tip, int prio=1000) const;
+        cbor_encoder to_cbor(const point &tip, int prio=1000);
         point deserialize_node(buffer data);
         point load_node(const std::string &path);
-        void save_node(const std::string &path, const point &tip, int prio=1000) const;
+        void save_node(const std::string &path, const point &tip, int prio=1000);
 
         void track_era(uint64_t era, uint64_t slot);
         void process_cert(const cert_t &, const cert_loc_t &);
@@ -268,9 +268,7 @@ namespace turbo::cardano::ledger {
 
         bool exportable() const
         {
-            if (_state->_params.protocol_ver.major >= 2 && (_state->_rewards_ready || _state->_epoch_slot < _cfg.shelley_randomness_stabilization_window))
-                return true;
-            return false;
+            return _state->_params.protocol_ver.major >= 2;
         }
 
         const stake_pointer_distribution stake_pointers() const

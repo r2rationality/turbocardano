@@ -32,8 +32,6 @@ namespace turbo::cardano::ledger::conway {
         return _drep_state.contains(id);
     }
 
-#include <turbo/cardano/ledger/rules/tick/conway.ipp>
-
 #include <turbo/cardano/ledger/rules/utxos/conway.ipp>
 
 #include <turbo/cardano/ledger/rules/ledger/conway.ipp>

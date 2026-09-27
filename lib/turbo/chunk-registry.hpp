@@ -104,6 +104,8 @@ namespace turbo {
     using epoch_map = std::map<size_t, epoch_info>;
 
     struct progress_point {
+        bool final_checkpoint = false;
+        std::optional<uint64_t> height {};
         uint64_t slot = 0; // required to be correct
         uint64_t end_offset = 0; // can be zero; a non-zero value is used for more accurate process calculations
 
@@ -118,7 +120,7 @@ namespace turbo {
         }
 
         progress_point(const cardano::point &p)
-            : slot { p.slot }, end_offset { p.end_offset }
+            : height { p.height }, slot { p.slot }, end_offset { p.end_offset }
         {
         }
 
@@ -208,6 +210,7 @@ namespace turbo {
             cardano::optional_point start {};
             std::optional<progress_point> target {};
             bool prepared = false;
+            bool restore_ledger = false;
 
             uint64_t start_offset() const
             {
@@ -330,7 +333,12 @@ namespace turbo {
         bool continuous() const noexcept { return _continuous; }
         // Recovery preserves stored blocks and rebuilds lagging derived state.
         void recover();
-        repack_stats_t checkpoint();
+        std::vector<cardano::point> checkpoint_points() const;
+        repack_stats_t checkpoint(bool force=true);
+        bool checkpoint_requested() const { return _checkpoint_requested.load(std::memory_order_acquire); }
+        void request_checkpoint() { _checkpoint_requested.store(true, std::memory_order_release); }
+        void revalidate(const chunk_list &chunks, const cardano::optional_point &target,
+            std::chrono::steady_clock::duration checkpoint_interval=validator::snapshot_policy::catchup_interval);
         void before_commit(std::function<void()> check) { _before_commit = std::move(check); }
         repack_stats_t repack(repack_mode_t mode=repack_mode_t::full, size_t fragment_threshold=0);
         void import(const chunk_registry &src_cr);
@@ -352,8 +360,11 @@ namespace turbo {
         struct repack_plan_t;
         std::unique_ptr<repack_plan_t> _prepare_repack(repack_mode_t mode, size_t fragment_threshold=0) const;
         repack_stats_t _commit_repack(repack_plan_t &plan);
+        std::filesystem::path _save_checkpoint(const cardano::point &point, const indexer::slice_list &live_slices);
 
         const bool _continuous;
+        uint64_t _coordinated_checkpoint_offset = 0;
+        std::atomic_bool _checkpoint_requested { false };
         std::function<void()> _before_commit {};
 
         const std::filesystem::path _data_dir;

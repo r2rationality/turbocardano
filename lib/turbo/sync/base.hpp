@@ -27,6 +27,8 @@ namespace turbo::sync {
         chunk_registry &local_chain() noexcept;
         cardano::network::peer_selection &peer_list() noexcept;
     protected:
+        [[nodiscard]] std::exception_ptr accept_progress(const cardano::optional_point &start, const progress_point &target,
+            const std::function<void()> &action);
         virtual void cancel_tasks(uint64_t max_valid_offset) =0;
         virtual void sync_attempt(peer_info &peer, cardano::optional_slot max_slot) =0;
         virtual void on_progress(std::string_view name, uint64_t rel_pos, uint64_t rel_target);

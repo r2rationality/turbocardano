@@ -155,8 +155,8 @@ namespace turbo::cardano::ledger::conway {
         committee_t::member_key_map committee_hot_keys {};
         drep_distr_t drep_voting_power {};
         pool_stake_distribution pool_voting_power {};
-        bool drep_state_updated = false;
         flat_map<pool_hash, pool_default_vote_t> pool_default_votes {};
+        uint64_t treasury = 0;
 
         void to_zpp(zpp_encoder &) const;
         void from_zpp(parallel_decoder &);
@@ -182,7 +182,7 @@ namespace turbo::cardano::ledger::conway {
         void start_epoch(std::optional<uint64_t> new_epoch) override;
         bool has_drep(const credential_t &id) const override;
         void process_cert(const cert_t &, const cert_loc_t &loc) override;
-        void run_pulser_if_ready() override;
+        void complete_pulsers() override;
 
         void process_cert(const stake_dereg_cert &, const cert_loc_t &) override;
         virtual void process_cert(const reg_cert &, const cert_loc_t &);
@@ -313,7 +313,6 @@ namespace turbo::cardano::ledger::conway {
 
         void _process_block_updates(block_update_list &&) override;
         void _process_timed_update(tx_out_ref_list &, uint64_t &, timed_update_t &&) override;
-        void _tick(uint64_t slot) override;
 
         // governance: Ratify related internal methods
 

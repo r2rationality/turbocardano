@@ -92,7 +92,7 @@ namespace turbo::cardano::ledger {
         return deserialize_node(buf);
     }
 
-    void state::save_node(const std::string &path, const point &tip, const int prio) const
+    void state::save_node(const std::string &path, const point &tip, const int prio)
     {
         const auto ser = to_cbor(tip, prio);
         timer t { "write the serialized node state to a file", logger::level::info };
@@ -144,6 +144,7 @@ namespace turbo::cardano::ledger {
 
     void state::save_zpp(const std::string &path, const std::unique_ptr<subchain_list> tmp_sc)
     {
+        _state->complete_pulsers();
         zpp_encoder ser {};
         ser.add([&](auto) {
             mutex::scoped_lock lk { _subchains_mutex };

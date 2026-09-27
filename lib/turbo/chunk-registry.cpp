@@ -6,6 +6,7 @@
 #include <chrono>
 #include <future>
 #include <numeric>
+#include <tuple>
 #include <turbo/common/scope-exit.hpp>
 #include <turbo/cardano.hpp>
 #include <turbo/cardano/ledger/state.hpp>
@@ -54,6 +55,23 @@ namespace turbo {
             chunks = std::move(loaded_chunks);
         }
 
+        std::filesystem::path revalidation_source_path(const std::filesystem::path &data_dir)
+        {
+            return data_dir / "compressed/revalidate-source.bin";
+        }
+
+        void restore_revalidation_source(const std::filesystem::path &data_dir)
+        {
+            const auto source = revalidation_source_path(data_dir);
+            if (!std::filesystem::exists(source))
+                return;
+            const auto state = data_dir / "compressed/state.bin";
+            const auto temporary = state.string() + ".restore";
+            std::filesystem::copy_file(source, temporary, std::filesystem::copy_options::overwrite_existing);
+            std::filesystem::rename(temporary, state);
+            logger::info("restored stored-chain metadata for interrupted revalidation");
+        }
+
         void save_chunk_registry_state(const std::string &path, const storage::chunk_map &chunks)
         {
             compression_level_list_t compression_levels {};
@@ -68,8 +86,6 @@ namespace turbo {
     }
 
     namespace {
-        // Checkpoints own hard links to immutable index/snapshot files. The
-        // manifest is published last; incomplete generation directories are ignored.
         void link_checkpoint_file(const std::filesystem::path &from, const std::filesystem::path &to)
         {
             std::filesystem::create_directories(to.parent_path());
@@ -82,7 +98,101 @@ namespace turbo {
             std::filesystem::rename(tmp, to);
         }
 
-        void restore_live_checkpoint(const std::filesystem::path &data_dir)
+        std::filesystem::path snapshot_relative_path(const uint64_t offset)
+        {
+            return std::filesystem::path { "validate" } / fmt::format("ledger-{:013}.bin", offset);
+        }
+
+        struct checkpoint_manifest_t {
+            static constexpr uint64_t current_version = 2;
+
+            std::filesystem::path directory;
+            uint64_t version;
+            uint64_t offset;
+            uint64_t height;
+            std::string hash;
+            std::vector<std::filesystem::path> files;
+            validator::snapshot_set snapshots;
+
+            explicit checkpoint_manifest_t(const std::filesystem::path &dir): directory { dir }
+            {
+                const auto manifest = json::load((dir / "manifest.json").string());
+                version = json::value_to<uint64_t>(manifest.at("version"));
+                if (version != 1 && version != current_version)
+                    throw error("unsupported checkpoint version");
+                offset = json::value_to<uint64_t>(manifest.at("offset"));
+                height = json::value_to<uint64_t>(manifest.at("height"));
+                hash = json::value_to<std::string>(manifest.at("hash"));
+                for (const auto &file: manifest.at("files").as_array()) {
+                    files.emplace_back(json::value_to<std::string>(file));
+                    if (!std::filesystem::exists(dir / files.back()))
+                        throw error("checkpoint file is missing");
+                }
+                for (const auto &required: { "index/state.json", "validate/state.json" })
+                    if (std::ranges::find(files, std::filesystem::path { required }) == files.end())
+                        throw error("checkpoint metadata is missing from the manifest");
+                uint64_t indexed_offset = 0;
+                const auto index_state = json::load((dir / "index/state.json").string());
+                for (const auto &value: index_state.as_array()) {
+                    const auto slice = indexer::merger::slice::from_json(value.as_object());
+                    if (slice.offset != indexed_offset || slice.offset > offset || slice.size > offset - slice.offset)
+                        throw error("checkpoint index slices do not form a continuous prefix");
+                    indexed_offset = slice.end_offset();
+                }
+                if (indexed_offset != offset)
+                    throw error("checkpoint index boundary does not match its manifest");
+                const auto state = json::load((dir / "validate/state.json").string());
+                if (version == current_version && state.as_array().size() != 1)
+                    throw error("checkpoint must contain exactly one ledger snapshot");
+                for (const auto &value: state.as_array()) {
+                    auto snap = validator::snapshot::from_json(value);
+                    if (snap.end_offset > offset || (version == current_version && snap.end_offset != offset))
+                        throw error("checkpoint ledger boundary does not match its manifest");
+                    if (std::ranges::find(files, snapshot_relative_path(snap.end_offset)) == files.end())
+                        throw error("ledger snapshot is missing from the manifest");
+                    snapshots.emplace(std::move(snap));
+                }
+            }
+
+            bool matches(const cardano::point &point) const
+            {
+                return offset == point.end_offset && height == point.height && hash == fmt::format("{}", point.hash);
+            }
+
+            bool belongs_to(const storage::chunk_map &chunks) const
+            {
+                if (!offset)
+                    return true;
+                const auto chunk = chunks.lower_bound(offset - 1);
+                if (chunk == chunks.end())
+                    return false;
+                const auto &blocks = chunk->second.blocks;
+                const auto block = std::ranges::lower_bound(blocks, offset, {}, &storage::block_info::end_offset);
+                return block != blocks.end() && matches(block->point());
+            }
+        };
+
+        std::vector<checkpoint_manifest_t> read_checkpoints(const std::filesystem::path &root)
+        {
+            std::vector<checkpoint_manifest_t> checkpoints;
+            if (std::filesystem::exists(root)) {
+                for (const auto &entry: std::filesystem::directory_iterator(root)) {
+                    if (!std::filesystem::exists(entry.path() / "manifest.json"))
+                        continue;
+                    try {
+                        checkpoints.emplace_back(entry.path());
+                    } catch (const std::exception &ex) {
+                        logger::warn("ignoring incomplete checkpoint {}: {}", entry.path().string(), ex.what());
+                    }
+                }
+            }
+            std::ranges::sort(checkpoints, [](const auto &a, const auto &b) {
+                return std::tie(a.offset, a.directory) < std::tie(b.offset, b.directory);
+            });
+            return checkpoints;
+        }
+
+        void restore_checkpoint(const std::filesystem::path &data_dir)
         {
             const auto root = data_dir / "checkpoints";
             if (!std::filesystem::exists(root))
@@ -90,40 +200,30 @@ namespace turbo {
             storage::chunk_map chunks;
             if (std::filesystem::exists(data_dir / "compressed/state.bin"))
                 load_chunk_registry_state(chunks, (data_dir / "compressed/state.bin").string());
-            std::vector<std::pair<uint64_t, std::filesystem::path>> candidates;
-            for (const auto &entry: std::filesystem::directory_iterator(root)) {
-                const auto manifest = entry.path() / "manifest.json";
-                if (!std::filesystem::exists(manifest))
-                    continue;
-                try {
-                    const auto j = json::load(manifest.string()).as_object();
-                    if (json::value_to<uint64_t>(j.at("version")) != 1)
-                        throw error("unsupported checkpoint version");
-                    const auto offset = json::value_to<uint64_t>(j.at("offset"));
-                    const auto ci = chunks.lower_bound(offset ? offset - 1 : 0);
-                    bool matches = offset == 0;
-                    if (offset && ci != chunks.end()) {
-                        for (const auto &b: ci->second.blocks)
-                            if (b.end_offset() == offset && fmt::format("{}", b.hash) == json::value_to<std::string>(j.at("hash")))
-                                matches = true;
-                    }
-                    for (const auto &f: j.at("files").as_array())
-                        matches = matches && std::filesystem::exists(entry.path() / json::value_to<std::string>(f));
-                    if (matches)
-                        candidates.emplace_back(offset, entry.path());
-                } catch (const std::exception &ex) {
-                    logger::warn("ignoring incomplete checkpoint {}: {}", manifest.string(), ex.what());
-                }
-            }
-            std::ranges::sort(candidates);
+            auto candidates = read_checkpoints(root);
+            std::erase_if(candidates, [&](const auto &checkpoint) { return !checkpoint.belongs_to(chunks); });
             if (!candidates.empty()) {
-                const auto &dir = candidates.back().second;
-                const auto j = json::load((dir / "manifest.json").string());
-                for (const auto &f: j.at("files").as_array()) {
-                    const auto rel = json::value_to<std::string>(f);
-                    link_checkpoint_file(dir / rel, data_dir / rel);
+                const auto &newest = candidates.back();
+                for (const auto &file: newest.files)
+                    link_checkpoint_file(newest.directory / file, data_dir / file);
+                validator::snapshot_set snapshots;
+                for (const auto &candidate: candidates | std::views::reverse) {
+                    if (snapshots.size() == 2)
+                        break;
+                    for (const auto &snap: candidate.snapshots | std::views::reverse) {
+                        if (snapshots.size() == 2)
+                            break;
+                        if (snapshots.emplace(snap).second) {
+                            const auto file = snapshot_relative_path(snap.end_offset);
+                            link_checkpoint_file(candidate.directory / file, data_dir / file);
+                        }
+                    }
                 }
-                logger::info("restored coordinated checkpoint at offset {}", candidates.back().first);
+                json::array state;
+                for (const auto &snap: snapshots)
+                    state.emplace_back(snap.to_json());
+                json::save_pretty((data_dir / "validate/state.json").string(), state);
+                logger::info("restored coordinated checkpoint at offset {}", newest.offset);
             } else {
                 // No checkpoint belongs to the stored branch. Derived state is
                 // disposable; retain blocks and rebuild from genesis.
@@ -143,8 +243,9 @@ namespace turbo {
             _state_path_pre { (_db_dir / "state-pre.bin").string() }
     {
         timer t { "chunk-registry construct" };
-        if (_continuous)
-            restore_live_checkpoint(_data_dir);
+        restore_revalidation_source(_data_dir);
+        if (mode == mode::validate)
+            restore_checkpoint(_data_dir);
         std::unique_ptr<indexer::incremental> loaded_indexer {};
         std::unique_ptr<validator::incremental> loaded_validator {};
         chunk_map chunks {};
@@ -187,6 +288,14 @@ namespace turbo {
         _validator = std::move(loaded_validator);
 
         file_set known_chunks {};
+        std::vector<std::shared_ptr<void>> revalidation_pins;
+        if (std::filesystem::exists(revalidation_source_path(_data_dir)))
+            for (const auto &[offset, chunk]: chunks)
+                revalidation_pins.emplace_back(_file_remover.pin(trusted_chunk_path(_db_dir, chunk)));
+        scope_exit preserve_revalidation_source { [&] {
+            if (std::filesystem::exists(revalidation_source_path(_data_dir)))
+                for (const auto &path: known_chunks) _file_remover.unmark(path);
+        }};
 
         size_t num_mismatches = 0;
         for (auto chunk_it = chunks.begin(); chunk_it != chunks.end(); ++chunk_it) {
@@ -248,8 +357,10 @@ namespace turbo {
         }
         logger::info("chunk_registry has data up to offset {}", num_bytes());
         if (auto_maintenance) {
-            if (_continuous)
+            if (_validator) {
                 recover();
+                std::filesystem::remove(revalidation_source_path(_data_dir));
+            }
             else
                 maintenance();
         }
@@ -333,15 +444,17 @@ namespace turbo {
                 tail.emplace_back(chunk);
         logger::info("replaying stored blocks from {} to {}", start, stored_tip);
         const auto previous_mode = validation(validator::validation_mode::full);
-        before_commit([&] {
-            if (tip() != cardano::optional_point { stored_tip })
-                throw error("stored-chain recovery did not reach its target");
-        });
-        scope_exit clear_check { [&] {
-            before_commit({});
+        const auto previous_check = std::exchange(_before_commit, {});
+        scope_exit restore_settings { [&] {
+            _before_commit = previous_check;
             if (!tx())
                 validation(previous_mode);
         }};
+        before_commit([&] {
+            if (tip() != cardano::optional_point { stored_tip })
+                throw error("stored-chain recovery did not reach its target");
+            if (previous_check) previous_check();
+        });
         accept_anything_or_throw(start, progress_point { stored_tip }, [&] {
             for (const auto &chunk: tail) {
                 auto compressed = file::read(full_path(chunk.rel_path()));
@@ -355,8 +468,71 @@ namespace turbo {
                 }
             }
         });
-        if (tip() != cardano::optional_point { stored_tip })
-            throw error("stored-chain recovery failed to reach its target");
+    }
+
+    void chunk_registry::revalidate(const chunk_list &chunks, const cardano::optional_point &target,
+        const std::chrono::steady_clock::duration checkpoint_interval)
+    {
+        if (_transaction || !_validator || !_indexer)
+            throw error("revalidation requires an idle validating registry");
+        const auto source = revalidation_source_path(_data_dir);
+        if (!std::filesystem::exists(source)) {
+            const auto temporary = source.string() + ".tmp";
+            std::filesystem::copy_file(_state_path, temporary, std::filesystem::copy_options::overwrite_existing);
+            std::filesystem::rename(temporary, source);
+        }
+        std::vector<std::shared_ptr<void>> input_pins;
+        std::vector<std::string> input_paths;
+        for (const auto &[offset, chunk]: _chunks) {
+            input_paths.emplace_back(full_path(chunk.rel_path()));
+            input_pins.emplace_back(_file_remover.pin(input_paths.back()));
+        }
+        scope_exit preserve_input { [&] {
+            if (std::filesystem::exists(source))
+                for (const auto &path: input_paths) _file_remover.unmark(path);
+        }};
+        auto last_checkpoint = std::chrono::steady_clock::now();
+        optional_progress_point progress_target;
+        if (target) {
+            progress_target.emplace(*target);
+            progress_target->final_checkpoint = true;
+        }
+        size_t next = 0;
+        const auto previous_check = std::exchange(_before_commit, {});
+        scope_exit restore_check { [&] { _before_commit = previous_check; } };
+        _before_commit = [&] {
+            const auto expected = next ? chunks.at(next - 1).blocks.back().point() : cardano::optional_point {};
+            if (tip() != expected)
+                throw error("revalidation did not reach the submitted prefix");
+            if (previous_check) previous_check();
+        };
+        do {
+            accept_anything_or_throw(next ? tip() : cardano::optional_point {}, progress_target, [&] {
+                while (next < chunks.size()) {
+                    const auto epoch = make_slot(chunks.at(next).first_slot).epoch();
+                    const auto end = std::min(chunks.size(), next + 32);
+                    for (; next < end && make_slot(chunks.at(next).first_slot).epoch() == epoch; ++next) {
+                        const auto &chunk = chunks.at(next);
+                        const auto path = full_path(chunk.rel_path());
+                        _sched.submit("parse", 100, [this, &chunk, path] {
+                            add_file(chunk.offset, path, chunk.compression_level);
+                        });
+                    }
+                    _sched.process(true);
+                    if (next < chunks.size() && make_slot(chunks.at(next).first_slot).epoch() == epoch)
+                        continue;
+                    _my_prepare_tx();
+                    _validator->flush();
+                    if (std::chrono::steady_clock::now() - last_checkpoint >= checkpoint_interval && next < chunks.size())
+                        _validator->request_checkpoint();
+                    if (checkpoint_requested())
+                        break;
+                }
+            });
+            checkpoint(next == chunks.size());
+            last_checkpoint = std::chrono::steady_clock::now();
+        } while (next < chunks.size());
+        std::filesystem::remove(source);
     }
 
     struct chunk_registry::repack_plan_t {
@@ -380,108 +556,140 @@ namespace turbo {
         }
     };
 
-    chunk_registry::repack_stats_t chunk_registry::checkpoint()
+    std::vector<cardano::point> chunk_registry::checkpoint_points() const
     {
-        if (_transaction || !_validator || !_indexer)
-            throw error("checkpoint requires an idle validating registry");
+        std::vector<cardano::point> points;
+        if (_validator)
+            for (const auto &snap: _validator->snapshots() | std::views::reverse)
+                points.emplace_back(find_block_by_offset(snap.end_offset - 1).point());
+        return points;
+    }
+
+    chunk_registry::repack_stats_t chunk_registry::checkpoint(const bool force)
+    {
+        if (_transaction)
+            throw error("checkpoint requires an idle registry");
+        if (!_validator || !_indexer)
+            return {};
         if (valid_end_offset() != max_end_offset())
             throw error("checkpoint requires matching chain, index, and ledger boundaries");
         const auto p = tip();
         if (!p)
             return {};
         const auto root = _data_dir / "checkpoints";
-        if (std::filesystem::exists(root)) {
-            for (const auto &entry: std::filesystem::directory_iterator(root)) {
-                const auto manifest = entry.path() / "manifest.json";
-                if (!std::filesystem::exists(manifest)) continue;
-                try {
-                    const auto j = json::load(manifest.string());
-                    if (json::value_to<uint64_t>(j.at("version")) == 1
-                            && json::value_to<uint64_t>(j.at("offset")) == p->end_offset
-                            && json::value_to<std::string>(j.at("hash")) == fmt::format("{}", p->hash)
-                            && std::ranges::all_of(j.at("files").as_array(), [&](const auto &f) {
-                                return std::filesystem::exists(entry.path() / json::value_to<std::string>(f));
-                            }))
-                        return {};
-                } catch (const std::exception &ex) {
-                    logger::warn("ignoring checkpoint manifest {}: {}", manifest.string(), ex.what());
-                }
-            }
+        _validator->checkpoint(force);
+        const auto points = checkpoint_points();
+        if (points.empty() || (!force && points.front().end_offset == _coordinated_checkpoint_offset))
+            return {};
+        std::map<uint64_t, std::filesystem::path> retained;
+        for (const auto &checkpoint: read_checkpoints(root)) {
+            if (checkpoint.version != checkpoint_manifest_t::current_version
+                    || std::ranges::none_of(points, [&](const auto &point) { return checkpoint.matches(point); }))
+                continue;
+            const auto &snapshot = *checkpoint.snapshots.begin();
+            const auto *current = _validator->snapshots().at_offset(checkpoint.offset);
+            const auto rel = snapshot_relative_path(checkpoint.offset);
+            if (current && snapshot == *current && std::filesystem::equivalent(_data_dir / rel, checkpoint.directory / rel))
+                retained.try_emplace(checkpoint.offset, checkpoint.directory);
         }
         std::future<std::unique_ptr<repack_plan_t>> repacking;
-        logger::run_log_errors([&] {
-            repacking = std::async(std::launch::async, [this] {
-                std::unique_ptr<repack_plan_t> plan;
-                logger::run_log_errors([&] { plan = _prepare_repack(repack_mode_t::merge_closed); });
-                return plan;
+        if (retained.size() != points.size()) {
+            logger::run_log_errors([&] {
+                repacking = std::async(std::launch::async, [this] {
+                    std::unique_ptr<repack_plan_t> plan;
+                    logger::run_log_errors([&] { plan = _prepare_repack(repack_mode_t::merge_closed); });
+                    return plan;
+                });
             });
-        });
-        _validator->checkpoint();
-        const auto generation = fmt::format("{}-{}", p->end_offset,
-            std::chrono::system_clock::now().time_since_epoch().count());
-        const auto dir = root / generation;
-        std::filesystem::create_directories(dir);
-        bool complete = false;
-        scope_exit cleanup { [&] {
-            if (!complete) {
-                std::error_code ec;
-                std::filesystem::remove_all(dir, ec);
-            }
-        } };
-        json::array files;
-        const auto retain = [&](const std::filesystem::path &path) {
-            const auto rel = std::filesystem::relative(path, _data_dir);
-            link_checkpoint_file(path, dir / rel);
-            files.emplace_back(rel.generic_string());
-        };
-        retain(_indexer->idx_dir() / "state.json");
-        for (const auto &[name, idx]: _indexer->indexers()) {
-            if (idx->mergeable())
-                for (const auto &path: _indexer->reader_paths(name))
-                    retain(path);
+            const auto live_slices = _indexer->slices();
+            for (const auto &point: points | std::views::reverse)
+                if (!retained.contains(point.end_offset))
+                    retained.emplace(point.end_offset, _save_checkpoint(point, live_slices));
+            logger::info("saved coordinated checkpoint at {}", points.front());
         }
-        retain(_data_dir / "validate/state.json");
-        for (const auto &snap: _validator->snapshots())
-            retain(_data_dir / "validate" / fmt::format("ledger-{:013}.bin", snap.end_offset));
-        json::save_pretty((dir / "manifest.json").string(), json::object {
-            { "version", 1 }, { "offset", p->end_offset }, { "height", p->height },
-            { "hash", fmt::format("{}", p->hash) }, { "files", std::move(files) }
-        });
-        complete = true;
-        // Retain recent checkpoints and one older anchor for the rollback window.
-        std::vector<std::pair<uint64_t, std::filesystem::path>> old;
-        for (const auto &entry: std::filesystem::directory_iterator(root)) {
-            const auto manifest = entry.path() / "manifest.json";
-            if (std::filesystem::exists(manifest)) {
-                try {
-                    const auto j = json::load(manifest.string());
-                    old.emplace_back(json::value_to<uint64_t>(j.at("height")), entry.path());
-                } catch (const std::exception &ex) {
-                    logger::warn("cannot prune checkpoint {}: {}", entry.path().string(), ex.what());
-                }
-            } else if (entry.is_directory()) {
+        for (const auto &entry: std::filesystem::directory_iterator(root))
+            if (entry.is_directory() && std::ranges::none_of(retained, [&](const auto &r) { return r.second == entry.path(); }))
                 std::filesystem::remove_all(entry.path());
-            }
-        }
-        std::ranges::sort(old);
-        const auto floor = p->height > 2 * _cardano_cfg.shelley_security_param
-            ? p->height - 2 * _cardano_cfg.shelley_security_param : 0;
-        // Keep the rollback window and its older anchor, with at least two generations.
-        std::optional<size_t> anchor;
-        for (size_t i = 0; i < old.size(); ++i)
-            if (old[i].first <= floor)
-                anchor = i;
-        for (size_t i = 0; i + 2 < old.size(); ++i)
-            if (anchor && i < *anchor)
-                std::filesystem::remove_all(old[i].second);
-        logger::info("saved coordinated checkpoint at {}", p);
+        _file_remover.remove();
         repack_stats_t repacked;
         if (repacking.valid()) {
             auto plan = repacking.get();
             if (plan)
                 logger::run_log_errors([&] { repacked = _commit_repack(*plan); });
         }
+        _coordinated_checkpoint_offset = points.front().end_offset;
+        _checkpoint_requested.store(false, std::memory_order_release);
         return repacked;
+    }
+
+    std::filesystem::path chunk_registry::_save_checkpoint(const cardano::point &point, const indexer::slice_list &live_slices)
+    {
+        const auto *snapshot = _validator->snapshots().at_offset(point.end_offset);
+        if (!snapshot)
+            throw error("checkpoint ledger snapshot is missing");
+        const auto directory = _data_dir / "checkpoints" / fmt::format("{}-{}", point.end_offset,
+            std::chrono::system_clock::now().time_since_epoch().count());
+        bool published = false;
+        std::vector<std::string> temporary_indices;
+        scope_exit cleanup { [&] {
+            for (const auto &path: temporary_indices)
+                _file_remover.mark(path);
+            if (!published) {
+                std::error_code ec;
+                std::filesystem::remove_all(directory, ec);
+            }
+        } };
+        std::filesystem::create_directories(directory / "index");
+        std::filesystem::create_directories(directory / "validate");
+        indexer::slice_list slices;
+        for (const auto &slice: live_slices) {
+            if (slice.offset >= point.end_offset)
+                break;
+            if (slice.end_offset() <= point.end_offset) {
+                slices.emplace_back(slice);
+                continue;
+            }
+            indexer::merger::slice tail { slice.offset, point.end_offset - slice.offset, point.slot, "checkpoint" };
+            for (const auto &[name, index]: _indexer->indexers()) {
+                if (!index->mergeable())
+                    continue;
+                const auto path = index->reader_path(tail.slice_id);
+                // Sparse indices need no truncation when all entries precede the boundary.
+                link_checkpoint_file(index->reader_path(slice.slice_id), path);
+                temporary_indices.emplace_back(path);
+                index->schedule_truncate(slice.slice_id, tail.slice_id, point.end_offset);
+            }
+            _sched.process(true);
+            slices.emplace_back(std::move(tail));
+            break;
+        }
+        json::array files;
+        const auto link_file = [&](const std::filesystem::path &relative_path) {
+            link_checkpoint_file(_data_dir / relative_path, directory / relative_path);
+            files.emplace_back(relative_path.generic_string());
+        };
+        json::array index_state;
+        for (const auto &slice: slices)
+            index_state.emplace_back(slice.to_json());
+        json::save_pretty((directory / "index/state.json").string(), index_state);
+        files.emplace_back("index/state.json");
+        for (const auto &[name, index]: _indexer->indexers()) {
+            if (!index->mergeable())
+                continue;
+            for (const auto &slice: slices) {
+                const auto filename = std::filesystem::path { index->reader_path(slice.slice_id) }.filename();
+                link_file(std::filesystem::path { "index" } / name / filename);
+            }
+        }
+        json::save_pretty((directory / "validate/state.json").string(), json::array { snapshot->to_json() });
+        files.emplace_back("validate/state.json");
+        link_file(snapshot_relative_path(snapshot->end_offset));
+        json::save_pretty((directory / "manifest.json").string(), json::object {
+            { "version", checkpoint_manifest_t::current_version }, { "offset", point.end_offset }, { "height", point.height },
+            { "hash", fmt::format("{}", point.hash) }, { "files", std::move(files) }
+        });
+        published = true;
+        return directory;
     }
 
     void chunk_registry::maintenance()
@@ -1093,7 +1301,7 @@ namespace turbo {
                 std::filesystem::create_directories(ledger_dir);
                 return _validator->node_export(ledger_dir, imm_tip, prio);
             }
-            throw error("the validator's state is currently not in the exportable period!");
+            throw error("no Shelley-or-later ledger snapshot is available at or before the immutable tip");
         }
         throw error("This chunk_registry does not have a validator instance!");
     }
@@ -1644,7 +1852,9 @@ namespace turbo {
             start->height = block.height;
             start->end_offset = block.end_offset();
         }
+        _checkpoint_requested.store(false, std::memory_order_release);
         _transaction = active_transaction { start, target };
+        _transaction->restore_ledger = _validator && valid_end_offset() == num_bytes();
         // must happen before a potential truncate below
         if (!_truncated_chunks.empty()) {
             logger::warn("truncated chunks weren't empty at the beginning of a tx - recovering from an error?");
@@ -1682,7 +1892,10 @@ namespace turbo {
             if (p->rollback_tx)
                 p->rollback_tx();
         }
+        const bool restore_ledger = _transaction->restore_ledger;
         _transaction.reset();
+        if (restore_ledger)
+            _validator->recover();
     }
 
     void chunk_registry::_commit_tx()
@@ -1697,7 +1910,11 @@ namespace turbo {
             if (p->commit_tx)
                 p->commit_tx();
         }
+        const auto target = _transaction->target;
+        const bool completed = target && target->final_checkpoint
+            && (target->end_offset ? num_bytes() >= target->end_offset : max_slot() >= target->slot);
         _transaction.reset();
+        logger::run_log_errors([&] { checkpoint(completed); });
     }
 
     void chunk_registry::_save_state(const std::string &path)

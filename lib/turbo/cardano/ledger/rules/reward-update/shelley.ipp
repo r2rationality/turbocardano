@@ -12,22 +12,34 @@
             const auto slot = cardano::slot::from_epoch(_epoch, _cfg) + _epoch_slot;
             _ensure_reward_pulsing_snapshot(slot);
         }
-        const auto run = _params.protocol_ver.major >= 2 && _epoch_slot >= _cfg.shelley_rewards_ready_slot && !_rewards_ready;
-        if (run)
-            _compute_rewards();
+        if (_params.protocol_ver.major >= 2 && _epoch_slot >= _cfg.shelley_rewards_ready_slot)
+            complete_pulsers();
+    }
+
+    void state::complete_pulsers()
+    {
+        if (_params.protocol_ver.major < 2 || _rewards_ready
+                || _epoch_slot <= _cfg.shelley_randomness_stabilization_window)
+            return;
+        _ensure_reward_pulsing_snapshot(cardano::slot::from_epoch(_epoch, _cfg) + _epoch_slot);
+        _compute_rewards();
     }
 
     void state::_ensure_reward_pulsing_snapshot(const uint64_t slot)
     {
-        if (!_params_prev.protocol_ver.forgo_reward_prefilter() && slot > _pulsing_snapshot_slot
-                && _reward_pulsing_snapshot.empty() && !_accounts.empty()) {
+        if (_reward_pulsing_snapshot_ready || slot <= _pulsing_snapshot_slot)
+            return;
+        if (!_params_prev.protocol_ver.forgo_reward_prefilter()) {
             timer t { fmt::format("epoch: {} create a pulsing snapshot of reward accounts", _epoch), logger::level::debug };
-            _reward_pulsing_snapshot.reserve(_accounts.size());
+            reward_distribution_copy snapshot {};
+            snapshot.reserve(_accounts.size());
             for (const auto &[stake_id, acc]: _accounts) {
                 if (acc.ptr)
-                    _reward_pulsing_snapshot.emplace_back(stake_id, acc.reward);
+                    snapshot.emplace_back(stake_id, acc.reward);
             }
+            _reward_pulsing_snapshot = std::move(snapshot);
         }
+        _reward_pulsing_snapshot_ready = true;
     }
 
     void state::_transfer_potential_rewards(const cardano::protocol_params &params_prev)
@@ -59,7 +71,7 @@
                             num_active_pools, part_idx, aggregated, force_active] {
                         partitioned_reward_update_dist::partition_type reward_part {};
                         reward_part.swap(_potential_rewards.partition(part_idx));
-                        // relies on reward_part, _accounts, and _pulsing_snapshot being ordered containers!
+                        // Relies on reward_part, _accounts, and _reward_pulsing_snapshot being ordered containers.
                         auto acc_it = _accounts.partition(part_idx).begin();
                         const auto acc_end = _accounts.partition(part_idx).end();
                         const auto pool_update_offset = part_idx * num_active_pools;

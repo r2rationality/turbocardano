@@ -69,6 +69,26 @@ suite cardano_ledger_state_suite = [] {
             state st2 {};
             expect(st == st2);
         };
+        "snapshot reload preserves pending protocol upgrade"_test = [] {
+            cardano::config cfg { cardano::config::get() };
+            cfg.shelley_start_epoch(0);
+            state original { cfg, scheduler::get(), state::init_mode::empty };
+            for (const auto &[key, delegate]: cfg.shelley_delegates)
+                original.propose_update(1, { .key_id=key,
+                    .update={ .protocol_ver=cardano::protocol_version { 8, 0 } }, .epoch=0 });
+            const file::tmp snapshot_file { "ledger-pending-upgrade" };
+            original.save_zpp(snapshot_file.path());
+            state reloaded { cfg, scheduler::get(), state::init_mode::empty };
+            reloaded.load_zpp(snapshot_file.path());
+            expect(original == reloaded);
+            original.start_epoch(0);
+            reloaded.start_epoch(0);
+            expect_equal(original.params().protocol_ver.major, 8);
+            expect_equal(reloaded.params().protocol_ver.major, 8);
+            expect_equal(original.reserves(), cfg.shelley_max_lovelace_supply);
+            expect_equal(reloaded.reserves(), original.reserves());
+            expect(original == reloaded);
+        };
         "save and load"_test = [] {
             file::tmp tmp_state { "validator-state-test" };
             state st {};
@@ -83,6 +103,56 @@ suite cardano_ledger_state_suite = [] {
             expect(st2.utxos().empty());
             st2.load_zpp(tmp_state.path());
             expect(st == st2);
+        };
+        "snapshot completion preserves the chain point and epoch result"_test = [] {
+            cardano::config cfg { cardano::config::get() };
+            cfg.shelley_start_epoch(0);
+            for (const uint64_t major: { 2, 8, 9, 10, 11 }) {
+                for (const auto epoch_slot: { cfg.shelley_randomness_stabilization_window - 1,
+                        cfg.shelley_randomness_stabilization_window,
+                        cfg.shelley_randomness_stabilization_window + 1,
+                        cfg.shelley_rewards_ready_slot }) {
+                    state saved { cfg, scheduler::get(), state::init_mode::empty };
+                    state uninterrupted { cfg, scheduler::get(), state::init_mode::empty };
+                    for (auto *st: { &saved, &uninterrupted }) {
+                        for (const auto &[key, delegate]: cfg.shelley_delegates)
+                            st->propose_update(1, { .key_id=key,
+                                .update={ .protocol_ver=cardano::protocol_version { major, 0 } }, .epoch=0 });
+                        st->start_epoch(0);
+                        st->process_block(0, st->params().protocol_ver.era(), epoch_slot, 0);
+                    }
+                    const auto treasury = saved.treasury();
+                    const auto reserves = saved.reserves();
+                    const auto tip = saved.last_slot();
+                    const file::tmp snapshot_file { "ledger-completed-pulsers" };
+                    saved.save_zpp(snapshot_file.path());
+                    expect(saved.exportable());
+                    expect_equal(saved.last_slot(), tip);
+                    expect_equal(saved.epoch(), 0);
+                    expect_equal(saved.end_offset(), 0);
+                    expect_equal(saved.treasury(), treasury);
+                    expect_equal(saved.reserves(), reserves);
+                    const auto first_save = file::read(snapshot_file.path());
+                    saved.save_zpp(snapshot_file.path());
+                    expect_equal(file::read(snapshot_file.path()), first_save);
+
+                    state restored { cfg, scheduler::get(), state::init_mode::empty };
+                    restored.load_zpp(snapshot_file.path());
+                    expect(saved == restored);
+                    const auto node_tip = cardano::point { {}, tip, 0, 0 };
+                    const auto saved_cbor = saved.to_cbor(node_tip).flat();
+                    expect_equal(restored.to_cbor(node_tip).flat(), saved_cbor);
+                    const file::tmp node_file { "ledger-completed-pulsers.cbor" };
+                    restored.save_node(node_file.path(), node_tip);
+                    expect_equal(file::read(node_file.path()), saved_cbor);
+
+                    for (auto *st: { &saved, &restored, &uninterrupted })
+                        st->start_epoch(1);
+                    expect(saved == uninterrupted);
+                    expect(restored == uninterrupted);
+                    expect_equal(saved.to_cbor(cardano::point {}).flat(), uninterrupted.to_cbor(cardano::point {}).flat());
+                }
+            }
         };
         "save_node and load_node"_test = [] {
             file::tmp tmp_state { "validator-state-node-test" };

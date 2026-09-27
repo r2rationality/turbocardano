@@ -49,6 +49,7 @@ namespace turbo::cli::validate {
                 // remove all previously prepared indices and validator snapshots
                 std::filesystem::remove_all(std::filesystem::path { data_dir } / "index");
                 std::filesystem::remove_all(std::filesystem::path { data_dir } / "validate");
+                std::filesystem::remove_all(std::filesystem::path { data_dir } / "checkpoints");
                 chunk_registry cr { data_dir, chunk_registry::mode::validate, cardano::config::get(),
                     scheduler::get(), file_remover::get(), false };
                 chunk_processor progress_proc {
@@ -60,12 +61,8 @@ namespace turbo::cli::validate {
                 const scope_exit progress_proc_cleanup { [&] {
                     cr.remove_processor(progress_proc);
                 } };
-                _parse_progress_total = max_block ? max_block->end_offset : 0;
                 cr.validation(validation_mode);
-                cr.accept_anything_or_throw({}, max_block, [&]{
-                    if (!chunks.empty())
-                        _validate_chunks(scheduler::get(), cr, std::move(chunks));
-                });
+                cr.revalidate(chunks, max_block);
                 if (max_epoch)
                     cr.remover().remove();
                 if (!cr.chunks().empty()) {
@@ -81,30 +78,7 @@ namespace turbo::cli::validate {
         }
     private:
         using chunk_registry = turbo::chunk_registry;
-        using chunk_info = chunk_registry::chunk_info;
         using chunk_list = chunk_registry::chunk_list;
-
-        mutable uint64_t _parse_progress_total {};
-
-        void _validate_chunks(scheduler &sched, chunk_registry &cr, chunk_list &&chunks) const
-        {
-            timer t { "validate chunks" };
-            for (const auto &chunk: chunks) {
-                auto save_path = cr.full_path(chunk.rel_path());
-                sched.submit("parse", 0 + 100 * (_parse_progress_total - chunk.offset) / _parse_progress_total, [&cr, chunk, save_path]() {
-                    try {
-                        cr.add_file(chunk.offset, save_path, chunk.compression_level);
-                    } catch (std::exception &ex) {
-                        std::filesystem::path orig_path { save_path };
-                        const auto debug_path = cr.full_path(fmt::format("error/{}", orig_path.filename().string()));
-                        logger::warn("moving an unparsable chunk {} to {}", save_path, debug_path);
-                        std::filesystem::copy_file(save_path, debug_path, std::filesystem::copy_options::overwrite_existing);
-                        throw error(fmt::format("can't parse {}: {}", save_path, ex.what()));
-                    }
-                });
-            }
-            sched.process(true);
-        }
     };
     static auto instance = command::reg(std::make_shared<cmd>());
 }

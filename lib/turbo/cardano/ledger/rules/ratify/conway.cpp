@@ -6,6 +6,8 @@
 #include <algorithm>
 #include <turbo/cardano/ledger/rules/gov/conway.hpp>
 #include <turbo/cardano/ledger/rules/ratify/conway.hpp>
+#include <turbo/common/scope-exit.hpp>
+#include <turbo/common/timer.hpp>
 
 namespace turbo::cardano::ledger::conway::rules::ratify {
     bool valid_committee_term(
@@ -376,7 +378,10 @@ namespace turbo::cardano::ledger::conway {
 
     void state::_gov_finalize()
     {
-        _ratify_state.new_state.treasury = _treasury;
+        timer t { fmt::format("ratify governance for epoch {}", _epoch), logger::level::debug };
+        auto original = _ratify_state;
+        scope_exit discard_incomplete { [&] { _ratify_state = std::move(original); } };
+        _ratify_state.new_state.treasury = _pulsing_data.treasury;
         for (const auto &[gid, action]: _pulsing_data.proposals) {
             if (_epoch <= action.proposed_in)
                 continue;
@@ -413,5 +418,6 @@ namespace turbo::cardano::ledger::conway {
         }
         _ratify_state.new_state.treasury = 0;
         _ratify_ready = true;
+        discard_incomplete.release();
     }
 }

@@ -51,7 +51,7 @@ suite chunk_registry_suite = [] {
             std::filesystem::copy(data_dir, tmp_data_dir, std::filesystem::copy_options::recursive | std::filesystem::copy_options::overwrite_existing);
         };
 
-        "strict creation"_test = [&] {
+        "startup recovers the contiguous stored prefix"_test = [&] {
             recreate_tmp_data_dir();
             file_remover fr {};
             expect(nothrow([&] {
@@ -62,8 +62,16 @@ suite chunk_registry_suite = [] {
                     scheduler::get(),
                     fr
                 };
-                expect(cr.empty());
-                expect_equal(0, cr.num_bytes());
+                expect(!cr.empty());
+                expect_equal(cr.chunks().size(), 1);
+                expect_equal(cr.num_bytes(), 14'788'562);
+                expect_equal(cr.valid_end_offset(), cr.num_bytes());
+                expect_equal(cr.max_end_offset(), cr.num_bytes());
+                const cardano::optional_point expected_tip { cardano::point {
+                    cardano::block_hash::from_hex("3BD04916B6BC2AD849D519CFAE4FFE3B1A1660C098DBCD3E884073DD54BC8911"),
+                    21'599, 21'599, 14'788'562
+                } };
+                expect_equal(cr.tip(), expected_tip);
             }));
             recreate_tmp_data_dir();
             expect(nothrow([&] { chunk_registry cr { tmp_data_dir, chunk_registry::mode::store }; }));

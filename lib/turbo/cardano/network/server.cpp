@@ -14,13 +14,17 @@
 #include <boost/asio/compose.hpp>
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/detached.hpp>
-#include <boost/asio/experimental/awaitable_operators.hpp>
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/ip/tcp.hpp>
+#include <boost/asio/post.hpp>
+#include <boost/asio/strand.hpp>
+#include <boost/asio/steady_timer.hpp>
 #include <boost/asio/read.hpp>
+#include <boost/asio/redirect_error.hpp>
 #include <boost/asio/write.hpp>
 #include <boost/asio/use_future.hpp>
 #include <boost/asio/use_awaitable.hpp>
+#include <set>
 #ifdef DT_CLEAR_BOOST_DEPRECATED_HEADERS
 #   undef BOOST_ALLOW_DEPRECATED_HEADERS
 #   undef DT_CLEAR_BOOST_DEPRECATED_HEADERS
@@ -41,14 +45,19 @@ namespace turbo::cardano::network {
         {
             if (!_max_connections) throw error("max-connections must be positive");
             std::scoped_lock lk { _futures_mutex };
-            _futures.emplace_back(boost::asio::co_spawn(_iow->io_context(), _listen(), boost::asio::use_future));
+            _futures.emplace_back(boost::asio::co_spawn(_strand, _listen(), boost::asio::use_future));
         }
 
         ~impl()
         {
-            _destroy = true;
+            stop();
+            while (!_shutdown->closed.load(std::memory_order_acquire)) {
+                if (_iow->io_context().stopped()) _iow->io_context().restart();
+                _iow->io_context().run_one();
+            }
             for (const auto &f: _futures) {
                 while (f.wait_for(std::chrono::milliseconds { 0 }) != std::future_status::ready) {
+                    if (_iow->io_context().stopped()) _iow->io_context().restart();
                     _iow->io_context().run_one();
                 }
             }
@@ -56,7 +65,8 @@ namespace turbo::cardano::network {
 
         void run()
         {
-            while (!_iow->io_context().stopped() && !_destroy) {
+            // Drain cancellation completions before releasing connection buffers.
+            while (!_iow->io_context().stopped()) {
                 _iow->io_context().run_for(std::chrono::milliseconds { 100 });
                 std::scoped_lock lk { _futures_mutex };
                 for (auto it = _futures.begin(); it != _futures.end();) {
@@ -64,10 +74,14 @@ namespace turbo::cardano::network {
                     logger::run_log_errors([&] { it->get(); });
                     it = _futures.erase(it);
                 }
-                if (_futures.empty()) _destroy = true;
+                if (_futures.empty()) { stop(); break; }
             }
         }
-        void stop() { _destroy.store(true, std::memory_order_relaxed); }
+        void stop()
+        {
+            if (_stop_requested.exchange(true, std::memory_order_relaxed)) return;
+            boost::asio::post(_strand, [state=_shutdown] { state->close(); });
+        }
     private:
         using tcp = boost::asio::ip::tcp;
 
@@ -138,6 +152,24 @@ namespace turbo::cardano::network {
             std::weak_ptr<multiplexer> _owner;
         };
 
+        struct shutdown_state {
+            explicit shutdown_state(const boost::asio::any_io_executor &executor): resolver { executor }, acceptor { executor } {}
+
+            tcp::resolver resolver;
+            tcp::acceptor acceptor;
+            std::set<tcp_connection *> clients;
+            std::atomic_bool closed { false };
+
+            void close()
+            {
+                resolver.cancel();
+                boost::system::error_code ec;
+                acceptor.close(ec);
+                for (auto *client: clients) client->close();
+                closed.store(true, std::memory_order_release);
+            }
+        };
+
         template<typename H>
         struct my_op_handler_t final: op_observer_t {
             my_op_handler_t(H &&h):
@@ -163,73 +195,61 @@ namespace turbo::cardano::network {
             H _handler;
         };
 
-        static boost::asio::awaitable<op_result_t> _async_process(boost::asio::io_context &ioc, std::shared_ptr<multiplexer> &m, void (multiplexer::*method)(op_observer_ptr))
+        static boost::asio::awaitable<op_result_t> _async_process(const std::shared_ptr<multiplexer> &m,
+            tcp_connection &socket, void (multiplexer::*method)(op_observer_ptr))
         {
-            using namespace boost::asio::experimental::awaitable_operators;
             const auto token = boost::asio::use_awaitable;
             auto executor = co_await boost::asio::this_coro::executor;
-            op_result_t res = op_result_failed_t { "an async operation has taken too long!" };
-            auto deadline = boost::asio::steady_timer { executor, std::chrono::seconds { 1 } };
-            op_observer_ptr handler_ptr {};
-            const auto wait_res = co_await (
-                boost::asio::async_initiate<decltype(token), void(op_result_t)>(
-                    [=, &ioc](auto &&handler) mutable {
-                        handler_ptr = std::make_shared<my_op_handler_t<std::decay_t<decltype(handler)>>>(std::move(handler));
-                        ioc.post(
-                            [m, method, my_handler=handler_ptr]() mutable {
-                                if (logger::run_log_errors([&] {
-                                    if (m->alive())
-                                        ((*m).*method)(my_handler);
-                                    else
-                                        my_handler->failed("multiplexer is not in a working state");
-                                }))
-                                    my_handler->failed("node-api operation failed");
-                            }
-                        );
-                    },
-                    token
-                )
-                || deadline.async_wait(token)
-            );
-            std::visit([&](auto &&rv) {
-                using T = std::decay_t<decltype(rv)>;
-                if constexpr (std::is_same_v<T, op_result_ok_t> || std::is_same_v<T, op_result_failed_t> || std::is_same_v<T, op_result_stopped_t>) {
-                    deadline.cancel();
-                    res = std::move(rv);
-                } else {
-                    logger::error("an async operation has taken too long and has been cancelled");
-                    if (handler_ptr) {
-                        handler_ptr->stopped();
-                    }
+            boost::asio::steady_timer deadline { executor, std::chrono::seconds { 30 } };
+            deadline.async_wait([m, socket=&socket](const auto &ec) {
+                if (!ec) {
+                    logger::warn("node-api transfer timed out after 30 seconds");
+                    socket->close();
                 }
-            }, wait_res);
-            co_return res;
+            });
+            scope_exit cancel_deadline { [&] { deadline.cancel(); } };
+            co_return co_await boost::asio::async_initiate<decltype(token), void(op_result_t)>(
+                [m, method, executor](auto &&handler) {
+                    auto observer = std::make_shared<my_op_handler_t<std::decay_t<decltype(handler)>>>(std::move(handler));
+                    boost::asio::post(executor, [m, method, observer] {
+                        if (logger::run_log_errors([&] {
+                            if (m->alive())
+                                ((*m).*method)(observer);
+                            else
+                                observer->failed("multiplexer is not in a working state");
+                        }))
+                            observer->failed("node-api operation failed");
+                    });
+                }, token);
         }
 
         const address _addr;
         const multiplexer_config_t _config;
         std::shared_ptr<asio::worker> _iow;
+        boost::asio::strand<boost::asio::io_context::executor_type> _strand { boost::asio::make_strand(_iow->io_context()) };
+        const std::shared_ptr<shutdown_state> _shutdown = std::make_shared<shutdown_state>(_strand);
         const size_t _max_connections;
         const std::shared_ptr<std::atomic_size_t> _open_connections = std::make_shared<std::atomic_size_t>(0);
-        std::atomic_bool _destroy { false };
+        std::atomic_bool _stop_requested { false };
         std::mutex _futures_mutex alignas(mutex::alignment);
         std::vector<std::future<void>> _futures {};
 
         boost::asio::awaitable<void> _handle_client(tcp::socket conn, std::unique_ptr<connection_slot> slot)
         {
-            using namespace boost::asio::experimental::awaitable_operators;
+            if (_stop_requested.load(std::memory_order_relaxed)) co_return;
             auto transport = std::make_unique<tcp_connection>(std::move(conn), std::move(slot));
             auto *socket = transport.get();
             auto m = std::make_shared<multiplexer>(std::move(transport), multiplexer_config_t { _config });
             socket->owner(m);
-            scope_exit close { [&] { socket->close(); } };
-            while (m->alive() && !_destroy.load(std::memory_order_relaxed)) {
+            _shutdown->clients.emplace(socket);
+            scope_exit close { [&] { _shutdown->clients.erase(socket); socket->close(); } };
+            while (m->alive() && !_stop_requested.load(std::memory_order_relaxed)) {
                 m->poll();
                 if (m->available_ingress()) {
-                    const auto res = co_await _async_process(_iow->io_context(), m, &multiplexer::process_ingress);
+                    const auto res = co_await _async_process(m, *socket, &multiplexer::process_ingress);
                     if (!std::holds_alternative<op_result_ok_t>(res)) co_return;
                 } else if (m->available_egress()) {
-                    const auto res = co_await _async_process(_iow->io_context(), m, &multiplexer::process_egress);
+                    const auto res = co_await _async_process(m, *socket, &multiplexer::process_egress);
                     if (!std::holds_alternative<op_result_ok_t>(res)) co_return;
                 } else {
                     boost::asio::steady_timer timer { co_await boost::asio::this_coro::executor };
@@ -241,34 +261,32 @@ namespace turbo::cardano::network {
 
         boost::asio::awaitable<void> _listen()
         {
-            using namespace boost::asio::experimental::awaitable_operators;
             auto ex = co_await boost::asio::this_coro::executor;
-            tcp::resolver resolver { _iow->io_context() };
-            const auto results = co_await resolver.async_resolve(_addr.host, _addr.port, boost::asio::use_awaitable);
+            if (_stop_requested.load(std::memory_order_relaxed)) co_return;
+            boost::system::error_code ec;
+            const auto results = co_await _shutdown->resolver.async_resolve(_addr.host, _addr.port,
+                boost::asio::redirect_error(boost::asio::use_awaitable, ec));
+            if (_stop_requested.load(std::memory_order_relaxed)) co_return;
+            if (ec) throw boost::system::system_error { ec };
             if (results.empty()) [[unlikely]]
                 throw error(fmt::format("DNS resolve for {}:{} returned no results!", _addr.host, _addr.port));
-            tcp::acceptor acceptor { _iow->io_context(), *results.begin() };
-            while (!_destroy.load(std::memory_order_relaxed)) {
-                boost::asio::steady_timer timer(ex);
-                timer.expires_after(std::chrono::milliseconds { 500ms });
-                auto res = co_await (acceptor.async_accept(boost::asio::use_awaitable) || timer.async_wait(boost::asio::use_awaitable));
-                if (_destroy.load(std::memory_order_relaxed)) break;
-                std::visit([&](auto &&rv) {
-                    using T = std::decay_t<decltype(rv)>;
-                    if constexpr (std::is_same_v<T, tcp::socket>) {
-                        timer.cancel();
-                        if (_open_connections->load(std::memory_order_relaxed) >= _max_connections) {
-                            boost::system::error_code ec;
-                            rv.close(ec);
-                            return;
-                        }
-                        auto slot = std::make_unique<connection_slot>(_open_connections);
-                        std::scoped_lock lock { _futures_mutex };
-                        _futures.emplace_back(co_spawn(ex, _handle_client(std::move(rv), std::move(slot)), boost::asio::use_future));
-                    } else {
-                        acceptor.cancel();
-                    }
-                }, std::move(res));
+            auto &acceptor = _shutdown->acceptor;
+            const tcp::endpoint endpoint = *results.begin();
+            acceptor.open(endpoint.protocol());
+            acceptor.set_option(tcp::acceptor::reuse_address(true));
+            acceptor.bind(endpoint);
+            acceptor.listen();
+            while (!_stop_requested.load(std::memory_order_relaxed)) {
+                auto socket = co_await acceptor.async_accept(boost::asio::redirect_error(boost::asio::use_awaitable, ec));
+                if (_stop_requested.load(std::memory_order_relaxed)) co_return;
+                if (ec) throw boost::system::system_error { ec };
+                if (_open_connections->load(std::memory_order_relaxed) >= _max_connections) {
+                    socket.close(ec);
+                    continue;
+                }
+                auto slot = std::make_unique<connection_slot>(_open_connections);
+                std::scoped_lock lock { _futures_mutex };
+                _futures.emplace_back(co_spawn(ex, _handle_client(std::move(socket), std::move(slot)), boost::asio::use_future));
             }
         }
     };

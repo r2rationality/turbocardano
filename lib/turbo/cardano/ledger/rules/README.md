@@ -22,12 +22,16 @@ for rule ownership, state projections and known spec differences.
 After building Coverage, run from the repository root:
 
 ```sh
-bash test/gen-coverage.sh --ledger-rules '*' tmp/coverage-ledger build-cov
+bash test/gen-coverage.sh --scope=ledger --out-dir=tmp/coverage-ledger test
+bash test/gen-coverage.sh --scope=ledger --out-dir=tmp/coverage-ledger-sync cli -- \
+  sync --max-slot=100000 tmp/sync-cov
 ```
 
 The `coverage-ledger` CMake target uses the same generator and `COVERAGE_ARGS`.
-Reports include HTML, `rules.json`, `rules.lcov` and `rules-summary.txt`,
+Reports include HTML, `coverage.json`, `coverage.lcov` and `summary.txt`,
 covering production `.cpp`, `.hpp` and `.ipp` files under this directory.
+`sources.txt` lists selected sources; `run.txt` records the command, scope,
+profile path and workload exit status.
 
 Use both the full test suite and a separate Conway workload: source filtering
 cannot identify which era exercised inherited code. Coverage measures execution,

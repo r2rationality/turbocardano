@@ -34,9 +34,12 @@ namespace turbo::sync {
         {
             logger::info("attempting to sync with {} with the tip {}; validation mode: {}", peer.id(), peer.tip(), mode);
             // An empty upstream must not cause a local rollback.
-            if (!peer.tip()) return false;
+            if (!peer.tip()) {
+                _cr.checkpoint();
+                return false;
+            }
             const auto near_tip = peer.intersection() && peer.tip().height >= peer.intersection()->height
-                && peer.tip().height - peer.intersection()->height <= 256;
+                && peer.tip().height - peer.intersection()->height <= _cr.config().shelley_security_param;
             const auto previous_mode = _cr.validation(mode == validation_mode_t::turbo && near_tip ? validation_mode_t::full : mode);
             scope_exit restore_mode { [&] {
                 if (!_cr.tx())
@@ -47,34 +50,33 @@ namespace turbo::sync {
             static constexpr size_t repack_fragment_threshold = 128;
             const auto peer_tip = cardano::point::from_point3(static_cast<cardano::point3>(peer.tip()));
             progress_point target{peer_tip};
+            target.final_checkpoint = true;
             // explicitly set the max slot to ensure that the progress is computed correctly
             if (!max_slot)
                 max_slot = target.slot;
             if (max_slot && *max_slot < target.slot) {
                 logger::info("user override of the target: up to {}", *max_slot);
-                target = progress_point{*max_slot};
+                target.slot = *max_slot;
+                target.end_offset = 0;
             }
             if (!peer.intersection() || (peer.intersection() < target && peer.intersection() < peer_tip)) {
                 for (size_t num_retries = max_retries; num_retries; --num_retries) {
                     logger::info("syncing from {} to {}", peer.intersection(), target);
-                    const auto ex_ptr = _cr.accept_progress(peer.intersection(), target, [&] {
-                        _cr.validation_failure_handler([this](auto max_valid_offset) {
-                            logger::debug("sync::base: validation_failure_handler");
-                            _parent.cancel_tasks(max_valid_offset);
-                        });
+                    const auto ex_ptr = _parent.accept_progress(peer.intersection(), target, [&] {
                         _parent.sync_attempt(peer, max_slot);
                     });
                     const auto end_tip = _cr.tip();
                     const auto made_progress = end_tip && peer.intersection() < end_tip;
-                    // Recoverable action errors can still commit progress. Rolled-back attempts may leave
-                    // restore-needed files marked until a later successful transaction unmarks them.
-                    if (!ex_ptr || made_progress)
-                        _cr.remover().remove();
                     if (made_progress)
                         logger::run_log_errors([&] {
                             _cr.repack(chunk_registry::repack_mode_t::merge_closed, repack_fragment_threshold);
                         });
                     if (!ex_ptr) {
+                        if (made_progress && end_tip < target) {
+                            peer.intersection(end_tip);
+                            ++num_retries;
+                            continue;
+                        }
                         break;
                     }
                     // reset the retry count if made progress
@@ -88,6 +90,7 @@ namespace turbo::sync {
                     }
                 }
             }
+            _cr.checkpoint();
             logger::info("the validated tip: {}", _cr.tip());
             // the new chain's tip can be smaller but have a better chain, so compare for equality here
             return start_tip != _cr.tip();
@@ -140,6 +143,21 @@ namespace turbo::sync {
     cardano::network::peer_selection &syncer::peer_list() noexcept
     {
         return _impl->peer_list();
+    }
+
+    std::exception_ptr syncer::accept_progress(const cardano::optional_point &start, const progress_point &target,
+        const std::function<void()> &action)
+    {
+        auto &cr = local_chain();
+        const auto failure = cr.accept_progress(start, target, [&] {
+            cr.validation_failure_handler([this](uint64_t offset) { cancel_tasks(offset); });
+            action();
+        });
+        // Rolled-back attempts may still need files marked for removal until recovery completes.
+        const auto end = cr.tip();
+        if (!failure || (end && start < end))
+            cr.remover().remove();
+        return failure;
     }
 
     void syncer::on_progress(const std::string_view name, const uint64_t rel_pos, const uint64_t rel_target)

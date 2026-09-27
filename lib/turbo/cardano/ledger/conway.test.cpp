@@ -332,7 +332,7 @@ suite cardano_ledger_conway_suite = [] {
             for (size_t e = 0; e < ga_lifetime + 1; ++e) {
                 st.start_epoch({});
                 expect(st.has_gov_action(gid));
-                st.process_block(100, slot::from_epoch(e + 1, cfg.shelley_rewards_ready_slot, cfg)); // needed so that start_epoch accepts progress
+                st.process_block(100, slot::from_epoch(e + 1, cfg.shelley_rewards_ready_slot, cfg));
                 st.run_pulser_if_ready();
             }
             st.start_epoch({});

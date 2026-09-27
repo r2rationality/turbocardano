@@ -117,6 +117,7 @@ namespace turbo::cardano::ledger::shelley {
         virtual const signer_set &genesis_signers() const;
 
         virtual void run_pulser_if_ready();
+        virtual void complete_pulsers();
         virtual void process_updates(updates_t &&);
         virtual void process_cert(const cert_t &, const cert_loc_t &);
         virtual void start_epoch(std::optional<uint64_t> new_epoch);
@@ -178,6 +179,7 @@ namespace turbo::cardano::ledger::shelley {
         uint64_t _epoch_slot = 0;
         // serializable members
         uint64_t _pulsing_snapshot_slot = 0;
+        bool _reward_pulsing_snapshot_ready = false;
         reward_distribution_copy _reward_pulsing_snapshot {};
         pool_stake_distribution _active_pool_dist {};
         inv_delegation_map _active_inv_delegs {};

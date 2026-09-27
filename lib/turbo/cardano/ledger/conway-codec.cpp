@@ -38,11 +38,7 @@ namespace turbo::cardano::ledger::conway {
             zpp::deserialize(pool_voting_power, b);
         });
         dec.add([&](const auto b) {
-            // The old one-byte frame omitted frozen pool defaults. Recovering
-            // them from live accounts could silently change a saved RATIFY result.
-            if (b.size() == 1) [[unlikely]]
-                throw error("legacy Conway snapshot lacks frozen pool defaults; rebuild it from an earlier-era checkpoint");
-            auto fields = std::tie(drep_state_updated, pool_default_votes);
+            auto fields = std::tie(pool_default_votes, treasury);
             zpp::deserialize(fields, b);
         });
     }
@@ -65,7 +61,7 @@ namespace turbo::cardano::ledger::conway {
             return zpp::serialize(pool_voting_power);
         });
         enc.add([&](auto) {
-            return zpp::serialize(std::tie(drep_state_updated, pool_default_votes));
+            return zpp::serialize(std::tie(pool_default_votes, treasury));
         });
     }
 

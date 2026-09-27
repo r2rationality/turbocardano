@@ -99,7 +99,7 @@
     {
         if (!pool_defaults_ready)
             _snapshot_pool_default_votes();
-        _pulsing_data.drep_state_updated = false;
+        _pulsing_data.treasury = _treasury;
         _pulsing_data.drep_state = _drep_state;
         _pulsing_data.committee_hot_keys = _committee_hot_keys;
         _pulsing_data.proposals.clear();
@@ -121,9 +121,10 @@
         _pulsing_data.drep_voting_power = _compute_drep_voting_power();
     }
 
-    void state::run_pulser_if_ready()
+    void state::complete_pulsers()
     {
-        babbage::state::run_pulser_if_ready();
-        if (_epoch_slot >= _cfg.shelley_rewards_ready_slot && !_ratify_ready)
+        finish_certificates();
+        babbage::state::complete_pulsers();
+        if (!_ratify_ready)
             _gov_finalize();
     }

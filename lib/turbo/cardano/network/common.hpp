@@ -154,6 +154,9 @@ namespace turbo::cardano::network {
 
         virtual ~client() = default;
 
+        // Configure once, before starting requests. A stopped connection is not reused.
+        virtual void set_stop_token(std::stop_token) {}
+
         const address &addr() const
         {
             return _addr;
@@ -279,6 +282,7 @@ namespace turbo::cardano::network {
     struct client_connection: client {
         explicit client_connection(const address &addr, const version_config_t &, const cardano::config &cfg=cardano::config::get(), const asio::worker_ptr &asio_worker=asio::worker::get());
         ~client_connection() override;
+        void set_stop_token(std::stop_token) override;
         chain_update next_header_sync(std::stop_token = {}, const std::function<void()> &idle = {}) override;
     private:
         struct impl;

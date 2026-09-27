@@ -56,8 +56,9 @@ namespace turbo::cardano::ledger {
         _vrf_state->to_cbor(ser);
     }
 
-    cbor_encoder state::to_cbor(const point &tip, const int prio) const
+    cbor_encoder state::to_cbor(const point &tip, const int prio)
     {
+        _state->complete_pulsers();
         timer t { "serialize the state into the Cardano Node format", logger::level::info };
         cbor_encoder ser { [&] { return era_encoder { era_from_number(_eras.size()) }; } };
         ser.add([](auto enc) {
@@ -72,4 +73,3 @@ namespace turbo::cardano::ledger {
         return ser;
     }
 }
-

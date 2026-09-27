@@ -416,6 +416,9 @@ namespace turbo::cardano::ledger::shelley {
 
     void state::to_cbor(cbor_encoder &ser) const
     {
+        if (_params.protocol_ver.major >= 2 && !_rewards_ready
+                && _epoch_slot > _cfg.shelley_randomness_stabilization_window)
+            throw error("complete reward computation before encoding the ledger state");
         _add_encode_task(ser, [this](auto &enc) {
             enc.array(7);
             enc.uint(_epoch);
@@ -463,18 +466,6 @@ namespace turbo::cardano::ledger::shelley {
                 });
                 enc.uint(_reward_pot);
             });
-        } else if (!_reward_pulsing_snapshot.empty()) {
-            _add_encode_task(ser, [](auto &enc) {
-                enc.array(1).array(3).uint(0);
-            });
-            // reward snapshot
-            _add_encode_task(ser, [](auto &enc) {
-                enc.array(0);
-            });
-            // reward pulser
-            _add_encode_task(ser, [](auto &enc) {
-                enc.array(0);
-            });
         } else {
             _add_encode_task(ser, [](auto &enc) {
                 enc.array(0);
@@ -492,4 +483,3 @@ namespace turbo::cardano::ledger::shelley {
         });
     }
 }
-

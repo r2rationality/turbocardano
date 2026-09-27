@@ -14,7 +14,13 @@
     void state::_compute_rewards()
     {
         timer t { fmt::format("compute rewards for epoch {}", _epoch), logger::level::debug };
-        _rewards_ready = true;
+        scope_exit discard_incomplete { [&] {
+            _potential_rewards.clear();
+            _nonmyopic_next.clear();
+            _reward_pot = 0;
+            _delta_treasury = 0;
+            _delta_reserves = 0;
+        } };
         uint64_t expansion = 0;
         if (rational_from_r64(_params_prev.decentralization) < rational_from_r64(_params_prev.decentralizationThreshold) && _epoch > 0) {
             cpp_rational perf = std::min(cpp_rational { 1 }, cpp_rational { _blocks_before.total_stake() } / ((1 - rational_from_r64(_params_prev.decentralization)) * _cfg.shelley_epoch_blocks));
@@ -44,6 +50,8 @@
         logger::debug("epoch {} deltaR ({}) = deltaT ({}) + poolRewards ({}) - deltaF {}",
             _epoch, cardano::amount { _delta_reserves }, cardano::amount { _delta_treasury },
             cardano::amount { pool_rewards_filtered }, cardano::amount { _delta_fees });
+        _rewards_ready = true;
+        discard_incomplete.release();
     }
 
     void state::_rewards_prepare_pool_params(uint64_t &total, uint64_t &filtered, const rational_u64 &z0,

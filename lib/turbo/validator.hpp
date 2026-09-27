@@ -4,6 +4,7 @@
  * Copyright (c) 2024-2026 R2 Rationality OÜ (info at r2rationality dot com)
  * License: https://github.com/r2rationality/turbocardano/blob/main/LICENSE */
 
+#include <chrono>
 #include <turbo/indexer.hpp>
 
 namespace turbo::cardano::ledger {
@@ -14,7 +15,27 @@ namespace turbo::validator {
     enum class validation_mode { turbo, full, none };
     static constexpr std::string_view validate_task{"validate"};
     static constexpr std::string_view validate_leaders_task{"validate-epoch"};
-    static constexpr uint64_t snapshot_format_version = 6;
+    static constexpr uint64_t snapshot_format_version = 7;
+
+    struct snapshot_policy {
+        static constexpr auto catchup_interval = std::chrono::minutes { 10 };
+
+        static bool near_tip(uint64_t height, std::optional<uint64_t> tip_height, uint64_t k)
+        {
+            return !tip_height || *tip_height <= height || *tip_height - height <= k;
+        }
+
+        static bool due(uint64_t height, std::optional<uint64_t> tip_height,
+            std::optional<uint64_t> saved_height, uint64_t k, std::chrono::steady_clock::duration elapsed, bool final_checkpoint=false)
+        {
+            if (!near_tip(height, tip_height, k))
+                return elapsed >= catchup_interval;
+            if (final_checkpoint && tip_height && (height >= *tip_height || elapsed < catchup_interval))
+                return false;
+            const auto previous = saved_height.value_or(0);
+            return height > previous && height - previous > k;
+        }
+    };
 
     struct snapshot {
         uint64_t epoch;
@@ -51,13 +72,12 @@ namespace turbo::validator {
     struct snapshot_set: std::set<snapshot> {
         using set::set;
 
-        using action_t = std::function<void(const snapshot &)>;
         using const_iterator = typename set<snapshot>::const_iterator;
         using best_predicate_t = std::function<bool(const snapshot &)>;
 
-        const_iterator next_excessive() const;
-        void remove_excessive(const action_t &on_remove, const action_t &on_keep);
         const snapshot *best(const best_predicate_t &pred) const;
+        const snapshot *best_exportable(const cardano::optional_point &immutable_tip) const;
+        const snapshot *at_offset(uint64_t end_offset) const;
     };
 
     extern indexer::indexer_map default_indexers(const std::string &data_dir, scheduler &sched=scheduler::get());
@@ -72,7 +92,10 @@ namespace turbo::validator {
         [[nodiscard]] const cardano::ledger::state &state() const;
         [[nodiscard]] const snapshot_set &snapshots() const;
         void load_snapshot(cardano::ledger::state &st, const snapshot &snap) const;
-        void checkpoint();
+        void checkpoint(bool force=true);
+        void recover();
+        void flush();
+        void request_checkpoint();
         validation_mode validation(validation_mode);
     private:
         struct impl;
