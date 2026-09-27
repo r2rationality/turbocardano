@@ -7,15 +7,6 @@
 #include <turbo/cbor/zero2.hpp>
 
 namespace turbo::cardano::network::miniprotocol::chainsync {
-    optional_point2 optional_point2::from_cbor(cbor::zero2::value &v)
-    {
-        auto &it = v.array();
-        if (!it.done()) {
-            return point2 { it.read().uint(), it.read().bytes() };
-        }
-        return {};
-    }
-
     msg_request_next_t msg_request_next_t::from_cbor(cbor::zero2::array_reader &)
     {
         return {};

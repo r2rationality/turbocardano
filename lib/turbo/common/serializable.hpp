@@ -12,6 +12,16 @@ namespace turbo::codec {
     struct archive_t {
     };
 
+    template<typename Archive, typename T>
+    concept encoding_archive_c = requires(Archive &archive, const T &value) {
+        { archive.process(value) } -> std::same_as<void>;
+    };
+
+    template<typename Archive, typename T>
+    concept decoding_archive_c = requires(Archive &archive, T &value) {
+        { archive.process(value) } -> std::same_as<void>;
+    };
+
     template<typename T>
         requires std::is_default_constructible_v<T>
     T from(auto &archive)

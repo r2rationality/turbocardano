@@ -42,6 +42,22 @@ suite turbo_common_coro_suite = [] {
             expect_equal(std::vector<int> { 1, 2 }, v);
         };
 
+        "generator_t propagates exceptions before and after yielding"_test = [] {
+            for (const bool yield_first: { false, true }) {
+                auto gen = [](const bool yield_first) -> generator_t<int> {
+                    if (yield_first)
+                        co_yield 42;
+                    throw std::runtime_error("generator failure");
+                }(yield_first);
+                if (yield_first) {
+                    expect(fatal(gen.resume()));
+                    expect_equal(gen.result(), 42);
+                }
+                expect(throws<std::runtime_error>([&] { gen.resume(); }));
+                expect(!gen.resume());
+            }
+        };
+
         "generator_t yields values in order"_test = [] {
             auto c = counter(3);
 

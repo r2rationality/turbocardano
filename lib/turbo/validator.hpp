@@ -11,6 +11,7 @@ namespace turbo::cardano::ledger {
 }
 
 namespace turbo::validator {
+    enum class validation_mode { turbo, full, none };
     static constexpr std::string_view validate_task{"validate"};
     static constexpr std::string_view validate_leaders_task{"validate-epoch"};
     static constexpr uint64_t snapshot_format_version = 6;
@@ -71,6 +72,8 @@ namespace turbo::validator {
         [[nodiscard]] const cardano::ledger::state &state() const;
         [[nodiscard]] const snapshot_set &snapshots() const;
         void load_snapshot(cardano::ledger::state &st, const snapshot &snap) const;
+        void checkpoint();
+        validation_mode validation(validation_mode);
     private:
         struct impl;
         std::unique_ptr<impl> _impl;

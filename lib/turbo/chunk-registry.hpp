@@ -171,10 +171,12 @@ namespace turbo {
         std::function<void(const storage::chunk_info &)> on_chunk_add {};
         std::function<void(uint64_t, const epoch_info &)> on_epoch_update {};
         std::function<void(std::string_view, uint64_t, uint64_t)> on_progress {};
+        std::function<void(const storage::chunk_info &, buffer)> on_chunk_data {};
     };
 
     struct chunk_registry {
         enum class mode { store, index, validate };
+        enum class repack_mode_t { full, merge_closed };
 
         struct repack_stats_t {
             size_t chunks_analyzed = 0;
@@ -253,7 +255,7 @@ namespace turbo {
 
         explicit chunk_registry(const std::string &data_dir, mode mode=mode::validate,
             cardano::config ccfg=cardano::config::get(), scheduler &sched=scheduler::get(), file_remover &fr=file_remover::get(),
-            bool auto_maintenance=true, bool validate_vrf=true);
+            bool auto_maintenance=true, bool validate_vrf=true, bool continuous=false);
         ~chunk_registry();
 
         // Interoperability
@@ -265,6 +267,7 @@ namespace turbo {
         void validation_failure_handler(const std::function<void(uint64_t)> &);
         const indexer::incremental &indexer() const;
         const validator::incremental &validator() const;
+        validator::validation_mode validation(validator::validation_mode);
 
         std::optional<active_transaction> tx() const;
         const cardano::config &config() const;
@@ -324,7 +327,12 @@ namespace turbo {
         // state modifying methods
 
         void maintenance();
-        repack_stats_t repack();
+        bool continuous() const noexcept { return _continuous; }
+        // Recovery preserves stored blocks and rebuilds lagging derived state.
+        void recover();
+        repack_stats_t checkpoint();
+        void before_commit(std::function<void()> check) { _before_commit = std::move(check); }
+        repack_stats_t repack(repack_mode_t mode=repack_mode_t::full, size_t fragment_threshold=0);
         void import(const chunk_registry &src_cr);
         progress_point add_buffer(uint64_t offset, uint8_vector uncompressed, std::optional<uint8_vector> compressed={}, int32_t compression_level=0);
         void add_file(uint64_t offset, const std::string &local_path, int32_t compression_level=0);
@@ -340,6 +348,13 @@ namespace turbo {
         std::string node_export_ledger(const std::filesystem::path &ledger_dir, const cardano::optional_point &imm_tip, int prio=1000) const;
     private:
         friend const_iterator;
+
+        struct repack_plan_t;
+        std::unique_ptr<repack_plan_t> _prepare_repack(repack_mode_t mode, size_t fragment_threshold=0) const;
+        repack_stats_t _commit_repack(repack_plan_t &plan);
+
+        const bool _continuous;
+        std::function<void()> _before_commit {};
 
         const std::filesystem::path _data_dir;
         const std::filesystem::path _db_dir;

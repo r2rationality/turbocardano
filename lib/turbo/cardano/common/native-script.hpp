@@ -9,4 +9,6 @@
 namespace turbo::cardano::native_script {
     using optional_error_string = std::optional<std::string>;
     extern optional_error_string validate(cbor::zero2::value &script, uint64_t slot, const signer_set &vkeys);
+    using validity_interval = std::pair<std::optional<uint64_t>, std::optional<uint64_t>>;
+    extern optional_error_string validate(cbor::zero2::value &script, const validity_interval &, const signer_set &vkeys);
 }

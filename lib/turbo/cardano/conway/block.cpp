@@ -20,6 +20,7 @@ namespace turbo::cardano::conway {
         _wits = std::move(decoded.items);
         _redeemers = std::move(decoded.redeemers.items);
         _redeemers_raw = decoded.redeemers.raw;
+        _datum_bytes = decoded.datum_bytes;
         _wits_raw = decoded.raw;
     }
 

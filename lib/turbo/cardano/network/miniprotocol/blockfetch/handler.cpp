@@ -9,8 +9,8 @@
 
 namespace turbo::cardano::network::miniprotocol::blockfetch {
     struct handler::impl {
-        explicit impl(std::shared_ptr<chunk_registry> &&cr, config_t cfg):
-            _cr { std::move(cr) }, _cfg { std::move(cfg) }
+        explicit impl(std::shared_ptr<chain_source> source, config_t cfg):
+            _source { std::move(source) }, _cfg { std::move(cfg) }
         {
             logger::info("created blockfetch handler with block_compression: {}", _cfg.block_compression);
         }
@@ -66,7 +66,7 @@ namespace turbo::cardano::network::miniprotocol::blockfetch {
             std::chrono::system_clock::time_point _start = std::chrono::system_clock::now();
         };
 
-        const std::shared_ptr<const chunk_registry> _cr;
+        const std::shared_ptr<chain_source> _source;
         const config_t _cfg;
         state_t _state {};
         std::optional<point2> _isect {};
@@ -97,45 +97,62 @@ namespace turbo::cardano::network::miniprotocol::blockfetch {
         {
             _state = st_busy_t {};
             logger::info("blockfetch from: {} to: {}", msg.from, msg.to);
-            const auto from_it = _cr->find_block(msg.from);
-            if (from_it == _cr->cend())
-                return _respond(send_func, msg_no_blocks_t {});
-            auto end_it = _cr->find_block(msg.to);
-            if (end_it == _cr->cend())
+            const auto view = _source->current();
+            const auto from = view->find(msg.from);
+            const auto last = view->find(msg.to);
+            if (!from || !last || *last < *from)
                 return _respond(send_func, msg_no_blocks_t {});
             _state = st_streaming_t {};
-            ++end_it;
-            _send(send_func, [](const bool block_compression, auto &state, auto first_it, auto last_it, auto end_it) -> data_generator_t {
-                logger::info("blockfetch msg_start_batch");
+            _send(send_func, [](bool compression, auto &state, std::shared_ptr<chain_source> source,
+                    std::shared_ptr<const chain_source::view> view,
+                    chain_source::view::position pos, chain_source::view::position last) -> data_generator_t {
                 {
-                    cbor::encoder enc {};
+                    cbor::encoder enc;
                     msg_start_batch_t {}.to_cbor(enc);
                     co_yield std::move(enc.cbor());
                 }
-                for (auto it = first_it; it != last_it; ) {
-                    cbor::encoder enc {};
-                    if (block_compression) {
-                        auto [chunk_rem_data, next_it, compression_level] = it.chunk_remaining_data(last_it);
-                        logger::info("blockfetch msg_compressed_blocks from {} to {}", it->slot, next_it != end_it ? std::optional{next_it->slot} : std::nullopt);
-                        msg_compressed_blocks_t {
-                            msg_compressed_blocks_t::encoding_for_compression_level(compression_level),
-                            std::move(chunk_rem_data)
-                        }.to_cbor(enc);
-                        it = next_it;
+                const auto end = view->next(last);
+                while (pos != end) {
+                    const auto &chunk = *view->chunks.at(pos.first);
+                    const auto &first_block = view->block(pos);
+                    const auto end_block = last.first == pos.first ? last.second + 1 : chunk.info.blocks.size();
+                    const auto end_offset = chunk.info.blocks.at(end_block - 1).end_offset();
+                    if (compression) {
+                        auto level = chunk.info.compression_level;
+                        uint8_vector bytes;
+                        if (pos.second == 0 && end_block == chunk.info.blocks.size()) {
+                            bytes = file::read(chunk.path);
+                        } else {
+                            const auto raw = source->read_chunk(chunk);
+                            level = msg_compressed_blocks_t::fast_compression_level;
+                            bytes = zstd::compress(static_cast<buffer>(*raw).subbuf(
+                                first_block.offset - chunk.info.offset, end_offset - first_block.offset), level);
+                        }
+                        cbor::encoder enc;
+                        msg_compressed_blocks_t { msg_compressed_blocks_t::encoding_for_compression_level(level), std::move(bytes) }.to_cbor(enc);
+                        co_yield std::move(enc.cbor());
+                        pos = end_block == chunk.info.blocks.size()
+                            ? chain_source::view::position { pos.first + 1, 0 }
+                            : chain_source::view::position { pos.first, end_block };
                     } else {
-                        msg_block_t { it.block_data() }.to_cbor(enc);
-                        ++it;
+                        const auto raw = source->read_chunk(chunk);
+                        while (pos != end && pos.first < view->chunks.size()
+                                && view->chunks[pos.first].get() == &chunk) {
+                            const auto &blk = view->block(pos);
+                            cbor::encoder enc;
+                            msg_block_t { uint8_vector { static_cast<buffer>(*raw).subbuf(blk.offset - chunk.info.offset, blk.size) } }.to_cbor(enc);
+                            co_yield std::move(enc.cbor());
+                            pos = view->next(pos);
+                        }
                     }
-                    co_yield std::move(enc.cbor());
                 }
-                logger::info("blockfetch msg_batch_done");
                 {
-                    cbor::encoder enc {};
+                    cbor::encoder enc;
                     msg_batch_done_t {}.to_cbor(enc);
                     co_yield std::move(enc.cbor());
                 }
                 state = st_idle_t {};
-            }(_cfg.block_compression, _state, from_it, end_it, _cr->cend()));
+            }(_cfg.block_compression, _state, _source, view, *from, *last));
         }
 
         void _process_st_idle_msg(const buffer bytes, const protocol_send_func &send_func)
@@ -148,8 +165,13 @@ namespace turbo::cardano::network::miniprotocol::blockfetch {
         }
     };
 
-    handler::handler(std::shared_ptr<chunk_registry> cr, config_t cfg):
-        _impl { std::make_unique<impl>(std::move(cr), std::move(cfg)) }
+    handler::handler(std::shared_ptr<chunk_registry> cr, config_t cfg)
+        : handler { std::make_shared<chain_source>(std::move(cr)), std::move(cfg) }
+    {
+    }
+
+    handler::handler(std::shared_ptr<chain_source> source, config_t cfg):
+        _impl { std::make_unique<impl>(std::move(source), std::move(cfg)) }
     {
     }
 

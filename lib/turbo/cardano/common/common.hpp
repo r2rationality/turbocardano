@@ -784,7 +784,7 @@ namespace turbo::cardano {
     }
 
     struct tx_container {
-        using impl_storage = byte_array<1280>; // MS VC++ requires more storage space than GCC and Clang!
+        using impl_storage = byte_array<1320>; // MS VC++ requires more storage space than GCC and Clang!
 
         tx_container(const block_info &meta, uint64_t tx_abs_off, cbor::zero2::value &tx, size_t idx, const config &cfg);
         tx_container(const block_info &meta, uint64_t tx_abs_off, cbor::zero2::value &tx, cbor::zero2::value &wits, size_t idx, const config &cfg);

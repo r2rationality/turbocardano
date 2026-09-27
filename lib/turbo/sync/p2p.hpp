@@ -4,12 +4,13 @@
  * Copyright (c) 2024-2026 R2 Rationality OÜ (info at r2rationality dot com)
  * License: https://github.com/r2rationality/turbocardano/blob/main/LICENSE */
 
+#include <chrono>
 #include <turbo/cardano/common/common.hpp>
 #include <turbo/sync/base.hpp>
 
 namespace turbo::sync::p2p {
     struct peer_info: sync::peer_info {
-        peer_info(std::unique_ptr<cardano::network::client> &&client, const cardano::point3 &tip,
+        peer_info(std::unique_ptr<cardano::network::client> &&client, const cardano::optional_point3 &tip,
                 cardano::optional_point isect):
             _client{std::move(client)},
             _tip{tip},
@@ -17,7 +18,7 @@ namespace turbo::sync::p2p {
         {
         }
 
-        peer_info(std::unique_ptr<cardano::network::client> &&client, const cardano::point3 &tip):
+        peer_info(std::unique_ptr<cardano::network::client> &&client, const cardano::optional_point3 &tip):
             _client{std::move(client)},
             _tip{tip}
         {
@@ -32,7 +33,7 @@ namespace turbo::sync::p2p {
             return fmt::format("{}", _client->addr());
         }
 
-        const cardano::point3 &tip() const override
+        const cardano::optional_point3 &tip() const override
         {
             return _tip;
         }
@@ -53,7 +54,7 @@ namespace turbo::sync::p2p {
         }
     private:
         std::unique_ptr<cardano::network::client> _client;
-        cardano::point3 _tip;
+        cardano::optional_point3 _tip;
         std::optional<cardano::point> _isect{};
     };
 
@@ -72,6 +73,11 @@ namespace turbo::sync::p2p {
             const cardano::network::version_config_t &versions={}) const;
         void cancel_tasks(uint64_t max_valid_offset) override;
         void sync_attempt(sync::peer_info &peer, cardano::optional_slot max_slot) override;
+        // on_update runs on the chain writer after a fully validated commit.
+        void follow(std::stop_token, const std::function<void(const cardano::optional_point &)> &on_update,
+            std::optional<cardano::network::address> addr={},
+            const cardano::network::version_config_t &versions={},
+            std::chrono::seconds checkpoint_interval=std::chrono::seconds { 600 });
     private:
         struct impl;
         std::unique_ptr<impl> _impl;

@@ -45,6 +45,7 @@ namespace {
             const index::timed_update::conway_tx_prelude &prelude,
             const cert_loc_t &loc)
         {
+            _begin_transaction(loc);
             _process_tx_prelude(prelude, loc);
         }
 
@@ -251,10 +252,11 @@ suite cardano_ledger_conway_suite = [] {
         "reg/unreg stake"_test = [&] {
             state st {};
             expect(!st.has_stake(id0));
-            st.process_cert(reg_cert { id0 }, cert_loc_t { 0, 0, 1 });
+            const auto deposit = st.params().key_deposit;
+            st.process_cert(reg_cert { id0, deposit }, cert_loc_t { 0, 0, 1 });
             expect(st.has_stake(id0));
-            st.process_cert(unreg_cert { id0 }, cert_loc_t { 1, 0, 0 });
-            expect(!st.has_drep(id0));
+            st.process_cert(unreg_cert { id0, deposit }, cert_loc_t { 1, 0, 0 });
+            expect(!st.has_stake(id0));
         };
         "update_committee is disallowed during bootstrap"_test = [] {
             state st {};
@@ -336,7 +338,7 @@ suite cardano_ledger_conway_suite = [] {
             st.start_epoch({});
             expect(!st.has_gov_action(gid));
         };
-        "treasury withdrawal proposal may target an unregistered reward account"_test = [] {
+        "treasury withdrawal proposal accepts a recipient registered in the same transaction"_test = [] {
             const auto &cfg = cardano::config::get();
             test_state st {};
             st.protocol_ver({ 10, 0 });
@@ -356,7 +358,17 @@ suite cardano_ledger_conway_suite = [] {
             withdrawals.withdrawals.emplace(reward_id, 2770581);
             withdrawals.policy_id = st.constitution_policy_id();
             p.procedure.action.val = std::move(withdrawals);
-            expect(nothrow([&] { st.process_proposal(p, cert_loc_t { 0, 0, 0 }); }));
+            const auto recipient = address { reward_id }.stake_id();
+            expect(st.has_stake(return_addr));
+            expect(!st.has_stake(recipient));
+            // The return account was registered in transaction 0; the recipient is absent.
+            expect(throws([&] { st.process_proposal(p, cert_loc_t { 0, 1, 0 }); }));
+            expect(!st.has_gov_action(gid));
+            st.process_cert(reg_cert { recipient, st.params().key_deposit }, cert_loc_t { 0, 1, 0 });
+            expect(st.has_stake(recipient));
+            // Concrete Conway GOV sees post-certificate registration.
+            expect(nothrow([&] { st.process_proposal(p, cert_loc_t { 0, 1, 1 }); }));
+            expect(st.has_gov_action(gid));
         };
         "committee voting"_test = [] {
             state st {};

@@ -183,8 +183,6 @@ namespace turbo::sync {
             auto &blk_tuple = dec.read();
             _blocks.emplace_back(std::make_unique<block_container>(numeric_cast<uint64_t>(blk_tuple.data_begin() - _raw_data.data()), blk_tuple));
         }
-        if (_blocks.empty()) [[unlikely]]
-            throw error("test chain cannot be empty!");
     }
 
     void cardano_client_mock::_fetch_blocks_impl(const point2 &from, const point2 &to, const block_handler &handler)

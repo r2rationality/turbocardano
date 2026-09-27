@@ -25,8 +25,6 @@ namespace turbo::cardano {
         };
     }
 
-
-
     void tx_base::foreach_witness_byron_vkey(const byron_vkey_wit_observer_t &observer) const
     {
         for (const auto &w: _wits) {
@@ -46,7 +44,6 @@ namespace turbo::cardano {
                 observer(std::get<tx_wit_shelley_bootstrap>(w));
         }
     }
-
 
     void tx_base::foreach_cert(const cert_observer_t &observer) const
     {
@@ -124,96 +121,9 @@ namespace turbo::cardano {
             observer(redeemer);
     }
 
-    wit_cnt tx_base::witnesses_ok_vkey(signer_set &valid_vkeys) const
-    {
-        valid_vkeys.reserve(valid_vkeys.size() + witnesses().size());
-        const auto &tx_hash = hash();
-        wit_cnt cnts {};
-        foreach_witness([&](const auto &w) {
-            std::visit([&](const auto &wv) {
-                using T = std::decay_t<decltype(wv)>;
-                if constexpr (std::is_same_v<T, tx_wit_byron_vkey>) {
-                    const auto pm = block().header().protocol_magic_raw();
-                    uint8_vector msg {};
-                    msg.reserve(64);
-                    msg << 0x01; // signing tag
-                    msg << pm;   // protocol magic
-                    msg << 0x58; // CBOR bytestring
-                    msg << 0x20; // hash size
-                    msg << tx_hash;
-                    const auto vk_short = static_cast<buffer>(wv.vkey).subbuf(0, 32);
-                    if (!crypto::ed25519::verify(wv.sig, vk_short, msg)) [[unlikely]]
-                        throw error(fmt::format("byron tx witness type 0 failed for tx {}", tx_hash));
-                    valid_vkeys.emplace(crypto::blake2b::digest<key_hash>(vk_short));
-                    ++cnts.vkey;
-                } else if constexpr (std::is_same_v<T, tx_wit_byron_redeemer>) {
-                    const auto pm = block().header().protocol_magic_raw();
-                    uint8_vector msg {};
-                    msg.reserve(64);
-                    msg << 0x02; // signing tag
-                    msg << pm;   // protocol magic
-                    msg << 0x58; // CBOR bytestring
-                    msg << 0x20; // hash size
-                    msg << tx_hash;
-                    if (!crypto::ed25519::verify(wv.sig, wv.vkey, msg)) [[unlikely]]
-                        throw error(fmt::format("byron tx witness type 2 failed for tx {}", tx_hash));
-                    valid_vkeys.emplace(crypto::blake2b::digest<key_hash>(wv.vkey));
-                    ++cnts.vkey;
-                } else if constexpr (std::is_same_v<T, tx_wit_shelley_vkey>) {
-                    if (!crypto::ed25519::verify(wv.sig, wv.vkey, hash())) [[unlikely]]
-                        throw error(fmt::format("shelley vkey witness failed at slot {}: vkey: {}, sig: {} tx_hash: {}", block().slot(), wv.vkey, wv.sig, hash()));
-                    valid_vkeys.emplace(crypto::blake2b::digest<key_hash>(wv.vkey));
-                    ++cnts.vkey;
-                } else if constexpr (std::is_same_v<T, tx_wit_shelley_bootstrap>) {
-                    if (!crypto::ed25519::verify(wv.sig, wv.vkey, hash())) [[unlikely]]
-                        throw error(fmt::format("shelley bootstrap witness failed at slot {}: vkey: {}, sig: {} tx_hash: {}", block().slot(), wv.vkey, wv.sig, hash()));
-                    valid_vkeys.emplace(crypto::blake2b::digest<key_hash>(wv.vkey));
-                    ++cnts.vkey;
-                }
-            }, w);
-        });
-        return cnts;
-    }
+#include <turbo/cardano/ledger/rules/utxow/witnesses.ipp>
 
-    wit_cnt tx_base::witnesses_ok_native(const signer_set &vkeys) const
-    {
-        wit_cnt cnts {};
-        foreach_script([&](const auto &si) {
-            if (si.type() == script_type::native) {
-                auto w_data = cbor::zero2::parse(si.script());
-                if (const auto err = native_script::validate(w_data.get(), block().slot(), vkeys); err) [[unlikely]]
-                    throw error(fmt::format("native script for tx {} failed: {} script: {}", hash(), *err, w_data.get().to_string()));
-                ++cnts.native_script;
-            }
-        });
-        return cnts;
-    }
-
-    wit_cnt tx_base::witnesses_ok_plutus(const plutus::context &ctx) const
-    {
-        wit_cnt cnt {};
-        for (const auto &[rid, rinfo]: ctx.redeemers()) {
-            try {
-                auto ps = ctx.prepare_script(rinfo);
-                ctx.eval_script(ps);
-                cnt += ps.typ;
-            } catch (const std::exception &ex) {
-                throw error(fmt::format("redeemer {}#{}: {}", rinfo.tag, rinfo.ref_idx, ex.what()));
-            }
-        }
-        return cnt;
-    }
-
-    wit_cnt tx_base::witnesses_ok(const plutus::context *ctx) const
-    {
-        wit_cnt cnt {};
-        signer_set valid_vkeys {};
-        cnt += witnesses_ok_vkey(valid_vkeys);
-        cnt += witnesses_ok_native(valid_vkeys);
-        if (ctx)
-            cnt += witnesses_ok_plutus(*ctx);
-        return cnt;
-    }
+#include <turbo/cardano/ledger/rules/utxos/witnesses.ipp>
 
     json::object tx_base::to_json(const tail_relative_stake_map &tail_relative_stake) const
     {

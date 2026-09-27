@@ -113,7 +113,9 @@ namespace turbo {
             }
             _tasks = std::move(new_tasks);
             _finish_tasks(num_cancelled);
-            // no need to notify since cancel does not add new tasks
+            if (num_cancelled)
+                _tasks_done_cv.notify_all();
+            // No worker-queue notification: cancel does not add new tasks.
             return num_cancelled;
         }
 
@@ -199,11 +201,11 @@ namespace turbo {
 
         void wait_all_done(const std::string &task_group, const wait_all_submit_func_t &submit_func)
         {
+            if (_num_workers < 4) [[unlikely]]
+                throw error(fmt::format("wait_all_done relies on a high worker count but got {} worker threads!", _num_workers));
             bool exp_false = false;
             if (!_wait_all_done_running.compare_exchange_strong(exp_false, true)) [[unlikely]]
                 throw error("concurrent wait_all_done calls are not allowed!");
-            if (_num_workers < 4) [[unlikely]]
-                throw error(fmt::format("wait_all_done relies on a high worker count but got {} worker threads!", _num_workers));
             auto state = std::make_shared<wait_all_state>();
             try {
                 static constexpr std::chrono::milliseconds report_period{10000};
@@ -275,6 +277,17 @@ namespace turbo {
                     }
                     state->waiting.store(false, std::memory_order_release);
                 }
+                // todo/errors can report completion before _worker_execute updates
+                // _task_stats[group].queued. on_error() rejects registration while
+                // queued != 0, so wait for that counter before allowing another
+                // wait_all on this group. This is not a full worker-cleanup barrier.
+                {
+                    mutex::unique_lock tasks_lock { _tasks_mutex };
+                    _tasks_done_cv.wait(tasks_lock, [&] {
+                        const auto it = _task_stats.find(task_group);
+                        return it == _task_stats.end() || it->second.queued == 0;
+                    });
+                }
                 _wait_all_done_running = false;
             } catch (const std::exception &ex) {
                 logger::warn("wait_all_done failed with std::exception: {}", ex.what());
@@ -324,6 +337,7 @@ namespace turbo {
 
         mutable mutex::unique_lock::mutex_type _tasks_mutex alignas(mutex::alignment) {};
         std::condition_variable_any _tasks_cv alignas(mutex::alignment) {};
+        std::condition_variable_any _tasks_done_cv {};
         task_queue _tasks {};
         task_stats_map _task_stats {};
 
@@ -434,16 +448,19 @@ namespace turbo {
                 }
             }
             const auto cpu_time = std::chrono::duration<double> { std::chrono::system_clock::now() - start_time }.count();
+            bool group_done = false;
             {
                 mutex::scoped_lock tasks_lock { _tasks_mutex };
                 if (auto it = _task_stats.find(task_group); it != _task_stats.end()) [[unlikely]] {
-                    --it->second.queued;
+                    group_done = --it->second.queued == 0;
                     ++it->second.completed;
                     it->second.cpu_time += cpu_time;
                 } else {
                     logger::error("internal error: unknown task: {}", task_group);
                 }
             }
+            if (group_done)
+                _tasks_done_cv.notify_all();
             if (task_err) [[unlikely]] {
                 std::scoped_lock o_lk { _observers_mutex };
                 if (auto it = _observers.find(task_group); it != _observers.end()) {

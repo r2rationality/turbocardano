@@ -1,3 +1,23 @@
-.git
-log
-tmp
+# Shared build context for the repository-root Dockerfiles.
+**
+!3rdparty/
+!3rdparty/**
+!src/
+!src/**
+!lib/
+!lib/**
+!etc/
+!etc/**
+!data/
+!data/**
+!test/
+!test/**
+!publisher/
+!publisher/**
+!CMakeLists.txt
+!docker-dev.sh
+!docker-test.sh
+!docker-publisher.sh
+
+# Exclude Git metadata, including submodule .git files.
+**/.git

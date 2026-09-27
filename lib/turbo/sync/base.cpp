@@ -4,7 +4,7 @@
  * License: https://github.com/r2rationality/turbocardano/blob/main/LICENSE */
 
 #include <turbo/sync/base.hpp>
-#include <turbo/txwit/validator.hpp>
+#include <turbo/common/scope-exit.hpp>
 
 namespace turbo::sync {
     validation_mode_t validation_mode_from_text(const std::string_view s)
@@ -33,9 +33,19 @@ namespace turbo::sync {
         bool sync(peer_info &peer, cardano::optional_slot max_slot, const validation_mode_t mode)
         {
             logger::info("attempting to sync with {} with the tip {}; validation mode: {}", peer.id(), peer.tip(), mode);
+            // An empty upstream must not cause a local rollback.
+            if (!peer.tip()) return false;
+            const auto near_tip = peer.intersection() && peer.tip().height >= peer.intersection()->height
+                && peer.tip().height - peer.intersection()->height <= 256;
+            const auto previous_mode = _cr.validation(mode == validation_mode_t::turbo && near_tip ? validation_mode_t::full : mode);
+            scope_exit restore_mode { [&] {
+                if (!_cr.tx())
+                    _cr.validation(previous_mode);
+            }};
             const auto start_tip = _cr.tip();
             static constexpr size_t max_retries = 3;
-            const auto peer_tip = cardano::point::from_point3(peer.tip());
+            static constexpr size_t repack_fragment_threshold = 128;
+            const auto peer_tip = cardano::point::from_point3(static_cast<cardano::point3>(peer.tip()));
             progress_point target{peer_tip};
             // explicitly set the max slot to ensure that the progress is computed correctly
             if (!max_slot)
@@ -60,6 +70,10 @@ namespace turbo::sync {
                     // restore-needed files marked until a later successful transaction unmarks them.
                     if (!ex_ptr || made_progress)
                         _cr.remover().remove();
+                    if (made_progress)
+                        logger::run_log_errors([&] {
+                            _cr.repack(chunk_registry::repack_mode_t::merge_closed, repack_fragment_threshold);
+                        });
                     if (!ex_ptr) {
                         break;
                     }
@@ -74,25 +88,7 @@ namespace turbo::sync {
                     }
                 }
             }
-            auto new_local_tip = _cr.tip();
-            if (new_local_tip != peer.intersection() && mode != validation_mode_t::none) {
-                timer t { fmt::format("{} transaction witness validation", mode), logger::level::info };
-                logger::info("the post-download tip: {}", new_local_tip);
-                cardano::optional_point validate_from = peer.intersection();
-                if (mode == validation_mode_t::turbo) {
-                    if (const auto core = _cr.core_tip(); core
-                            && (!peer.intersection() || peer.intersection()->end_offset < core->end_offset))
-                        validate_from = core;
-                }
-                const auto new_valid_tip = txwit::validate(_cr, validate_from, new_local_tip, txwit::witness_type::all);
-                logger::debug("the new valid tip: {}", new_valid_tip);
-                if (new_valid_tip != new_local_tip) {
-                    _cr.truncate(new_valid_tip);
-                    new_local_tip = _cr.tip();
-                }
-            }
-
-            logger::info("the post-txwit tip: {}", new_local_tip);
+            logger::info("the validated tip: {}", _cr.tip());
             // the new chain's tip can be smaller but have a better chain, so compare for equality here
             return start_tip != _cr.tip();
         }

@@ -24,26 +24,36 @@ namespace turbo::cardano::conway {
 
     transaction_output_t transaction_output_t::from_cbor(cbor::zero2::value &v)
     {
-        if (v.type() == cbor::major_type::array)
-            return from_array(v);
-        return { babbage::detail::transaction_output_map_from_cbor(
-            v,
-            [](auto &value) {
-                return std::move(value_t::from_cbor(value).value);
-            },
-            [](auto &script) {
-                return std::move(script_t::from_cbor(script).value);
-            }) };
+        transaction_output_t result {};
+        if (v.type() == cbor::major_type::array) {
+            result = from_array(v);
+        } else {
+            result.value = babbage::detail::transaction_output_map_from_cbor(
+                v,
+                [](auto &value) {
+                    return std::move(value_t::from_cbor(value).value);
+                },
+                [](auto &script) {
+                    return std::move(script_t::from_cbor(script).value);
+                });
+        }
+        result.encoded_size = numeric_cast<uint32_t>(v.data_raw().size());
+        return result;
     }
 
     transaction_outputs_t transaction_outputs_t::from_cbor(cbor::zero2::value &v)
     {
         transaction_outputs_t res {};
-        if (!v.indefinite()) [[likely]]
+        if (!v.indefinite()) [[likely]] {
             res.value.reserve(v.special_uint());
+            res.encoded_sizes.reserve(v.special_uint());
+        }
         auto &it = v.array();
-        while (!it.done())
-            res.value.emplace_back(std::move(transaction_output_t::from_cbor(it.read()).value));
+        while (!it.done()) {
+            auto output = transaction_output_t::from_cbor(it.read());
+            res.encoded_sizes.push_back(output.encoded_size);
+            res.value.emplace_back(std::move(output.value));
+        }
         return res;
     }
 }

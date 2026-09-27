@@ -19,11 +19,7 @@
 namespace turbo {
     namespace detail {
         template<typename K, typename V>
-        using partitioned_map_default_partition = std::map<
-            K,
-            V,
-            std::less<K>,
-            pool_allocator_t<std::pair<const K, V>, 0x1000, true>>;
+        using partitioned_map_default_partition = std::map<K, V, std::less<K>, pmr_pool_allocator_t<std::pair<const K, V>>>;
 
         // A partition must retain key order. Ledger snapshot construction and
         // reward processing rely on ordered traversal, so an unordered policy
@@ -372,9 +368,6 @@ namespace turbo {
             try {
                 auto retired = _make_replacement(part);
                 retired.swap(part);
-                auto alloc = retired.get_allocator();
-                if constexpr (requires { alloc.begin_bulk_release(); })
-                    alloc.begin_bulk_release();
             } catch (...) {
                 // Creating the replacement map can allocate a sentinel node on
                 // some standard libraries. Teardown must still succeed if that

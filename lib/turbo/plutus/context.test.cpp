@@ -12,6 +12,29 @@ using namespace turbo::plutus;
 
 suite plutus_context_suite = [] {
     "plutus::context"_test = [] {
+        "validated purpose bindings survive ownership transfer and freeze with the context"_test = [] {
+            storage::block_info block {};
+            block.era = 7;
+            script_hash policy {};
+            policy[0] = 1;
+            cbor::encoder body {}, witnesses {};
+            body.map(4).uint(0).array(0).uint(1).array(0).uint(2).uint(0);
+            body.uint(9).map(1).bytes(policy).map(1).bytes(uint8_vector {}).uint(1);
+            witnesses.map(0);
+            context ctx { std::move(body.cbor()), std::move(witnesses.cbor()), block };
+            ctx.protocol_ver({ 11, 0 });
+            ctx.set_inputs({}, {});
+            const redeemer_id pointer { redeemer_tag::mint, 0 };
+            expect(ctx.redeemer_script(pointer) == policy); // independent body resolution
+            flat_map<redeemer_id, script_hash> bindings {};
+            bindings.emplace(pointer, policy);
+            ctx.set_script_purposes(std::move(bindings));
+            bindings.clear();
+            expect(ctx.redeemer_script(pointer) == policy);
+            expect(throws([&] { ctx.redeemer_script({ redeemer_tag::mint, 1 }); }));
+            ctx.prepare();
+            expect(throws([&] { ctx.set_script_purposes({}); }));
+        };
         "total redeemer budget"_test = [] {
             const context::redeemer_map redeemers {
                 { redeemer_id { redeemer_tag::spend, 0 },

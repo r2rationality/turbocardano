@@ -73,7 +73,9 @@ namespace turbo::cardano::conway {
             const auto tx_idx = key_v.uint();
             auto &value_v = it.read_val(std::move(key_v));
             const auto old_size = res.size();
-            res.emplace_hint(res.end(), tx_idx, auxiliary_data_t::from_cbor(value_v));
+            auto auxiliary = auxiliary_data_t::from_cbor(value_v);
+            auxiliary.raw = value_v.data_raw();
+            res.emplace_hint(res.end(), tx_idx, std::move(auxiliary));
             if (res.size() == old_size) [[unlikely]]
                 throw error(fmt::format("duplicate Conway auxiliary data index: {}", tx_idx));
         }

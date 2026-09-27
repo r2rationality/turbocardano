@@ -23,7 +23,7 @@ namespace turbo::cli::txwit_all {
         }
 
         void run(const arguments &args, const options &opts) const override {
-            const chunk_registry cr { args.at(0), chunk_registry::mode::validate };
+            const chunk_registry cr { args.at(0), chunk_registry::mode::store };
             optional_point from {};
             if (const auto opt_it = opts.find("from-epoch"); opt_it != opts.end() && opt_it->second) {
                 const auto from_slot = slot::from_epoch(std::stoull(*opt_it->second), cr.config());

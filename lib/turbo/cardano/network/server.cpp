@@ -27,6 +27,7 @@
 #endif
 
 #include <turbo/chunk-registry.hpp>
+#include <turbo/common/scope-exit.hpp>
 #include "miniprotocol/blockfetch/handler.hpp"
 #include "miniprotocol/chainsync/handler.hpp"
 #include "miniprotocol/handshake/handler.hpp"
@@ -34,9 +35,11 @@
 
 namespace turbo::cardano::network {
     struct server::impl {
-        impl(const address &addr, const multiplexer_config_t &&mcfg, const asio::worker_ptr &iow, const config &):
-            _addr { std::move(addr) }, _config { std::move(mcfg) }, _iow { iow }
+        impl(const address &addr, const multiplexer_config_t &&mcfg, const asio::worker_ptr &iow, const config &,
+                size_t max_connections):
+            _addr { std::move(addr) }, _config { std::move(mcfg) }, _iow { iow }, _max_connections { max_connections }
         {
+            if (!_max_connections) throw error("max-connections must be positive");
             std::scoped_lock lk { _futures_mutex };
             _futures.emplace_back(boost::asio::co_spawn(_iow->io_context(), _listen(), boost::asio::use_future));
         }
@@ -55,15 +58,42 @@ namespace turbo::cardano::network {
         {
             while (!_iow->io_context().stopped() && !_destroy) {
                 _iow->io_context().run_for(std::chrono::milliseconds { 100 });
+                std::scoped_lock lk { _futures_mutex };
+                for (auto it = _futures.begin(); it != _futures.end();) {
+                    if (it->wait_for(std::chrono::milliseconds { 0 }) != std::future_status::ready) { ++it; continue; }
+                    logger::run_log_errors([&] { it->get(); });
+                    it = _futures.erase(it);
+                }
+                if (_futures.empty()) _destroy = true;
             }
         }
+        void stop() { _destroy.store(true, std::memory_order_relaxed); }
     private:
         using tcp = boost::asio::ip::tcp;
 
-        struct tcp_connection: connection {
-            tcp_connection(tcp::socket &&conn):
-                _conn { std::move(conn) }
+        struct connection_slot {
+            explicit connection_slot(std::shared_ptr<std::atomic_size_t> count): _count { std::move(count) }
             {
+                _count->fetch_add(1, std::memory_order_relaxed);
+            }
+            ~connection_slot() { _count->fetch_sub(1, std::memory_order_relaxed); }
+        private:
+            std::shared_ptr<std::atomic_size_t> _count;
+        };
+
+        struct tcp_connection: connection {
+            tcp_connection(tcp::socket &&conn, std::unique_ptr<connection_slot> slot):
+                _slot { std::move(slot) }, _conn { std::move(conn) }
+            {
+                _conn.non_blocking(true);
+            }
+
+            void owner(const std::shared_ptr<multiplexer> &m) { _owner = m; }
+
+            void close()
+            {
+                boost::system::error_code ec;
+                _conn.close(ec);
             }
 
             static void process_transfer_result(const std::string_view op_name, const std::error_code ec, const size_t transferred, const size_t expected, const op_observer_ptr observer)
@@ -72,30 +102,40 @@ namespace turbo::cardano::network {
                     observer->failed(fmt::format("asio::{} error: {}", op_name, ec.message()));
                 else if (transferred != expected) [[unlikely]]
                     observer->failed(fmt::format("asio::{}: completed only {} bytes while expected {}", op_name, transferred, expected));
-                else
-                    observer->done();
+                else if (logger::run_log_errors([&] { observer->done(); }))
+                    observer->failed("node-api response processing failed");
             }
 
             size_t available_ingress() const override
             {
-                return _conn.available();
+                if (const auto size = _conn.available()) return size;
+                uint8_t byte;
+                boost::system::error_code ec;
+                const auto size = _conn.receive(boost::asio::buffer(&byte, 1), tcp::socket::message_peek, ec);
+                if (ec == boost::asio::error::would_block || ec == boost::asio::error::try_again) return 0;
+                if (ec) throw error(fmt::format("node-api socket read failed: {}", ec.message()));
+                if (!size) throw error("node-api peer disconnected");
+                return size;
             }
 
             void async_read(const write_buffer buf, op_observer_ptr observer) override
             {
-                boost::asio::async_read(_conn, boost::asio::mutable_buffer { buf.data(), buf.size() }, [observer, buf](const auto &ec, const size_t transferred) {
+                // Cancellation must complete before the multiplexer's buffers are freed.
+                boost::asio::async_read(_conn, boost::asio::mutable_buffer { buf.data(), buf.size() }, [owner=_owner.lock(), observer, buf](const auto &ec, const size_t transferred) {
                     process_transfer_result("read", ec, transferred, buf.size(), observer);
                 });
             }
 
             void async_write(const buffer buf, op_observer_ptr observer) override
             {
-                boost::asio::async_write(_conn, boost::asio::const_buffer { buf.data(), buf.size() }, [buf, observer](const auto &ec, const size_t transferred) {
+                boost::asio::async_write(_conn, boost::asio::const_buffer { buf.data(), buf.size() }, [owner=_owner.lock(), buf, observer](const auto &ec, const size_t transferred) {
                     process_transfer_result("write", ec, transferred, buf.size(), observer);
                 });
             }
         private:
-            tcp::socket _conn;
+            std::unique_ptr<connection_slot> _slot;
+            mutable tcp::socket _conn;
+            std::weak_ptr<multiplexer> _owner;
         };
 
         template<typename H>
@@ -137,10 +177,13 @@ namespace turbo::cardano::network {
                         handler_ptr = std::make_shared<my_op_handler_t<std::decay_t<decltype(handler)>>>(std::move(handler));
                         ioc.post(
                             [m, method, my_handler=handler_ptr]() mutable {
-                                if (m->alive())
-                                    ((*m).*method)(my_handler);
-                                else
-                                    my_handler->failed("multiplexer is not in a working state");
+                                if (logger::run_log_errors([&] {
+                                    if (m->alive())
+                                        ((*m).*method)(my_handler);
+                                    else
+                                        my_handler->failed("multiplexer is not in a working state");
+                                }))
+                                    my_handler->failed("node-api operation failed");
                             }
                         );
                     },
@@ -166,20 +209,28 @@ namespace turbo::cardano::network {
         const address _addr;
         const multiplexer_config_t _config;
         std::shared_ptr<asio::worker> _iow;
+        const size_t _max_connections;
+        const std::shared_ptr<std::atomic_size_t> _open_connections = std::make_shared<std::atomic_size_t>(0);
         std::atomic_bool _destroy { false };
         std::mutex _futures_mutex alignas(mutex::alignment);
         std::vector<std::future<void>> _futures {};
 
-        boost::asio::awaitable<void> _handle_client(tcp::socket conn)
+        boost::asio::awaitable<void> _handle_client(tcp::socket conn, std::unique_ptr<connection_slot> slot)
         {
             using namespace boost::asio::experimental::awaitable_operators;
-            auto m = std::make_shared<multiplexer>(std::make_unique<tcp_connection>(std::move(conn)),
-                multiplexer_config_t { _config });
+            auto transport = std::make_unique<tcp_connection>(std::move(conn), std::move(slot));
+            auto *socket = transport.get();
+            auto m = std::make_shared<multiplexer>(std::move(transport), multiplexer_config_t { _config });
+            socket->owner(m);
+            scope_exit close { [&] { socket->close(); } };
             while (m->alive() && !_destroy.load(std::memory_order_relaxed)) {
+                m->poll();
                 if (m->available_ingress()) {
-                    co_await _async_process(_iow->io_context(),  m, &multiplexer::process_ingress);
+                    const auto res = co_await _async_process(_iow->io_context(), m, &multiplexer::process_ingress);
+                    if (!std::holds_alternative<op_result_ok_t>(res)) co_return;
                 } else if (m->available_egress()) {
-                    co_await _async_process(_iow->io_context(), m, &multiplexer::process_egress);
+                    const auto res = co_await _async_process(_iow->io_context(), m, &multiplexer::process_egress);
+                    if (!std::holds_alternative<op_result_ok_t>(res)) co_return;
                 } else {
                     boost::asio::steady_timer timer { co_await boost::asio::this_coro::executor };
                     timer.expires_after(50ms);
@@ -201,12 +252,19 @@ namespace turbo::cardano::network {
                 boost::asio::steady_timer timer(ex);
                 timer.expires_after(std::chrono::milliseconds { 500ms });
                 auto res = co_await (acceptor.async_accept(boost::asio::use_awaitable) || timer.async_wait(boost::asio::use_awaitable));
+                if (_destroy.load(std::memory_order_relaxed)) break;
                 std::visit([&](auto &&rv) {
                     using T = std::decay_t<decltype(rv)>;
                     if constexpr (std::is_same_v<T, tcp::socket>) {
                         timer.cancel();
+                        if (_open_connections->load(std::memory_order_relaxed) >= _max_connections) {
+                            boost::system::error_code ec;
+                            rv.close(ec);
+                            return;
+                        }
+                        auto slot = std::make_unique<connection_slot>(_open_connections);
                         std::scoped_lock lock { _futures_mutex };
-                        _futures.emplace_back(co_spawn(ex, _handle_client(std::move(rv)), boost::asio::use_future));
+                        _futures.emplace_back(co_spawn(ex, _handle_client(std::move(rv), std::move(slot)), boost::asio::use_future));
                     } else {
                         acceptor.cancel();
                     }
@@ -215,10 +273,35 @@ namespace turbo::cardano::network {
         }
     };
 
-    server server::make_default(const address &addr, const std::string &data_dir, const asio::worker_ptr &iow, const cardano::config &ccfg)
+    server server::make_default(const address &addr, const std::string &data_dir, const asio::worker_ptr &iow,
+            const cardano::config &ccfg, size_t max_connections, size_t cache_bytes)
+    {
+        auto cr = std::make_shared<chunk_registry>(data_dir, chunk_registry::mode::store, ccfg);
+        return make_default(addr, std::make_shared<chain_source>(std::move(cr), cache_bytes), iow, ccfg, max_connections);
+    }
+
+    server server::make_default(const address &addr, std::shared_ptr<chain_source> cr, const asio::worker_ptr &iow,
+            const cardano::config &ccfg, size_t max_connections)
     {
         const auto pm = ccfg.byron_protocol_magic;
-        const auto cr = std::make_shared<chunk_registry>(data_dir, chunk_registry::mode::store, ccfg);
+        struct keepalive_handler: protocol_observer_t {
+            void data(buffer bytes, const protocol_send_func &send) override
+            {
+                auto parsed = cbor::zero2::parse(bytes);
+                auto &items = parsed.get().array();
+                const auto tag = items.read().uint();
+                if (tag == 2) return;
+                if (tag != 0) throw error("invalid KeepAlive request");
+                const auto cookie = items.read().uint();
+                send([](uint64_t cookie) -> data_generator_t {
+                    cbor::encoder enc;
+                    enc.array(2).uint(1).uint(cookie);
+                    co_yield std::move(enc.cbor());
+                }(cookie));
+            }
+            void failed(std::string_view) override {}
+            void stopped() override {}
+        };
         const multiplexer_config_t cfg {
             { mini_protocol::handshake, [pm](const auto &) {
                 return std::make_shared<miniprotocol::handshake::handler>(
@@ -229,16 +312,18 @@ namespace turbo::cardano::network {
                     15
                 );
             } },
+            { mini_protocol::keep_alive, [](const auto &) { return std::make_shared<keepalive_handler>(); } },
             { mini_protocol::chain_sync, [cr](const auto &) { return std::make_shared<miniprotocol::chainsync::handler>(cr); } },
             { mini_protocol::block_fetch, [cr](const auto &res) {
                 return std::make_shared<miniprotocol::blockfetch::handler>(cr, miniprotocol::blockfetch::config_t { .block_compression=res.version>=15 });
             } }
         };
-        return { addr, std::move(cfg), iow, ccfg };
+        return { addr, std::move(cfg), iow, ccfg, max_connections };
     }
 
-    server::server(const address &addr, const multiplexer_config_t &&mcfg, const asio::worker_ptr &iow, const cardano::config &cfg):
-        _impl { std::make_unique<impl>(addr, std::move(mcfg), iow, cfg) }
+    server::server(const address &addr, const multiplexer_config_t &&mcfg, const asio::worker_ptr &iow,
+            const cardano::config &cfg, size_t max_connections):
+        _impl { std::make_unique<impl>(addr, std::move(mcfg), iow, cfg, max_connections) }
     {
     }
 
@@ -247,5 +332,10 @@ namespace turbo::cardano::network {
     void server::run()
     {
         _impl->run();
+    }
+
+    void server::stop()
+    {
+        _impl->stop();
     }
 }

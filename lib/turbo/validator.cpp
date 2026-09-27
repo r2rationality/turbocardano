@@ -14,6 +14,8 @@
 #include <turbo/index/utxo.hpp>
 #include <turbo/index/vrf.hpp>
 #include <turbo/validator.hpp>
+#include <turbo/txwit/validator.hpp>
+#include <turbo/common/scope-exit.hpp>
 #include <turbo/zpp.hpp>
 
 namespace turbo::validator {
@@ -173,7 +175,8 @@ namespace turbo::validator {
             _validate_dir { chunk_registry::init_db_dir((_cr.data_dir() / "validate").string()) },
             _state_path { (_validate_dir / "state.json").string() },
             _state_pre_path { (_validate_dir / "state-pre.json").string() },
-            _state { _cr.config(), _cr.sched(), cardano::ledger::state::init_mode::empty }
+            _state { _cr.config(), _cr.sched(), cardano::ledger::state::init_mode::empty },
+            _witnesses { _cr, _state }, _mode { cr.continuous() ? validation_mode::full : validation_mode::none }
         {
             _load_state(false);
             _cr.register_processor(_proc);
@@ -214,6 +217,8 @@ namespace turbo::validator {
                     _certified_core_offset = 0;
                     logger::info("validator has no applicable snapshots, reprocessing the chain data to create one");
                 }
+                _witnesses.reset();
+                _applied_offset.store(_state.end_offset(), std::memory_order_release);
                 _apply_ledger_updates_fast();
                 _remove_temporary_data();
             }
@@ -221,7 +226,14 @@ namespace turbo::validator {
 
         uint64_t my_end_offset() const
         {
-            return _state.end_offset();
+            return _state.valid_end_offset(_applied_offset.load(std::memory_order_acquire));
+        }
+
+        validation_mode validation(const validation_mode mode)
+        {
+            if (_cr.tx())
+                throw error("cannot change validation mode during an import");
+            return std::exchange(_mode, mode);
         }
 
         void my_start_tx()
@@ -240,17 +252,28 @@ namespace turbo::validator {
                 _schedule_validation(std::move(lk), false);
                 _cr.sched().process(true);
             }
-            if (_snapshots.empty() || _state.end_offset() > _snapshots.rbegin()->end_offset) {
-                _save_state_snapshot();
-                _cr.sched().process(true);
-            }
-            if (_state.valid_end_offset() < _state.end_offset()) [[unlikely]] {
-                throw error(fmt::format("valid subchain end offset: {} is less than the final state end offset: {}",
-                    _state.valid_end_offset(), _state.end_offset()));
+            if (my_end_offset() != _state.end_offset()) [[unlikely]] {
+                throw error(fmt::format("validation reached offset {} but the ledger reached {}",
+                    my_end_offset(), _state.end_offset()));
             }
             if (_reserve_snapshot && _state.valid_end_offset() < _reserve_snapshot->end_offset) [[unlikely]]
                 throw error(fmt::format("valid subchain end offset: {} is less than the reserve state end offset: {}",
                     _state.valid_end_offset(), _reserve_snapshot->end_offset));
+            if (_mode == validation_mode::turbo && _state.end_offset() > _cr.tx()->start_offset())
+                _validate_tail();
+            if (!_cr.continuous() && (_snapshots.empty() || _state.end_offset() > _snapshots.rbegin()->end_offset)) {
+                _save_state_snapshot();
+                _cr.sched().process(true);
+            }
+        }
+
+        void checkpoint()
+        {
+            if (_validation_running || my_end_offset() != _state.end_offset())
+                throw error("checkpoint requires completed validation");
+            _save_state_snapshot();
+            _cr.sched().process(true);
+            _save_json_snapshots(_state_path);
         }
 
         void my_rollback_tx()
@@ -284,12 +307,13 @@ namespace turbo::validator {
 
         void my_on_epoch_update(const uint64_t epoch, const epoch_info &info)
         {
-            // only one thread at a time must work on this
             mutex::unique_lock lk { _next_task_mutex };
-            // slice merge notifications may arrive out of order even though they are scheduled in order
-            if (info.end_offset() > _next_end_offset)
-                _next_end_offset = info.end_offset();
-            _next_tasks.try_emplace(epoch, info.first_slot(), info.last_slot());
+            _next_end_offset = std::max(_next_end_offset, info.end_offset());
+            auto &work = _next_tasks.try_emplace(epoch, info.first_slot(), info.last_slot()).first->second;
+            work.slots = cardano::slot_range {
+                std::min(work.slots.min(), info.first_slot()), std::max(work.slots.max(), info.last_slot())
+            };
+            work.chunks.insert(work.chunks.end(), info.chunks().begin(), info.chunks().end());
             _schedule_validation(std::move(lk), false);
         }
 
@@ -337,35 +361,7 @@ namespace turbo::validator {
             _certified_core_offset = _certified_core ? _certified_core->end_offset : 0;
         }
 
-        void my_on_block_validate(const cardano::block_base &blk) const
-        {
-            auto slot = blk.slot();
-            if (!blk.signature_ok()) [[unlikely]]
-                throw error(fmt::format("validation of the block signature at slot {} failed!", slot));
-            if (blk.era() > 0 && !blk.body_hash_ok()) [[unlikely]]
-                throw error(fmt::format("validation of the block body hash at slot {} failed!", slot));
-            switch (blk.era()) {
-                case 0: {
-                    static auto boundary_issuer_vkey = cardano::vkey::from_hex("0000000000000000000000000000000000000000000000000000000000000000");
-                    if (blk.issuer_vkey() != boundary_issuer_vkey) [[unlikely]]
-                        throw error(fmt::format("boundary block contains an unexpected issuer_vkey: {}", blk.issuer_vkey()));
-                    break;
-                }
-                case 1: {
-                    break;
-                }
-                case 2:
-                case 3:
-                case 4:
-                case 5:
-                case 6:
-                case 7:
-                    // do nothing here, the block signer's eligibility is tested later process_vrf_chunks
-                    break;
-                [[unlikely]] default:
-                    throw error(fmt::format("unsupported block era: {}", blk.era()));
-            }
-        }
+#include <turbo/cardano/ledger/rules/chain/block.ipp>
 
         void my_on_chunk_add(const storage::chunk_info &chunk, const bool fast=false)
         {
@@ -437,7 +433,14 @@ namespace turbo::validator {
         static constexpr uint64_t snapshot_hifreq_distance = static_cast<uint64_t>(1) << 27;
         static constexpr uint64_t snapshot_normal_distance = indexer::merger::part_size * 2;
 
-        using epoch_task_map = std::map<uint64_t, cardano::slot_range>;
+        struct epoch_work {
+            cardano::slot_range slots;
+            storage::chunk_cptr_list chunks {};
+
+            epoch_work(const uint64_t first, const uint64_t last) : slots { first, last } {}
+            explicit epoch_work(const uint64_t slot) : slots { slot } {}
+        };
+        using epoch_task_map = std::map<uint64_t, epoch_work>;
 
         chunk_registry &_cr;
         const bool _validate_vrf;
@@ -445,6 +448,11 @@ namespace turbo::validator {
         const std::string _state_path;
         const std::string _state_pre_path;
         cardano::ledger::state _state;
+        txwit::processor _witnesses;
+        validation_mode _mode;
+        bool _replay_witnesses = false;
+        cardano::optional_point _witness_from {};
+        std::atomic_uint64_t _applied_offset { 0 };
         std::optional<uint64_t> _trusted_shelley_authority_epoch {};
         cardano::optional_point _certified_core {};
         uint64_t _certified_core_offset = 0;
@@ -464,6 +472,11 @@ namespace turbo::validator {
             [this](const auto &block) { my_on_block_validate(block); },
             [this](const auto &chunk) { my_on_chunk_add(chunk); },
             [this](const auto epoch, const auto &info) { my_on_epoch_update(epoch, info); },
+            {},
+            [this](const auto &chunk, const auto bytes) {
+                if (_mode == validation_mode::full)
+                    _witnesses.cache(chunk.data_hash, bytes);
+            }
         };
 
         using authority_control_map = std::map<uint64_t, uint64_t>;
@@ -740,6 +753,9 @@ namespace turbo::validator {
                 if (e.is_regular_file() && !known_files.contains(canon_path))
                     _cr.remover().mark(canon_path);
             }
+            _applied_offset.store(_state.end_offset(), std::memory_order_release);
+            _validation_running = false;
+            _witnesses.reset();
             logger::info("validator snapshot has data up to offset: {}", end_offset);
         }
 
@@ -751,15 +767,55 @@ namespace turbo::validator {
             json::save_pretty(path, j_snapshots);
         }
 
-        uint64_t _load_state_snapshot(const snapshot &snap)
+        uint64_t _load_state_snapshot(const snapshot &snap, const std::string_view prefix="ledger")
         {
             if (snap.certified_core_offset > snap.end_offset) [[unlikely]]
                 throw error("the certified core is beyond its validator snapshot");
-            load_snapshot(_state, snap);
+            _state.clear(cardano::ledger::state::init_mode::empty);
+            _state.load_zpp(_storage_path(prefix, snap.end_offset));
+            if (_state.end_offset() != snap.end_offset)
+                throw error("snapshot does not match its recorded offset");
+            _witnesses.reset();
+            _applied_offset.store(_state.end_offset(), std::memory_order_release);
             _trusted_shelley_authority_epoch = snap.trusted_authority_epoch;
             _certified_core.reset();
             _certified_core_offset = snap.certified_core_offset;
             return _state.end_offset();
+        }
+
+        void _validate_tail()
+        {
+            auto from = _cr.tx()->start;
+            if (const auto core = core_tip(); core && (!from || core->end_offset > from->end_offset))
+                from = core;
+            const auto target = _state.end_offset();
+            const auto first_checked = from ? from->end_offset : 0;
+            if (first_checked == target)
+                return;
+            auto selected = _snapshots.best([&](const auto &snap) { return snap.end_offset <= first_checked; });
+            const auto use_reserve = _reserve_snapshot && _reserve_snapshot->end_offset <= first_checked
+                && (!selected || selected->end_offset < _reserve_snapshot->end_offset);
+            if (use_reserve)
+                _load_state_snapshot(*_reserve_snapshot, "ledger-reserve");
+            else if (selected)
+                _load_state_snapshot(*selected);
+            else {
+                _state.clear();
+                _witnesses.reset();
+                _trusted_shelley_authority_epoch.reset();
+                _certified_core.reset();
+                _certified_core_offset = 0;
+                _applied_offset.store(0, std::memory_order_release);
+            }
+            _witness_from = from;
+            _replay_witnesses = true;
+            scope_exit reset { [&] {
+                _witness_from.reset();
+                _replay_witnesses = false;
+            }};
+            _apply_ledger_updates_fast();
+            if (_state.end_offset() != target || my_end_offset() != target)
+                throw error("turbo witness replay did not reach the candidate tip");
         }
 
         std::string _storage_path(const std::string_view &prefix, uint64_t end_offset) const
@@ -771,8 +827,23 @@ namespace turbo::validator {
         {
             const auto &first_block = _cr.chunks().begin()->second.blocks.front();
             const auto &last_block = _cr.find_block_by_offset(_state.end_offset() - 1);
+            // Heights can start at zero and Byron boundary blocks can share a
+            // height. Count the stored prefix, including a partial final chunk.
+            size_t num_blocks = 0;
+            for (const auto &[offset, chunk]: _cr.chunks()) {
+                if (chunk.offset >= _state.end_offset())
+                    break;
+                if (chunk.end_offset() <= _state.end_offset()) {
+                    num_blocks += chunk.blocks.size();
+                } else {
+                    const auto end = std::lower_bound(chunk.blocks.begin(), chunk.blocks.end(), _state.end_offset(),
+                        [](const auto &block, const auto end_offset) { return block.offset < end_offset; });
+                    num_blocks += static_cast<size_t>(end - chunk.blocks.begin());
+                    break;
+                }
+            }
             subchain_list tmp_sc {};
-            tmp_sc.add(subchain { 0, _state.end_offset(), last_block.height, last_block.height,
+            tmp_sc.add(subchain { 0, _state.end_offset(), num_blocks, num_blocks,
                 first_block.slot, first_block.hash, last_block.slot, last_block.hash });
             return tmp_sc;
         }
@@ -825,11 +896,9 @@ namespace turbo::validator {
             }
         }
 
-        // Compressed data is there and most indices have already been created and merged
-        // Recreate only temporary indices and apply updates without revalidating the data
-        // since it already has been validated up to this point
         void _apply_ledger_updates_fast()
         {
+            _remove_temporary_data();
             std::vector<index::indexer_base *> idxrs {};
             for (const auto &[name, idxr]: _cr.indexer().indexers()) {
                 if (!idxr->mergeable())
@@ -840,18 +909,27 @@ namespace turbo::validator {
             const auto state_start_offset = _state.end_offset();
             if (state_start_offset < _cr.num_bytes()) {
                 auto it = _cr.find_offset_it(state_start_offset);
-                if (it->second.offset != state_start_offset) [[unlikely]]
-                    throw error("internal error: a chunk that doesn't begin right after the snapshot's end");
                 for (; it != _cr.chunks().end(); ++it) {
-                    const auto &chunk = it->second;
-                    const auto chunk_path = _cr.full_path(it->second.rel_path());
+                    auto chunk = it->second;
+                    const auto raw_offset = chunk.offset;
+                    const auto chunk_path = _cr.full_path(chunk.rel_path());
+                    if (chunk.offset < state_start_offset) {
+                        std::erase_if(chunk.blocks, [state_start_offset](const auto &b) { return b.end_offset() <= state_start_offset; });
+                        if (chunk.blocks.empty() || chunk.blocks.front().offset != state_start_offset)
+                            throw error("snapshot does not end at a block boundary");
+                        chunk.data_size -= state_start_offset - chunk.offset;
+                        chunk.offset = state_start_offset;
+                        chunk.first_slot = chunk.blocks.front().slot;
+                        chunk.num_blocks = chunk.blocks.size();
+                    }
                     for (const auto slot: { chunk.first_slot, chunk.last_slot }) {
                         const auto chunk_slot = _cr.make_slot(slot);
                         const auto [task_it, task_created] = _next_tasks.try_emplace(chunk_slot.epoch(), slot);
                         if (!task_created)
-                            task_it->second.update(slot);
+                            task_it->second.slots.update(slot);
                     }
-                    _cr.sched().submit("parse-fast", 100, [this, state_start_offset, chunk, chunk_path, &idxrs] {
+                    _next_tasks.at(_cr.make_slot(chunk.first_slot).epoch()).chunks.push_back(&it->second);
+                    _cr.sched().submit("parse-fast", 100, [this, state_start_offset, chunk, raw_offset, chunk_path, &idxrs] {
                         indexer::chunk_indexer_list chunk_indexers {};
                         for (auto *idxr_ptr: idxrs)
                             chunk_indexers.emplace_back(idxr_ptr->make_chunk_indexer("update", chunk.offset));
@@ -859,7 +937,7 @@ namespace turbo::validator {
                         cbor::zero2::decoder dec { raw_data };
                         while (!dec.done()) {
                             auto &block_tuple = dec.read();
-                            const cardano::block_container blk { numeric_cast<uint64_t>(chunk.offset + block_tuple.data_begin() - raw_data.data()), block_tuple, _cr.config() };
+                            const cardano::block_container blk { numeric_cast<uint64_t>(raw_offset + block_tuple.data_begin() - raw_data.data()), block_tuple, _cr.config() };
                             if (blk.offset() >= state_start_offset) {
                                 for (auto &idxr: chunk_indexers)
                                     idxr->index(blk);
@@ -978,8 +1056,9 @@ namespace turbo::validator {
             }
         }
 
-        void _apply_ledger_state_updates_for_epoch(uint64_t e, const cardano::slot_range &slots, bool fast)
+        void _apply_ledger_state_updates_for_epoch(uint64_t e, const epoch_work &work, bool fast)
         {
+            const auto &slots = work.slots;
             timer te { fmt::format("apply_ledger_state_updates for epoch {}", e) };
             try {
                 const auto last_epoch = _state.epoch();
@@ -1004,14 +1083,11 @@ namespace turbo::validator {
                         _gather_updates<index::timed_update::indexer>(updates.timed, "timed-update", slots, last_offset);
                     }
                     const auto authority_controls = _authority_controls(updates.timed);
-                    const auto utxo_chunks = dynamic_cast<index::utxo::indexer &>(*_cr.indexer().indexers().at("utxo")).chunks(slots);
-                    {
-                        turbo::timer t { fmt::format("validator epoch {} load utxo updates", e), logger::level::trace };
+                    if ((!fast && _mode == validation_mode::full) || _replay_witnesses) {
+                        _witnesses.apply(work.chunks, _witness_from);
+                    } else {
+                        const auto utxo_chunks = dynamic_cast<index::utxo::indexer &>(*_cr.indexer().indexers().at("utxo")).chunks(slots);
                         _load_utxo_updates(updates, e, last_offset, "utxo", utxo_chunks);
-                    }
-                    {
-                        turbo::timer t { fmt::format("validator epoch {} process ledger updates blocks: {} timed: {} utxo_batches: {}",
-                            e, updates.blocks.size(), updates.timed.size(), updates.utxos.size()), logger::level::trace };
                         _state.process_updates(std::move(updates));
                     }
                     _certify_authority_controls(authority_controls, e);
@@ -1021,8 +1097,9 @@ namespace turbo::validator {
                         turbo::timer t { fmt::format("validator epoch {} process vrf update chunks: {}", e, vrf_chunks.size()), logger::level::trace };
                         _process_vrf_update_chunks(*min_epoch_offset, vrf_chunks, fast);
                     }
+                    _applied_offset.store(_state.end_offset(), std::memory_order_release);
 
-                    if (_cr.tx()->target && _state.params().protocol_ver.major >= 3) {
+                    if (!fast && !_cr.continuous() && _cr.tx()->target && _state.params().protocol_ver.major >= 3) {
                         if (const auto target_slot = _cr.make_slot(_cr.tx()->target->slot); target_slot.epoch() >= 2) {
                             const auto target_epoch_start = cardano::slot::from_epoch(target_slot.epoch(), _cr.config());
                             const bool prev_epoch_ok = (_cr.tx()->target->slot - target_epoch_start) >= _cr.config().shelley_randomness_stabilization_window;
@@ -1051,11 +1128,12 @@ namespace turbo::validator {
             const auto last_epoch = tasks.rbegin()->first;
             const timer t{fmt::format("validator::_apply_ledger_state_updates first_epoch: {} last_epoch: {} fast: {}", first_epoch, last_epoch, fast), logger::level::debug};
             // add extra snapshots closer to the tip since rollbacks are more likely there
-            for (const auto &[e, slots]: tasks) {
+            for (const auto &[e, work]: tasks) {
+                const auto &slots = work.slots;
                 logger::debug("validator::_apply_ledger_state_updates: epoch: {} slots: {}-{}",
                     e, _cr.make_slot(slots.min()).epoch_slot(), _cr.make_slot(slots.max()).epoch_slot());
                 try {
-                    _apply_ledger_state_updates_for_epoch(e, slots, fast);
+                    _apply_ledger_state_updates_for_epoch(e, work, fast);
                     logger::info("validator::_apply_ledger_state_updates: complete for epoch: {} end offset: {} utxos: {}", _state.epoch(), _state.end_offset(), _state.utxos().size());
                 } catch (const std::exception &ex) {
                     logger::error("failed to process epoch {} updates: {}", e, ex.what());
@@ -1142,6 +1220,8 @@ namespace turbo::validator {
             timer t { fmt::format("processed VRF nonce updates for epoch {}", epoch) };
             const auto vrf_updates_ptr = std::make_shared<std::vector<index::vrf::item>>();
             for (const uint64_t chunk_id: chunks) {
+                if (chunk_id < epoch_min_offset)
+                    continue;
                 const auto chunk_path = fmt::format("{}.bin", _cr.indexer().indexers().at("vrf")->chunk_path("update", chunk_id));
                 std::vector<index::vrf::item> chunk_updates {};
                 zpp::load_zstd(chunk_updates, chunk_path);
@@ -1215,6 +1295,16 @@ namespace turbo::validator {
     const snapshot_set &incremental::snapshots() const
     {
         return _impl->snapshots();
+    }
+
+    validation_mode incremental::validation(const validation_mode mode)
+    {
+        return _impl->validation(mode);
+    }
+
+    void incremental::checkpoint()
+    {
+        _impl->checkpoint();
     }
 
     void incremental::load_snapshot(cardano::ledger::state &st, const snapshot &snap) const

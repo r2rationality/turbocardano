@@ -49,13 +49,13 @@ namespace turbo::cardano::network {
             }
         }
 
-        void find_intersection_impl(const point2_list &points, const find_handler &handler)
+        void find_intersection_impl(const optional_point2_list &points, const find_handler &handler)
         {
             std::scoped_lock lk { _futures_mutex };
             _futures.emplace_back(boost::asio::co_spawn(_asio_worker->io_context(), _find_intersection(points, handler), boost::asio::use_future));
         }
 
-        void fetch_headers_impl(const point2_list &points, const size_t max_blocks, const header_handler &handler)
+        void fetch_headers_impl(const optional_point2_list &points, const size_t max_blocks, const header_handler &handler)
         {
             std::scoped_lock lk { _futures_mutex };
             _futures.emplace_back(boost::asio::co_spawn(_asio_worker->io_context(), _fetch_headers(points, max_blocks, handler), boost::asio::use_future));
@@ -66,6 +66,16 @@ namespace turbo::cardano::network {
             logger::debug("fetch_blocks from: {} to: {}", from, to);
             std::scoped_lock lk { _futures_mutex };
             _futures.emplace_back(boost::asio::co_spawn(_asio_worker->io_context(), _fetch_blocks(from, to, handler), boost::asio::use_future));
+        }
+
+        chain_update next_header_sync(const std::stop_token stop, const std::function<void()> &idle)
+        {
+            auto f = boost::asio::co_spawn(_asio_worker->io_context(), _next_header(stop), boost::asio::use_future);
+            while (f.wait_for(std::chrono::milliseconds { 100 }) != std::future_status::ready) {
+                if (idle)
+                    logger::run_log_errors(idle);
+            }
+            return f.get();
         }
 
         void process_impl(scheduler *sched, asio::worker *iow)
@@ -139,7 +149,7 @@ namespace turbo::cardano::network {
             co_return recv_payload;
         }
 
-        static boost::asio::awaitable<uint8_vector> _send_request(tcp::socket &socket, const mini_protocol mp_id, const buffer &data)
+        static boost::asio::awaitable<void> _write_request(tcp::socket &socket, const mini_protocol mp_id, const buffer &data)
         {
             if (data.size() >= (1 << 16)) [[unlikely]]
                 throw error(fmt::format("payload is larger than allowed: {}!", data.size()));
@@ -150,6 +160,11 @@ namespace turbo::cardano::network {
             segment << buffer::from(send_info);
             segment << data;
             co_await _wait_with_deadline(async_write(socket, boost::asio::const_buffer { segment.data(), segment.size() }, boost::asio::use_awaitable));
+        }
+
+        static boost::asio::awaitable<uint8_vector> _send_request(tcp::socket &socket, const mini_protocol mp_id, const buffer &data)
+        {
+            co_await _write_request(socket, mp_id, data);
             co_return co_await _read_response(socket, mp_id);
         }
 
@@ -189,7 +204,7 @@ namespace turbo::cardano::network {
         }
 
         boost::asio::awaitable<intersection_info_t>
-        _find_intersection_do(point2_list points)
+        _find_intersection_do(optional_point2_list points)
         {
             if (!_conn)
                 _conn = co_await _connect_and_handshake();
@@ -201,12 +216,13 @@ namespace turbo::cardano::network {
             auto &resp_arr = resp_cbor.get().array();
             switch (const auto typ = resp_arr.read().uint(); typ) {
                 case 5: {
-                    isect.isect = point2::from_cbor(resp_arr.read());
-                    isect.tip = point3::from_cbor(resp_arr.read());
+                    isect.found = true;
+                    isect.isect = optional_point2::from_cbor(resp_arr.read());
+                    isect.tip = optional_point3::from_cbor(resp_arr.read());
                     break;
                 }
                 case 6: {
-                    isect.tip = point3::from_cbor(resp_arr.read());
+                    isect.tip = optional_point3::from_cbor(resp_arr.read());
                     break;
                 }
                 [[unlikely]] default:
@@ -215,7 +231,7 @@ namespace turbo::cardano::network {
             co_return isect;
         }
 
-        boost::asio::awaitable<void> _find_intersection(point2_list points, const find_handler handler)
+        boost::asio::awaitable<void> _find_intersection(optional_point2_list points, const find_handler handler)
         {
             try {
                 auto isect = co_await _find_intersection_do(std::move(points));
@@ -244,13 +260,14 @@ namespace turbo::cardano::network {
             using namespace boost::asio::experimental::awaitable_operators;
             auto res = co_await (std::move(action) || _wait_for_timer(deadline));
             if (std::holds_alternative<timer_stopped_t>(res)) [[unlikely]]
-                throw error("blockfetch: failed to receive the next block within the allotted timeframe from the peer");
+                throw error(fmt::format("network operation timed out after {} seconds", deadline.count()));
             if constexpr (!std::is_same_v<T, void>)
                 co_return std::move(std::get<T>(res));
         }
 
         static boost::asio::awaitable<void> _receive_blocks(tcp::socket &socket, uint8_vector parse_buf, const block_handler &handler)
         {
+            bool deliver = true;
             for (;;) {
                 while (!parse_buf.empty()) {
                     try {
@@ -259,11 +276,11 @@ namespace turbo::cardano::network {
                         const auto go_on = std::visit([&](auto &&mv) -> bool {
                             using T = std::decay_t<decltype(mv)>;
                             if constexpr (std::is_same_v<T, miniprotocol::blockfetch::msg_block_t>) {
-                                if (!handler(block_response_t { std::move(mv) }))
-                                    return false;
+                                if (deliver)
+                                    deliver = handler(block_response_t { std::move(mv) });
                             } else if constexpr (std::is_same_v<T, miniprotocol::blockfetch::msg_compressed_blocks_t>) {
-                                if (!handler(block_response_t { std::move(mv) }))
-                                    return false;
+                                if (deliver)
+                                    deliver = handler(block_response_t { std::move(mv) });
                             } else if constexpr (std::is_same_v<T, miniprotocol::blockfetch::msg_batch_done_t>) {
                                 return false;
                             } else {
@@ -326,33 +343,115 @@ namespace turbo::cardano::network {
             }
         }
 
-        static point _decode_point_2(cbor::zero2::array_reader &it)
+        // One operation owns the socket. KeepAlive may interleave with the
+        // delayed ChainSync response, but no second coroutine reads the stream.
+        boost::asio::awaitable<chain_update> _next_header(const std::stop_token stop)
         {
-            const auto pnt_slot = it.read().uint();
-            return { it.read().bytes(), pnt_slot };
+            if (!_conn)
+                throw error("ChainSync requires an established intersection");
+            cbor::encoder req {};
+            miniprotocol::chainsync::msg_request_next_t {}.to_cbor(req);
+            co_await _write_request(*_conn, mini_protocol::chain_sync, req.cbor());
+            uint8_vector pending {};
+            uint8_vector keepalive_bytes {};
+            bool awaiting = false;
+            std::optional<chain_update> result;
+            bool keepalive_pending = false;
+            auto last_keepalive = std::chrono::steady_clock::now();
+            auto last_progress = last_keepalive;
+            for (;;) {
+                if (stop.stop_requested())
+                    throw error("ChainSync stopped");
+                while (!pending.empty()) {
+                    try {
+                        auto parsed = cbor::zero2::parse(pending);
+                        auto &items = parsed.get().array();
+                        const auto type = items.read().uint();
+                        std::optional<chain_update> update;
+                        switch (type) {
+                            case 1:
+                                break;
+                            case 2: {
+                                const auto header = parsed_header::from_cbor(items.read(), _cfg);
+                                auto tip = optional_point3::from_cbor(items.read());
+                                if (!tip) throw error("RollForward with a tip at origin");
+                                update = chain_update { false, point2 { header->slot(), header->hash() }, std::move(tip) };
+                                break;
+                            }
+                            case 3: {
+                                const auto target = optional_point2::from_cbor(items.read());
+                                update = chain_update { true, target, optional_point3::from_cbor(items.read()) };
+                                break;
+                            }
+                            default: throw error("unexpected persistent ChainSync response");
+                        }
+                        const auto consumed = parsed.get().data_raw().size();
+                        if (type == 1) {
+                            if (awaiting) throw error("duplicate AwaitReply");
+                            awaiting = true;
+                        } else {
+                            result = std::move(update);
+                        }
+                        pending.erase(pending.begin(), pending.begin() + consumed);
+                    } catch (const cbor::zero2::incomplete_error &) {
+                        // A CBOR message may span mux segments.
+                        break;
+                    }
+                    if (result && !keepalive_pending) co_return *result;
+                }
+                const auto now = std::chrono::steady_clock::now();
+                if (!awaiting && now - last_progress > std::chrono::seconds { 30 })
+                    throw error("ChainSync response timed out");
+                if (keepalive_pending && now - last_keepalive > std::chrono::seconds { 60 })
+                    throw error("KeepAlive response timed out");
+                if (!result && awaiting && !keepalive_pending && now - last_keepalive > std::chrono::seconds { 30 }) {
+                    cbor::encoder enc {};
+                    enc.array(2).uint(0).uint(0);
+                    co_await _write_request(*_conn, mini_protocol::keep_alive, enc.cbor());
+                    keepalive_pending = true;
+                    last_keepalive = now;
+                }
+                if (!_conn->available()) {
+                    boost::asio::steady_timer timer { co_await boost::asio::this_coro::executor };
+                    timer.expires_after(std::chrono::milliseconds { 100 });
+                    using namespace boost::asio::experimental::awaitable_operators;
+                    const auto ready = co_await (_conn->async_wait(tcp::socket::wait_read, boost::asio::use_awaitable)
+                        || timer.async_wait(boost::asio::use_awaitable));
+                    if (ready.index() != 0) continue;
+                }
+                segment_info hdr {};
+                co_await _wait_with_deadline(boost::asio::async_read(*_conn, boost::asio::buffer(&hdr, sizeof(hdr)), boost::asio::use_awaitable));
+                uint8_vector bytes(hdr.payload_size());
+                co_await _wait_with_deadline(boost::asio::async_read(*_conn, boost::asio::buffer(bytes.data(), bytes.size()), boost::asio::use_awaitable));
+                if (hdr.mode() != channel_mode::responder)
+                    throw error("unexpected mux direction");
+                if (hdr.mini_protocol_id() == mini_protocol::chain_sync) {
+                    pending << bytes;
+                    if (pending.size() > (1U << 20))
+                        throw error("oversized ChainSync response");
+                    last_progress = now;
+                } else if (hdr.mini_protocol_id() == mini_protocol::keep_alive) {
+                    keepalive_bytes << bytes;
+                    if (keepalive_bytes.size() > 32)
+                        throw error("oversized KeepAlive response");
+                    try {
+                        auto response = cbor::zero2::parse(keepalive_bytes);
+                        auto &items = response.get().array();
+                        if (!keepalive_pending || items.read().uint() != 1 || items.read().uint() != 0)
+                            throw error("unexpected KeepAlive response");
+                        keepalive_bytes.clear();
+                        keepalive_pending = false;
+                        if (result) co_return *result;
+                    } catch (const cbor::zero2::incomplete_error &) {
+                        // KeepAlive messages can also span mux segments.
+                    }
+                } else {
+                    throw error("unexpected mini-protocol while following");
+                }
+            }
         }
 
-        static point _decode_point_2(cbor::zero2::value &v)
-        {
-            return _decode_point_2(v.array());
-        }
-
-        static point _decode_point_3(cbor::zero2::value &v)
-        {
-            auto &it = v.array();
-            auto p = _decode_point_2(it.read());
-            p.height = it.read().uint();
-            return p;
-        }
-
-        static std::optional<point> _decode_intersect(cbor::zero2::value &v)
-        {
-            if (v.indefinite() || v.special_uint() > 0)
-                return _decode_point_2(v);
-            return {};
-        }
-
-        boost::asio::awaitable<void> _fetch_headers(point2_list points, const size_t max_blocks, const header_handler handler)
+        boost::asio::awaitable<void> _fetch_headers(optional_point2_list points, const size_t max_blocks, const header_handler handler)
         {
             try {
                 header_list headers {};
@@ -368,8 +467,8 @@ namespace turbo::cardano::network {
                     if (typ == 1)
                         break;
                     if (typ == 3) {
-                        auto intersect = _decode_intersect(resp_it.read());
-                        isect.tip = _decode_point_3(resp_it.read());
+                        auto intersect = optional_point2::from_cbor(resp_it.read());
+                        isect.tip = optional_point3::from_cbor(resp_it.read());
                         if (isect.isect == intersect)
                             continue;
                         break;
@@ -380,8 +479,9 @@ namespace turbo::cardano::network {
                         const auto hdr = parsed_header::from_cbor(resp_it.read(), _cfg);
                         headers.emplace_back(hdr->slot(), hdr->hash());
                     }
-                    isect.tip = _decode_point_3(resp_it.read());
-                    if (headers.back().hash == isect.tip.hash)
+                    isect.tip = optional_point3::from_cbor(resp_it.read());
+                    if (!isect.tip) throw error("RollForward with a tip at origin");
+                    if (headers.back().hash == isect.tip->hash)
                         break;
                 }
                 handler(header_response { _addr, isect.isect, isect.tip, std::move(headers) });
@@ -402,12 +502,17 @@ namespace turbo::cardano::network {
 
     client_connection::~client_connection() =default;
 
-    void client_connection::_find_intersection_impl(const point2_list &points, const find_handler &handler)
+    void client_connection::_find_intersection_impl(const optional_point2_list &points, const find_handler &handler)
     {
         _impl->find_intersection_impl(points, handler);
     }
 
-    void client_connection::_fetch_headers_impl(const point2_list &points, const size_t max_blocks, const header_handler &handler)
+    client::chain_update client_connection::next_header_sync(const std::stop_token stop, const std::function<void()> &idle)
+    {
+        return _impl->next_header_sync(stop, idle);
+    }
+
+    void client_connection::_fetch_headers_impl(const optional_point2_list &points, const size_t max_blocks, const header_handler &handler)
     {
         _impl->fetch_headers_impl(points, max_blocks, handler);
     }

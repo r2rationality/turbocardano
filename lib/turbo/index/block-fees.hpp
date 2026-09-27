@@ -34,20 +34,7 @@ namespace turbo::index::block_fees {
     struct chunk_indexer: chunk_indexer_one_epoch<item> {
         using chunk_indexer_one_epoch::chunk_indexer_one_epoch;
     protected:
-        void _index_epoch(const cardano::block_container &blk, data_type &idx) override
-        {
-            uint64_t fees = 0;
-            uint64_t donations = 0;
-            blk->foreach_tx([&](const auto &tx) {
-                if (blk->era() > 1) // byron era validation does not require access to fees, which itself are harder to compute
-                    fees += tx.fee();
-                if (const auto *c_tx = dynamic_cast<const cardano::conway::tx *>(&tx); c_tx) {
-                    if (const auto d = c_tx->donation(); d)
-                        donations += d;
-                }
-            });
-            idx.emplace_back(blk->slot(), blk->issuer_hash(), fees, donations, blk.offset() + blk.size(), numeric_cast<uint8_t>(blk->era()));
-        }
+#include <turbo/cardano/ledger/rules/block-body/index.ipp>
     };
     using indexer = indexer_one_epoch<chunk_indexer>;
 }

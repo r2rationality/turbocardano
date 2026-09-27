@@ -15,6 +15,7 @@ suite txwit_validator_suite = [] {
     "txwit::validator"_test = [] {
         static const std::string src_dir { "./data/chunk-registry"s };
         const chunk_registry cr { src_dir, chunk_registry::mode::store };
-        txwit::validate(cr, {}, cr.find_block_by_slot(7167).point());
+        const cardano::optional_point target { cr.find_block_by_slot(7167).point() };
+        expect_equal(txwit::validate(cr, {}, target), target);
     };
 };

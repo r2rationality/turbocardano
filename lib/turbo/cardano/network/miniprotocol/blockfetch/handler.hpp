@@ -6,6 +6,7 @@
 
 #include <turbo/cardano/network/multiplexer.hpp>
 #include <turbo/chunk-registry-fwd.hpp>
+#include <turbo/cardano/network/chain-source.hpp>
 #include "types.hpp"
 
 namespace turbo::cardano::network::miniprotocol::blockfetch
@@ -16,6 +17,7 @@ namespace turbo::cardano::network::miniprotocol::blockfetch
 
     struct handler: protocol_observer_t {
         handler(std::shared_ptr<chunk_registry>, config_t={});
+        handler(std::shared_ptr<chain_source>, config_t={});
         ~handler() override;
         void data(buffer, const protocol_send_func &) override;
         void failed(std::string_view) override;

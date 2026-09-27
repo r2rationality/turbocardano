@@ -40,7 +40,7 @@ namespace {
         bench_key,
         bench_value,
         map_partition<std::allocator<value_type>>>;
-    using turbo_pool_map = partitioned_map<bench_key, bench_value>;
+    using pmr_pool_map = partitioned_map<bench_key, bench_value>;
     using boost_fast_pool_map = partitioned_map<
         bench_key,
         bench_value,
@@ -82,8 +82,8 @@ suite partitioned_map_bench_suite = [] {
             .minEpochIterations(1)
             .batch(num_operations)
             .relative(true);
-        b.run("std::allocator (mimalloc override)", [] { allocator_workload<standard_map>(); });
-        b.run("turbo::pool_allocator", [] { allocator_workload<turbo_pool_map>(); });
+        b.run("std::allocator", [] { allocator_workload<standard_map>(); });
+        b.run("std::pmr::unsynchronized_pool_resource", [] { allocator_workload<pmr_pool_map>(); });
         b.run("boost::fast_pool_allocator (singleton)", [] { allocator_workload<boost_fast_pool_map>(); });
         b.run("boost::container::adaptive_pool (shared)", [] { allocator_workload<boost_adaptive_map>(); });
         b.run("boost::container::private_adaptive_pool", [] { allocator_workload<boost_private_adaptive_map>(); });

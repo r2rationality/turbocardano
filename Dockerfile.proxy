@@ -1,0 +1,78 @@
+# syntax=docker/dockerfile:1
+
+FROM ubuntu:26.04 AS builder
+LABEL maintainer="R2 Rationality <info@r2rationality.com>"
+ARG DEBIAN_FRONTEND=noninteractive
+
+# Use the same toolchain and libraries as Dockerfile.test.
+RUN --mount=type=cache,id=turbocardano-test-apt-cache-resolute,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,id=turbocardano-test-apt-lib-resolute,target=/var/lib/apt,sharing=locked \
+    rm -f /etc/apt/apt.conf.d/docker-clean && \
+    apt-get update && \
+    apt-get install -y --no-install-recommends \
+        build-essential \
+        ca-certificates \
+        cmake \
+        libboost-url1.83-dev \
+        libboost1.83-all-dev \
+        libbotan-3-dev \
+        libfmt-dev \
+        libsecp256k1-dev \
+        libsodium-dev \
+        libspdlog-dev \
+        libssl-dev \
+        libzstd-dev \
+        ninja-build \
+        pkg-config
+
+WORKDIR /opt/tada
+COPY 3rdparty ./3rdparty
+COPY src ./src
+COPY lib ./lib
+COPY etc ./etc
+COPY data ./data
+COPY test ./test
+COPY CMakeLists.txt ./CMakeLists.txt
+RUN cmake -B build -GNinja && cmake --build build -j -t tada
+
+FROM ubuntu:26.04
+LABEL maintainer="R2 Rationality <info@r2rationality.com>"
+ARG DEBIAN_FRONTEND=noninteractive
+
+RUN --mount=type=cache,id=turbocardano-test-apt-cache-resolute,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,id=turbocardano-test-apt-lib-resolute,target=/var/lib/apt,sharing=locked \
+    rm -f /etc/apt/apt.conf.d/docker-clean && \
+    apt-get update && \
+    apt-get install -y --no-install-recommends \
+        ca-certificates \
+        libatomic1 \
+        libboost-atomic1.83.0 \
+        libboost-container1.83.0 \
+        libboost-context1.83.0 \
+        libboost-coroutine1.83.0 \
+        libboost-json1.83.0 \
+        libboost-stacktrace1.83.0 \
+        libboost-thread1.83.0 \
+        libboost-url1.83.0 \
+        libbotan-3-10 \
+        libfmt10 \
+        libnuma1 \
+        libsecp256k1-6 \
+        libsodium23 \
+        libspdlog1.15 \
+        libssl3t64 \
+        libzstd1
+
+RUN useradd --create-home --home-dir /opt/tada --shell /usr/sbin/nologin tada && \
+    install -d -o tada -g tada /data /opt/tada/log
+
+COPY --from=builder /opt/tada/build/tada /opt/tada/bin/tada
+COPY --from=builder /opt/tada/etc /opt/tada/etc
+
+USER tada
+WORKDIR /opt/tada
+ENV TURBO_LOG_PATH=/opt/tada/log/tada.log
+VOLUME ["/data"]
+EXPOSE 3001/tcp
+# node-api follows upstream peers continuously unless --no-sync is supplied.
+ENTRYPOINT ["/opt/tada/bin/tada", "node-api", "/data", "--ip=0.0.0.0", "--port=3001"]

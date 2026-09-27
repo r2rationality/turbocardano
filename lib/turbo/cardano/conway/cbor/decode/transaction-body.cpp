@@ -29,6 +29,7 @@ namespace turbo::cardano::conway {
                 case 1: {
                     auto outputs = transaction_outputs_t::from_cbor(mv);
                     static_cast<tx_output_list &>(res.outputs).swap(outputs.value);
+                    res.output_sizes = std::move(outputs.encoded_sizes);
                     break;
                 }
                 case 2: res.fee = mv.uint(); break;
@@ -43,14 +44,14 @@ namespace turbo::cardano::conway {
                     if (res.withdrawals.empty()) [[unlikely]]
                         throw error("Conway withdrawals must be nonempty when supplied");
                     break;
-                case 7: static_cast<void>(hash_32 { mv.bytes() }); break;
+                case 7: res.auxiliary_data_hash = hash_32 { mv.bytes() }; break;
                 case 8: res.validity_start.emplace(mv.uint()); break;
                 case 9:
                     res.mints = mint_t::from_cbor(mv);
                     if (res.mints.empty()) [[unlikely]]
                         throw error("Conway mint must be nonempty when supplied");
                     break;
-                case 11: static_cast<void>(hash_32 { mv.bytes() }); break;
+                case 11: res.script_data_hash = hash_32 { mv.bytes() }; break;
                 case 13:
                     res.collateral_inputs = transaction_inputs_t::from_cbor(mv);
                     if (res.collateral_inputs.empty()) [[unlikely]]
@@ -65,9 +66,15 @@ namespace turbo::cardano::conway {
                     const auto network_id = mv.uint();
                     if (network_id > 1) [[unlikely]]
                         throw error("network_id must be 0 or 1");
+                    res.network_id = numeric_cast<uint8_t>(network_id);
                     break;
                 }
-                case 16: res.collateral_return.emplace(std::move(transaction_output_t::from_cbor(mv).value)); break;
+                case 16: {
+                    auto output = transaction_output_t::from_cbor(mv);
+                    res.collateral_return_size = output.encoded_size;
+                    res.collateral_return.emplace(std::move(output.value));
+                    break;
+                }
                 case 17: res.collateral_value.emplace(mv.uint()); break;
                 case 18:
                     res.ref_inputs = transaction_inputs_t::from_cbor(mv);

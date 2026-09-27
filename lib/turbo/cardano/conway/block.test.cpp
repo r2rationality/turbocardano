@@ -6,6 +6,7 @@
 #include <turbo/cardano/conway/block.hpp>
 #include <turbo/common/test.hpp>
 #include <turbo/plutus/context.hpp>
+#include <turbo/cardano/ledger/rules/utxow/creds-needed.hpp>
 
 using namespace turbo;
 using namespace turbo::cardano;
@@ -37,6 +38,16 @@ suite cardano_conway_suite = [] {
             ccfg.shelley_start_epoch(208);
             for (const auto &path: file::files_with_ext(install_path("data/conway"), ".zpp")) {
                 plutus::context ctx { path, ccfg };
+                ledger::rules::credential_requirements needed {};
+                needed.collect(dynamic_cast<const conway::tx &>(ctx.tx()));
+                uint32_t input_index = 0;
+                for (const auto &input: ctx.inputs())
+                    needed.observe_payment(input.data.addr(), redeemer_id { redeemer_tag::spend, input_index++ });
+                for (const auto &[id, redeemer]: ctx.redeemers()) {
+                    static_cast<void>(redeemer);
+                    expect(ctx.redeemer_script(id) == needed.purposes.at(id)) << path;
+                }
+                ctx.set_script_purposes(std::move(needed.purposes));
                 ctx.prepare();
                 expect(boost::ut::nothrow([&] {
                     try {

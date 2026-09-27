@@ -22,7 +22,7 @@ namespace {
             return "test-peer";
         }
 
-        const cardano::point3 &tip() const override
+        const cardano::optional_point3 &tip() const override
         {
             return _tip;
         }
@@ -37,7 +37,7 @@ namespace {
             _intersection = new_intersection;
         }
     private:
-        cardano::point3 _tip {};
+        cardano::optional_point3 _tip {};
         cardano::optional_point _intersection {};
     };
 

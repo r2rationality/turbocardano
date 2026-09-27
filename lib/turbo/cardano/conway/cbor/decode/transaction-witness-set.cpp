@@ -79,7 +79,10 @@ namespace turbo::cardano::conway {
                 case 1: decode_scripts<script_type::native>(res, val); break;
                 case 2: decode_witnesses<tx_wit_shelley_bootstrap>(res, val); break;
                 case 3: decode_scripts<script_type::plutus_v1>(res, val); break;
-                case 4: decode_witnesses<tx_wit_datum>(res, val); break;
+                case 4:
+                    decode_witnesses<tx_wit_datum>(res, val);
+                    res.datum_bytes = val.data_raw();
+                    break;
                 case 5: {
                     auto redeemers = redeemers_t::from_cbor(val);
                     res.redeemers.items = std::move(redeemers.items);

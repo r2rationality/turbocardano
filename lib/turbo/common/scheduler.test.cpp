@@ -2,6 +2,7 @@
  * Copyright (c) 2024-2025 R2 Rationality OÜ (info at r2rationality dot com) */
 
 #include <array>
+#include <future>
 #include <thread>
 #include <turbo/common/test.hpp>
 #include "scheduler.hpp"
@@ -193,6 +194,42 @@ suite turbo_common_scheduler_suite = [] {
             });
             s.process(false);
             expect(helped_by_waiter.load(std::memory_order_relaxed) > 0_u);
+        };
+        "wait_all drains task captures before reusing a group"_test = [] {
+            scheduler s { 4 };
+            std::promise<void> submitted, destroying, release;
+            const auto submitted_f = submitted.get_future().share();
+            auto destroying_f = destroying.get_future();
+            const auto release_f = release.get_future().share();
+            size_t completed = 0;
+            auto waiter = std::async(std::launch::async, [&] {
+                s.wait_all("reuse", [&](const auto &, const auto &submit_f) {
+                    submit_f({ 200, "reuse", [&, submitted_f,
+                        resource=std::shared_ptr<int>(new int {}, [&](int *p) {
+                            destroying.set_value();
+                            release_f.wait();
+                            delete p;
+                        })] {
+                        // Ensure the submitting thread has dropped its task copy;
+                        // the worker must own the final reference to the capture.
+                        static_cast<void>(resource);
+                        submitted_f.wait();
+                        completed = 1;
+                    }});
+                    submitted.set_value();
+                });
+                s.wait_all("reuse", [&](const auto &, const auto &submit_f) {
+                    submit_f({ 200, "reuse", [&] { completed = 2; } });
+                });
+            });
+            expect(destroying_f.wait_for(5s) == std::future_status::ready);
+            // The task body has returned, but its destruction and scheduler
+            // bookkeeping are still pending. The barrier must not return yet.
+            expect(waiter.wait_for(50ms) == std::future_status::timeout);
+            release.set_value();
+            expect(nothrow([&] { waiter.get(); }));
+            s.process(false);
+            expect_equal(2ULL, completed);
         };
         "wait_all cooperative task error releases barrier"_test = [] {
             scheduler s { 4 };

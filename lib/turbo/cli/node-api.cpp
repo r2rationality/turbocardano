@@ -5,6 +5,12 @@
 
 #include <turbo/asio.hpp>
 #include <turbo/cardano/network/server.hpp>
+#include <turbo/sync/p2p.hpp>
+#include <boost/asio/signal_set.hpp>
+#include <csignal>
+#include <charconv>
+#include <limits>
+#include <thread>
 #include "common.hpp"
 
 namespace turbo::cli::node_api {
@@ -18,6 +24,13 @@ namespace turbo::cli::node_api {
             cmd.args.expect({ "<data-dir>" });
             cmd.opts.try_emplace("ip", "an IP address at which to listen for incoming connections", "127.0.0.1");
             cmd.opts.try_emplace("port", "a TCP port at which to listen for incoming connections", "3001");
+            cmd.opts.try_emplace("max-connections", "maximum open incoming connections", std::to_string(server::default_max_connections));
+            cmd.opts.try_emplace("chunk-cache-mib", "maximum decompressed chunk cache size in MiB",
+                std::to_string(chunk_cache::default_max_bytes >> 20));
+            cmd.opts.emplace("no-sync", "serve the stored chain without connecting to an upstream peer");
+            cmd.opts.emplace("peer-host", "follow this peer instead of a random topology peer");
+            cmd.opts.try_emplace("peer-port", "upstream peer TCP port", "3001");
+            cmd.opts.try_emplace("snapshot-interval", "minimum seconds between live checkpoints", "600");
         }
 
         void run(const arguments &args, const options &opts) const override
@@ -25,9 +38,57 @@ namespace turbo::cli::node_api {
             const auto &data_dir = args.at(0);
             const auto ip = opts.at("ip").value();
             const auto port = opts.at("port").value();
+            const auto positive_size = [&](const std::string &name) {
+                const auto &value = opts.at(name).value();
+                size_t size = 0;
+                const auto [end, ec] = std::from_chars(value.data(), value.data() + value.size(), size);
+                if (ec != std::errc {} || end != value.data() + value.size() || !size)
+                    throw error(fmt::format("{} must be a positive integer", name));
+                return size;
+            };
+            const auto max_connections = positive_size("max-connections");
+            const auto cache_mib = positive_size("chunk-cache-mib");
+            if (cache_mib > (std::numeric_limits<size_t>::max() >> 20))
+                throw error("chunk-cache-mib is too large");
+            const auto cache_bytes = cache_mib << 20;
             logger::info("NODE API listens at the address {}:{}", ip, port);
-            auto srv = server::make_default(address { ip, port }, data_dir, asio::worker::get(), cardano::config::get());
+            const auto iow = std::make_shared<asio::worker_manual>();
+            if (opts.contains("no-sync")) {
+                auto srv = server::make_default(address { ip, port }, data_dir, iow, cardano::config::get(),
+                    max_connections, cache_bytes);
+                boost::asio::signal_set signals { iow->io_context(), SIGINT, SIGTERM };
+                signals.async_wait([&](const auto &ec, int) { if (!ec) srv.stop(); });
+                srv.run();
+                return;
+            }
+            const auto interval = std::chrono::seconds { std::stoll(opts.at("snapshot-interval").value()) };
+            if (interval.count() <= 0)
+                throw error("snapshot-interval must be positive");
+            std::optional<address> peer;
+            if (const auto it = opts.find("peer-host"); it != opts.end() && it->second)
+                peer.emplace(*it->second, opts.at("peer-port").value());
+            auto cr = std::make_shared<chunk_registry>(data_dir, chunk_registry::mode::validate,
+                cardano::config::get(), scheduler::get(), file_remover::get(), true, true, true);
+            auto source = std::make_shared<chain_source>(cr, cache_bytes);
+            sync::p2p::syncer syncer { *cr };
+            auto srv = server::make_default(address { ip, port }, source, iow, cr->config(), max_connections);
+            std::exception_ptr failure;
+            std::jthread follower { [&](std::stop_token stop) {
+                try {
+                    syncer.follow(stop, [&](const auto &intersection) { source->publish(intersection); }, peer, {}, interval);
+                } catch (...) {
+                    failure = std::current_exception();
+                    srv.stop();
+                }
+            } };
+            boost::asio::signal_set signals { iow->io_context(), SIGINT, SIGTERM };
+            signals.async_wait([&](const auto &ec, int) {
+                if (!ec) { follower.request_stop(); srv.stop(); }
+            });
             srv.run();
+            follower.request_stop();
+            follower.join();
+            if (failure) std::rethrow_exception(failure);
         }
     };
     static auto instance = command::reg(std::make_shared<cmd>());

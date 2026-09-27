@@ -6,6 +6,7 @@
 #include <turbo/chunk-registry.hpp>
 #include <turbo/common/test.hpp>
 #include <turbo/json.hpp>
+#include <turbo/sync/mocks.hpp>
 
 namespace {
     using namespace turbo;
@@ -209,6 +210,40 @@ suite chunk_registry_suite = [] {
                 expect_equal(74044763, cr.max_slot());
                 expect(cr.max_slot() != before_slot);
             }
+        };
+
+        "old chunks bypass the recent fragmentation threshold"_test = [] {
+            const file::tmp_directory dir { "chunk-registry-repack-age" };
+            auto genesis = json::load("./etc/mainnet/shelley-genesis.json").as_object();
+            genesis["securityParam"] = 2;
+            sync::mock_chain_config settings { .height=0 };
+            settings.cfg.emplace("shelley-genesis", std::move(genesis));
+            const auto chain = sync::gen_chain(settings);
+            chunk_registry cr { dir.path(), chunk_registry::mode::store, chain.cardano_cfg };
+            const auto seed = crypto::blake2b::digest<crypto::ed25519::seed>(std::string_view { "1" });
+            cardano::block_producer block {
+                crypto::ed25519::create_sk_from_seed(seed), seed, cardano::vrf03_create_sk_from_seed(seed)
+            };
+            block.prev_hash = chain.cardano_cfg.byron_genesis_hash;
+            const auto append = [&](const uint64_t slot) {
+                block.slot = slot;
+                cr.accept_anything_or_throw(cr.tip(), progress_point { slot }, [&] {
+                    cr.add_buffer(cr.num_bytes(), block.cbor());
+                });
+                block.prev_hash = cr.tip()->hash;
+                ++block.height;
+            };
+            const auto span = cr.config().byron_epoch_length;
+            for (const auto slot: { uint64_t { 0 }, uint64_t { 2 }, span, span + 2 })
+                append(slot);
+            expect_equal(cr.repack(chunk_registry::repack_mode_t::merge_closed, 2).partial_groups_merged, 0);
+            append(2 * span);
+            expect_equal(cr.repack(chunk_registry::repack_mode_t::merge_closed, 2).partial_groups_merged, 1);
+            expect_equal(cr.chunks().size(), 4);
+            expect_equal(cr.chunks().begin()->second.num_blocks, 2);
+            expect_equal(cr.repack(chunk_registry::repack_mode_t::merge_closed, 2).partial_groups_merged, 0);
+            expect_equal(cr.repack(chunk_registry::repack_mode_t::merge_closed, 1).partial_groups_merged, 1);
+            expect_equal(cr.chunks().size(), 3);
         };
 
         "epoch-level auto-merge"_test = [&] {

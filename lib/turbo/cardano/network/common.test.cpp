@@ -41,9 +41,11 @@ suite cardano_network_suite = [] {
             expect(fatal(std::holds_alternative<intersection_info_t>(resp.res)));
             expect(resp.addr == addr) << resp.addr.host << resp.addr.port;
             const auto &isect = turbo::variant::get_nice<intersection_info_t>(resp.res);
+            expect(fatal(isect.tip.has_value()));
+            expect(!isect.found);
             expect(!isect.isect);
             auto min_slot = cardano::slot::from_time(std::chrono::system_clock::now() - std::chrono::seconds { 600 }, cfg);
-            expect(isect.tip.slot >= min_slot) << isect.tip.slot;
+            expect(isect.tip->slot >= min_slot) << isect.tip->slot;
             expect(isect.tip.height >= 10'000'000) << isect.tip.height;
         };
 
@@ -52,7 +54,7 @@ suite cardano_network_suite = [] {
             // run a process cycle without requests to test that successive process calls work
             c->process();
             client::find_response resp {};
-            point2_list points {};
+            optional_point2_list points {};
             points.emplace_back(119975873, block_hash::from_hex("5B74C3D89844B010020172ACFBFE2F8FC08D895A7CDD5CF77C7BBD853C4CFB79"));
             points.emplace_back(116812786, block_hash::from_hex("F1C8E2B970338F3E1FDDF5AF8BD2F3B648B2D5AD4FB98406A51EEA149479C83B"));
             c->find_intersection(points, [&](client::find_response &&r) {
@@ -62,11 +64,13 @@ suite cardano_network_suite = [] {
             expect(resp.addr == addr) << resp.addr.host << resp.addr.port;
             expect(fatal(std::holds_alternative<intersection_info_t>(resp.res)));
             const auto &isect = turbo::variant::get_nice<intersection_info_t>(resp.res);
+            expect(fatal(isect.tip.has_value()));
+            expect(isect.found);
             expect(fatal(isect.isect.has_value()));
-            expect_equal(points[0].slot, isect.isect->slot);
-            expect_equal(points[0].hash, isect.isect->hash);
+            expect_equal(points[0]->slot, isect.isect->slot);
+            expect_equal(points[0]->hash, isect.isect->hash);
             const auto min_slot = cardano::slot::from_time(std::chrono::system_clock::now() - std::chrono::seconds { 600 }, cfg);
-            expect(isect.tip.slot >= min_slot) << isect.tip.slot;
+            expect(isect.tip->slot >= min_slot) << isect.tip->slot;
             expect(isect.tip.height >= 10'000'000) << isect.tip.height;
         };
 
@@ -103,7 +107,7 @@ suite cardano_network_suite = [] {
             auto c = ccm.connect(addr);
             // run a process cycle without requests to test that successive process calls work
             client::header_response resp {};
-            point2_list points {};
+            optional_point2_list points {};
             points.emplace_back(119975873, block_hash::from_hex("5B74C3D89844B010020172ACFBFE2F8FC08D895A7CDD5CF77C7BBD853C4CFB79"));
             c->fetch_headers(points, 10, [&](auto &&r) {
                 resp = std::move(r);
@@ -112,12 +116,12 @@ suite cardano_network_suite = [] {
             expect(resp.addr == addr) << resp.addr.host << resp.addr.port;
             expect(static_cast<bool>(resp.intersect));
             if (resp.intersect)
-                expect(*resp.intersect == points.front());
+                expect(*resp.intersect == *points.front());
             expect(std::holds_alternative<header_list>(resp.res));
             if (std::holds_alternative<header_list>(resp.res)) {
                 const auto &headers = std::get<header_list>(resp.res);
                 expect(headers.size() == 10_ull);
-                auto prev_slot = points.front().slot;
+                auto prev_slot = points.front()->slot;
                 for (const auto &hdr: headers) {
                     expect(hdr.slot >= prev_slot);
                     prev_slot = hdr.slot;
@@ -150,7 +154,7 @@ suite cardano_network_suite = [] {
             auto c = ccm.connect(addr);
             // run a process cycle without requests to test that successive process calls work
             client::header_response resp {};
-            point2_list points {};
+            optional_point2_list points {};
             c->fetch_headers(points, 10, [&](auto &&r) {
                 resp = std::move(r);
             });

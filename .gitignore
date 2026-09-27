@@ -11,6 +11,7 @@ CMakeSettings.json
 build-*
 cmake-build-*
 ui/dt-explorer-*
+**/*.agdai
 **/*.pid
 **/*.profdata
 **/*.profraw

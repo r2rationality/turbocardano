@@ -376,6 +376,8 @@ namespace turbo::cardano {
         {
         }
 
+        slot_range &operator=(const slot_range &) =default;
+
         bool operator<(const slot_range &o) const
         {
             return _min < o._min;
@@ -498,6 +500,42 @@ namespace turbo::cardano {
         void to_cbor(cbor::encoder &enc) const;
     };
 
+    // An empty protocol point denotes origin, before the first block.
+    struct optional_point2: std::optional<point2> {
+        using base_type = std::optional<point2>;
+        using base_type::base_type;
+
+        optional_point2() =default;
+        optional_point2(uint64_t slot, const block_hash &hash): base_type { point2 { slot, hash } } {}
+
+        bool operator==(const optional_point2 &) const =default;
+
+        static optional_point2 from_cbor(cbor::zero2::value &);
+        void to_cbor(cbor::encoder &) const;
+    };
+
+    struct optional_point3: optional_point2 {
+        // Meaningful only when the point is present.
+        uint64_t height = 0;
+
+        optional_point3() =default;
+        optional_point3(const point3 &p): optional_point2 { p }, height { p.height } {}
+        template<typename T> requires std::is_convertible_v<const T &, point3>
+        optional_point3(const std::optional<T> &p)
+            : optional_point2 { p }, height { p ? static_cast<point3>(*p).height : 0 } {}
+        optional_point3(optional_point2 p, uint64_t h): optional_point2 { std::move(p) }, height { has_value() ? h : 0 } {}
+
+        explicit operator point3() const { return { value(), height }; }
+
+        bool operator==(const optional_point3 &o) const
+        {
+            return has_value() == o.has_value() && (!has_value() || (**this == *o && height == o.height));
+        }
+
+        static optional_point3 from_cbor(cbor::zero2::value &);
+        void to_cbor(cbor::encoder &) const;
+    };
+
     struct point {
         block_hash hash {};
         uint64_t slot = 0;
@@ -534,11 +572,14 @@ namespace turbo::cardano {
     };
 
     struct intersection_info_t {
-        std::optional<point2> isect;
-        point3 tip;
+        optional_point2 isect;
+        optional_point3 tip;
+        // A found intersection can itself be origin (an empty isect).
+        bool found = false;
     };
 
     using point2_list = vector_t<point2, cbor::encoder>;
+    using optional_point2_list = vector_t<optional_point2, cbor::encoder>;
     using optional_point = std::optional<point>;
 
     struct optional_slot: std::optional<uint64_t> {
@@ -1451,25 +1492,7 @@ namespace turbo::cardano {
             return minor < o.minor;
         }
 
-        bool aggregated_rewards() const
-        {
-            return major > 2;
-        }
-
-        bool forgo_reward_prefilter() const
-        {
-            return major > 6;
-        }
-
-        bool keep_pointers() const
-        {
-            return major < 9;
-        }
-
-        bool bootstrap_phase() const
-        {
-            return major == 9;
-        }
+#include <turbo/cardano/ledger/rules/compatibility/protocol-version.ipp>
 
         uint64_t era() const {
             switch (major) {
@@ -2295,6 +2318,24 @@ namespace fmt {
         template<typename FormatContext>
         auto format(const auto &v, FormatContext &ctx) const -> decltype(ctx.out()) {
             return fmt::format_to(ctx.out(), "({}, {}, {})", v.slot, v.hash, v.height);
+        }
+    };
+
+    template<>
+    struct formatter<turbo::cardano::optional_point2>: formatter<int> {
+        template<typename FormatContext>
+        auto format(const turbo::cardano::optional_point2 &v, FormatContext &ctx) const -> decltype(ctx.out()) {
+            if (!v) return fmt::format_to(ctx.out(), "origin");
+            return fmt::format_to(ctx.out(), "{}", *v);
+        }
+    };
+
+    template<>
+    struct formatter<turbo::cardano::optional_point3>: formatter<int> {
+        template<typename FormatContext>
+        auto format(const turbo::cardano::optional_point3 &v, FormatContext &ctx) const -> decltype(ctx.out()) {
+            if (!v) return fmt::format_to(ctx.out(), "origin");
+            return fmt::format_to(ctx.out(), "{}", static_cast<turbo::cardano::point3>(v));
         }
     };
 

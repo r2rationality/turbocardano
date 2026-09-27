@@ -9,6 +9,8 @@
 #include <boost/asio/deadline_timer.hpp>
 #include <boost/asio/executor_work_guard.hpp>
 #include <boost/asio/io_context.hpp>
+#include <boost/asio/ip/tcp.hpp>
+#include <boost/asio/write.hpp>
 #include <boost/stacktrace/stacktrace.hpp>
 #include <turbo/chunk-registry.hpp>
 #include <turbo/common/test.hpp>
@@ -55,6 +57,75 @@ namespace {
         timer.async_wait(timer_task { timer_ptr, f });
         return timer_ptr;
     }
+
+    struct failure_test_state {
+        bool fail = true;
+        size_t active = 0;
+    };
+
+    struct failure_test_handler: handshake::observer_t {
+        explicit failure_test_handler(std::shared_ptr<failure_test_state> state): _state { std::move(state) }
+        {
+            ++_state->active;
+        }
+        ~failure_test_handler() override { --_state->active; }
+        void on_success(const handshake::on_success_func &) override {}
+        void failed(std::string_view) override {}
+        void stopped() override {}
+
+        void data(buffer bytes, const protocol_send_func &send) override
+        {
+            if (bytes[0] == 3) {
+                _poll = true;
+                return;
+            }
+            if (bytes[0] == 1) check(*_state);
+            send([](std::shared_ptr<failure_test_state> state, bool fail_after_send) -> data_generator_t {
+                co_yield uint8_vector { 0 };
+                if (fail_after_send) check(*state);
+            }(_state, bytes[0] == 2));
+        }
+
+        void poll(const protocol_send_func &) override
+        {
+            if (_poll) { _poll = false; check(*_state); }
+        }
+    private:
+        std::shared_ptr<failure_test_state> _state;
+        bool _poll = false;
+
+        static void check(const failure_test_state &state)
+        {
+            if (state.fail) throw error("injected response failure");
+        }
+    };
+
+    struct fragmented_chain_handler: chainsync::handler {
+        using chainsync::handler::handler;
+
+        void data(buffer bytes, const protocol_send_func &send) override
+        {
+            auto parsed = cbor::zero2::parse(bytes);
+            const bool request_next = parsed.get().array().read().uint() == 0;
+            chainsync::handler::data(bytes, [&](data_generator_t &&gen) {
+                if (request_next)
+                    send(fragment(std::move(gen)));
+                else
+                    send(std::move(gen));
+            });
+        }
+    private:
+        static data_generator_t fragment(data_generator_t gen)
+        {
+            while (gen.resume()) {
+                auto bytes = gen.result();
+                // AwaitReply followed by only the opening array token of the reply.
+                co_yield uint8_vector { 0x81, 0x01, bytes.front() };
+                bytes.erase(bytes.begin());
+                co_yield std::move(bytes);
+            }
+        }
+    };
 }
 
 suite cardano_network_server_suite = [] {
@@ -80,6 +151,106 @@ suite cardano_network_server_suite = [] {
             } },
             { mini_protocol::chain_sync, [&](const auto &) { return chainsync_h; } },
             { mini_protocol::block_fetch, [&](const auto &res) { return res.version == 15 ? blockfetch_15_h : blockfetch_14_h; } }
+        };
+        "connection limit and response failures are confined to one client"_test = [&] {
+            using tcp = boost::asio::ip::tcp;
+            const auto iow = std::make_shared<asio::worker_manual>();
+            auto &ioc = iow->io_context();
+            const auto state = std::make_shared<failure_test_state>();
+            server srv { listen_addr, {
+                { mini_protocol::handshake, [state](const auto &) { return std::make_shared<failure_test_handler>(state); } }
+            }, iow, cr->config(), 1 };
+            const auto pump_until = [&](const auto &predicate) {
+                const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds { 5 };
+                while (!predicate()) {
+                    expect(fatal(std::chrono::steady_clock::now() < deadline));
+                    ioc.restart();
+                    ioc.run_for(std::chrono::milliseconds { 10 });
+                }
+            };
+            const tcp::endpoint endpoint { boost::asio::ip::make_address(listen_addr.host),
+                static_cast<uint16_t>(std::stoul(listen_addr.port)) };
+            const auto connect = [&] {
+                tcp::socket socket { ioc };
+                pump_until([&] {
+                    boost::system::error_code ec;
+                    socket.close(ec);
+                    socket.connect(endpoint, ec);
+                    return !ec;
+                });
+                socket.non_blocking(true);
+                return socket;
+            };
+            const auto await_close = [&](tcp::socket &socket) {
+                pump_until([&] {
+                    uint8_t bytes[256];
+                    boost::system::error_code ec;
+                    socket.read_some(boost::asio::buffer(bytes), ec);
+                    return ec == boost::asio::error::eof || ec == boost::asio::error::connection_reset;
+                });
+            };
+            const auto send = [](tcp::socket &socket, uint8_t request) {
+                const segment_info header { 1, channel_mode::initiator, mini_protocol::handshake, 1 };
+                uint8_vector msg { buffer::from(header) };
+                msg.push_back(request);
+                boost::asio::write(socket, boost::asio::buffer(msg.data(), msg.size()));
+            };
+            auto first = connect();
+            pump_until([&] { return state->active == 1; });
+            auto rejected = connect();
+            await_close(rejected);
+            expect_equal(state->active, 1);
+            first.close();
+            pump_until([&] { return state->active == 0; });
+
+            for (const uint8_t request: { 1, 2, 3 }) {
+                auto socket = connect();
+                pump_until([&] { return state->active == 1; });
+                send(socket, request);
+                await_close(socket);
+                pump_until([&] { return state->active == 0; });
+            }
+            state->fail = false;
+            auto healthy = connect();
+            pump_until([&] { return state->active == 1; });
+            send(healthy, 1);
+            pump_until([&] { return healthy.available() > 0; });
+            expect_equal(state->active, 1);
+            healthy.close();
+            pump_until([&] { return state->active == 0; });
+            srv.stop();
+        };
+        "next_header decodes fragmented replies on one connection"_test = [&] {
+            const auto iow = std::make_shared<asio::worker_manual>();
+            auto &ioc = iow->io_context();
+            auto fragmented_cfg = cfg;
+            fragmented_cfg[mini_protocol::chain_sync] = [cr](const auto &) {
+                return std::make_shared<fragmented_chain_handler>(cr);
+            };
+            server srv { listen_addr, std::move(fragmented_cfg), iow, cr->config() };
+            ioc.run_for(std::chrono::milliseconds { 10 });
+            const auto c = client_manager_async::get().connect(listen_addr, v14, cr->config(), iow);
+            client::find_response found {};
+            c->find_intersection(optional_point2_list { optional_point2 {} }, [&](auto &&resp) { found = std::move(resp); });
+            c->process(nullptr, iow.get());
+            expect(fatal(std::holds_alternative<intersection_info_t>(found.res)));
+            expect(fatal(std::get<intersection_info_t>(found.res).found));
+            std::stop_source stop;
+            const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds { 5 };
+            const auto pump = [&] {
+                if (std::chrono::steady_clock::now() >= deadline) stop.request_stop();
+                ioc.run_for(std::chrono::milliseconds { 10 });
+            };
+            const auto rollback = c->next_header_sync(stop.get_token(), pump);
+            expect(rollback.rollback);
+            expect(!rollback.point);
+            expect_equal(rollback.tip, optional_point3 { cr->tip() });
+            const auto forward = c->next_header_sync(stop.get_token(), pump);
+            expect(!forward.rollback);
+            expect(fatal(forward.point.has_value()));
+            expect_equal(*forward.point, point2 { cr->cbegin()->slot, cr->cbegin()->hash });
+            expect_equal(forward.tip, rollback.tip);
+            srv.stop();
         };
         "inquire the tip"_test = [&] {
             expect(fatal(cr->tip().has_value()));
@@ -107,7 +278,7 @@ suite cardano_network_server_suite = [] {
             expect(!timer_stop.load(std::memory_order_relaxed));
             if (tip_resp.has_value() && std::holds_alternative<intersection_info_t>(tip_resp->res)) {
                 const auto &isect = std::get<intersection_info_t>(tip_resp->res);
-                expect_equal(static_cast<point3>(*cr->tip()), isect.tip);
+                expect_equal(optional_point3 { cr->tip() }, isect.tip);
             } else {
                 expect(false);
             }
@@ -128,7 +299,7 @@ suite cardano_network_server_suite = [] {
                     auto work_guard = boost::asio::make_work_guard(iow->io_context());
                     server s { listen_addr, multiplexer_config_t { cfg }, iow, cr->config() };
                     auto client = client_manager_async::get().connect(listen_addr, v14, cr->config(), iow);
-                    const point2_list start_points {};
+                    const optional_point2_list start_points {};
                     client->fetch_headers(start_points, num_hdrs, [&](auto &&resp) {
                         std::visit([&](const auto &rv) {
                             using RT = std::decay_t<decltype(rv)>;
@@ -167,7 +338,7 @@ suite cardano_network_server_suite = [] {
                     server s { listen_addr, multiplexer_config_t { cfg }, iow, cr->config() };
                     auto client = client_manager_async::get().connect(listen_addr, v14, cr->config(), iow);
                     const point2 from { 74044592, block_hash::from_hex("9903904F8A09D48FDAF19646D0907403536AFD6BE85C9BD7038A58BF0267A1AA") };
-                    const point2_list start_points { from };
+                    const optional_point2_list start_points { from };
                     client->fetch_headers(start_points, num_hdrs, [&](auto &&resp) {
                         std::visit([&](const auto &rv) {
                             using RT = std::decay_t<decltype(rv)>;

@@ -6,7 +6,6 @@
 #include <turbo/chunk-registry.hpp>
 #include <turbo/common/scope-exit.hpp>
 #include <turbo/sync/base.hpp>
-#include <turbo/txwit/validator.hpp>
 #include "common.hpp"
 
 namespace turbo::cli::validate {
@@ -62,28 +61,13 @@ namespace turbo::cli::validate {
                     cr.remove_processor(progress_proc);
                 } };
                 _parse_progress_total = max_block ? max_block->end_offset : 0;
+                cr.validation(validation_mode);
                 cr.accept_anything_or_throw({}, max_block, [&]{
                     if (!chunks.empty())
                         _validate_chunks(scheduler::get(), cr, std::move(chunks));
                 });
                 if (max_epoch)
                     cr.remover().remove();
-                auto new_local_tip = cr.tip();
-                if (new_local_tip && validation_mode != sync::validation_mode_t::none) {
-                    timer txwit_timer { fmt::format("{} transaction witness validation", validation_mode), logger::level::info };
-                    cardano::optional_point validate_from {};
-                    if (validation_mode == sync::validation_mode_t::turbo) {
-                        validate_from = cr.core_tip();
-                        if (!validate_from)
-                            logger::warn("turbo found no certified core; validating transaction witnesses from genesis");
-                    }
-                    const auto new_valid_tip = txwit::validate(cr, validate_from, new_local_tip, txwit::witness_type::all);
-                    logger::debug("the new valid tip: {}", new_valid_tip);
-                    if (new_valid_tip != new_local_tip) {
-                        cr.truncate(new_valid_tip);
-                        new_local_tip = cr.tip();
-                    }
-                }
                 if (!cr.chunks().empty()) {
                     const auto &last_chunk = cr.chunks().rbegin()->second;
                     logger::info("validation complete last_slot: {} last_block: {} took: {:0.1f} secs",

@@ -81,36 +81,37 @@ namespace turbo::sync {
         block_list _blocks;
         random_failure_generator _fail_gen;
 
-        std::optional<block_list::const_iterator> _find_intersection(const point2_list &points)
+        std::optional<block_list::const_iterator> _find_intersection(const optional_point2_list &points)
         {
             for (const auto &p: points) {
+                if (!p) return _blocks.end(); // A found intersection at origin.
                 for (auto it = _blocks.begin(); it != _blocks.end(); ++it) {
-                    if ((**it)->hash() == p.hash)
+                    if ((**it)->hash() == p->hash)
                         return it;
                 }
             }
             return {};
         }
 
-        void _find_intersection_impl(const point2_list &points, const find_handler &handler) override
+        void _find_intersection_impl(const optional_point2_list &points, const find_handler &handler) override
         {
             const auto intersection = _find_intersection(points);
-            const point tip { (*_blocks.back())->hash(), (*_blocks.back())->slot(), (*_blocks.back())->height() };
-            if (intersection) {
+            const auto tip = _tip();
+            if (intersection && *intersection != _blocks.end()) {
                 const point isect { (***intersection)->hash(), (***intersection)->slot(), (***intersection)->height() };
-                handler(find_response { _addr, intersection_info_t { isect, tip } });
+                handler(find_response { _addr, intersection_info_t { isect, tip, true } });
             } else {
-                handler(find_response { _addr, intersection_info_t { {}, tip } });
+                handler(find_response { _addr, intersection_info_t { {}, tip, intersection.has_value() } });
             }
         }
 
-        void _fetch_headers_impl(const point2_list &points, const size_t max_blocks, const header_handler &handler) override
+        void _fetch_headers_impl(const optional_point2_list &points, const size_t max_blocks, const header_handler &handler) override
         {
             const auto intersection = _find_intersection(points);
             header_response resp { _addr };
-            resp.tip = point { (*_blocks.back())->hash(), (*_blocks.back())->slot() };
+            resp.tip = _tip();
             header_list headers {};
-            if (intersection) {
+            if (intersection && *intersection != _blocks.end()) {
                 resp.intersect = point { (***intersection)->hash(), (***intersection)->slot() };
                 for (auto it = std::next(*intersection); it != _blocks.end() && headers.size() < max_blocks; ++it) {
                     headers.emplace_back((**it)->slot(), (**it)->hash());
@@ -122,6 +123,13 @@ namespace turbo::sync {
             }
             resp.res = std::move(headers);
             handler(std::move(resp));
+        }
+
+        optional_point3 _tip() const
+        {
+            if (_blocks.empty()) return {};
+            const auto &b = *_blocks.back();
+            return point3 { point2 { b->slot(), b->hash() }, b->height() };
         }
 
         void _fetch_blocks_impl(const point2 &from, const point2 &to, const block_handler &handler) override;

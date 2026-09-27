@@ -32,6 +32,7 @@ namespace turbo::cardano::conway {
         using value_type = std::variant<metadata_t, auxiliary_data_array_t, auxiliary_data_map_t>;
 
         value_type value;
+        buffer raw {}; // original bytes for the ledger hash and charged size
 
         static auxiliary_data_t from_cbor(cbor::zero2::value &);
         void to_cbor(era_encoder &) const;

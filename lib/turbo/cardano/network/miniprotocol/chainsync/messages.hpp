@@ -21,46 +21,38 @@ namespace turbo::cardano::network::miniprotocol::chainsync
 
     struct msg_roll_forward_t {
         parsed_header header;
-        point3 tip;
+        optional_point3 tip;
 
         static msg_roll_forward_t from_cbor(cbor::zero2::array_reader &);
         void to_cbor(cbor::encoder &) const;
     };
     static_assert(std::is_move_constructible_v<msg_roll_forward_t>);
 
-    struct optional_point2: std::optional<point2> {
-        using base_type = std::optional<point2>;
-        using base_type::base_type;
-
-        static optional_point2 from_cbor(cbor::zero2::value &);
-        void to_cbor(cbor::encoder &) const;
-    };
-
     struct msg_roll_backward_t {
         optional_point2 target;
-        point3 tip;
+        optional_point3 tip;
 
         static msg_roll_backward_t from_cbor(cbor::zero2::array_reader &);
         void to_cbor(cbor::encoder &) const;
     };
 
     struct msg_find_intersect_t {
-        point2_list points {};
+        optional_point2_list points {};
 
         static msg_find_intersect_t from_cbor(cbor::zero2::array_reader &);
         void to_cbor(cbor::encoder &) const;
     };
 
     struct msg_intersect_found_t {
-        point2 isect;
-        point3 tip;
+        optional_point2 isect;
+        optional_point3 tip;
 
         static msg_intersect_found_t from_cbor(cbor::zero2::array_reader &);
         void to_cbor(cbor::encoder &) const;
     };
 
     struct msg_intersect_not_found_t {
-        point3 tip;
+        optional_point3 tip;
 
         static msg_intersect_not_found_t from_cbor(cbor::zero2::array_reader &);
         void to_cbor(cbor::encoder &) const;

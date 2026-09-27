@@ -14,6 +14,73 @@ namespace {
 
 suite cardano_type_test = [] {
     "cardano::type"_test = [] {
+        "protocol point equality"_test = [] {
+            const optional_point2 origin {};
+            const optional_point2 zero { point2 {} };
+            expect_equal(origin, optional_point2 {});
+            expect_equal(zero, optional_point2 { point2 {} });
+            expect(origin != zero);
+            expect(zero != optional_point2 { 1, block_hash {} });
+        };
+        "protocol tips distinguish origin from a concrete zero point"_test = [] {
+            const auto origin_bytes = uint8_vector::from_hex("828000"); // [[], 0]
+            auto parsed = cbor::zero2::parse(origin_bytes);
+            const auto origin = optional_point3::from_cbor(parsed.get());
+            expect(!origin);
+            expect_equal(origin.height, 0);
+            expect(throws([&] { static_cast<void>(static_cast<point3>(origin)); }));
+            cbor::encoder encoded_origin;
+            origin.to_cbor(encoded_origin);
+            expect_equal(encoded_origin.cbor(), origin_bytes);
+            auto concrete_origin = cbor::zero2::parse(origin_bytes);
+            expect(throws([&] { static_cast<void>(point3::from_cbor(concrete_origin.get())); }));
+
+            const point3 zero {};
+            cbor::encoder encoded_zero;
+            zero.to_cbor(encoded_zero);
+            auto parsed_zero = cbor::zero2::parse(encoded_zero.cbor());
+            const auto tip = optional_point3::from_cbor(parsed_zero.get());
+            expect(fatal(tip.has_value()));
+            expect_equal(*tip, static_cast<const point2 &>(zero));
+            expect_equal(tip.height, 0);
+            expect(tip != origin);
+            cbor::encoder encoded_tip;
+            tip.to_cbor(encoded_tip);
+            expect_equal(encoded_tip.cbor(), encoded_zero.cbor());
+
+            auto higher = tip;
+            higher.height = 1;
+            expect(higher != tip);
+            expect_equal(static_cast<point3>(higher).height, higher.height);
+            const std::optional<point> stored { point { zero.hash, zero.slot, higher.height, 123 } };
+            expect_equal(optional_point3 { stored }, higher);
+            expect_equal(optional_point3 { *stored }, higher);
+            expect_equal(optional_point3 { std::optional<point3> { static_cast<point3>(higher) } }, higher);
+            expect_equal(optional_point3 { std::optional<point> {} }, origin);
+            cbor::encoder encoded_higher;
+            higher.to_cbor(encoded_higher);
+            auto parsed_higher = cbor::zero2::parse(encoded_higher.cbor());
+            expect_equal(optional_point3::from_cbor(parsed_higher.get()), higher);
+        };
+        "protocol tip origin ignores the encoded height"_test = [] {
+            const auto bytes = uint8_vector::from_hex("8280182A"); // [[], 42]
+            auto parsed = cbor::zero2::parse(bytes);
+            const auto tip = optional_point3::from_cbor(parsed.get());
+            expect(!tip);
+            expect_equal(tip.height, 0);
+            cbor::encoder encoded;
+            tip.to_cbor(encoded);
+            expect_equal(encoded.cbor(), uint8_vector::from_hex("828000"));
+        };
+        "protocol tip rejects malformed array shapes"_test = [] {
+            for (const auto hex: { "8180", "83800000", "82810000", "9F8000FF", "829FFF00" }) {
+                const auto bytes = uint8_vector::from_hex(hex);
+                expect(throws([&] {
+                    auto parsed = cbor::zero2::parse(bytes);
+                    static_cast<void>(optional_point3::from_cbor(parsed.get()));
+                }));
+            }
+        };
         "address_buf"_test = [] {
             address_buf addr1 { "0xDEADBEAF" };
             expect(addr1.size() == 4_u);

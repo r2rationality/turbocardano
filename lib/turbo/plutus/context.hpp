@@ -77,6 +77,16 @@ namespace turbo::plutus {
 
         void set_inputs(stored_txo_list &&inputs_, stored_txo_list &&ref_inputs_);
 
+        // Reuse the bindings already checked by Conway UTXOW. Ownership moves
+        // into the context; script workers never depend on a caller's lifetime.
+        void set_script_purposes(flat_map<redeemer_id, script_hash> &&purposes)
+        {
+            _require_configurable("change script purposes");
+            if (!_inputs_set) [[unlikely]]
+                throw error("set transaction inputs before script purposes");
+            _script_purposes = std::move(purposes);
+        }
+
         // Freeze configuration and materialize shared transaction data. After this returns,
         // prepare_script() is read-only and may be called concurrently for different scripts.
         void prepare();
@@ -154,6 +164,7 @@ namespace turbo::plutus {
         stored_txo_list _ref_inputs {};
         datum_map _datums {};
         script_info_map _scripts {};
+        std::optional<flat_map<redeemer_id, script_hash>> _script_purposes {};
         std::reference_wrapper<const costs::runtime_models> _cost_models = costs::defaults();
         allocator _alloc {};
         flat_map<script_type, plutus::data> _shared {};

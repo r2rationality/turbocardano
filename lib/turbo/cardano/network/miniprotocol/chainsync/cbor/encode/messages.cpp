@@ -6,17 +6,6 @@
 #include <turbo/cardano/network/miniprotocol/chainsync/messages.hpp>
 
 namespace turbo::cardano::network::miniprotocol::chainsync {
-    void optional_point2::to_cbor(cbor::encoder &enc) const
-    {
-        if (has_value()) {
-            enc.array(2);
-            enc.uint(operator*().slot);
-            enc.bytes(operator*().hash);
-        } else {
-            enc.array(0);
-        }
-    }
-
     void msg_request_next_t::to_cbor(cbor::encoder &enc) const
     {
         enc.array(1);
@@ -80,4 +69,3 @@ namespace turbo::cardano::network::miniprotocol::chainsync {
         }, *this);
     }
 }
-

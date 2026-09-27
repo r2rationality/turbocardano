@@ -39,6 +39,8 @@ namespace turbo::cardano::ledger {
         update_effects_t process_timed_updates(timed_update_list &&);
         void process_utxo_updates(utxo_update_list &&);
         void finish_update_processing(update_effects_t &&, bool run_pulser=true);
+        void finish_transaction() { _state->finish_transaction(); }
+        void tick(uint64_t slot) { _state->_tick(slot); }
 
         optional_point add_subchain(subchain &&sc)
         {
@@ -55,8 +57,13 @@ namespace turbo::cardano::ledger {
 
         uint64_t valid_end_offset() const
         {
+            return valid_end_offset(_state->_end_offset);
+        }
+
+        uint64_t valid_end_offset(const uint64_t max_offset) const
+        {
             mutex::scoped_lock lk { _subchains_mutex };
-            return std::min(_subchains.valid_size(), _state->_end_offset);
+            return std::min(_subchains.valid_size(), max_offset);
         }
 
         subchain_list set_subchains(subchain_list &&new_sc)
@@ -276,23 +283,26 @@ namespace turbo::cardano::ledger {
             return _state->_epoch;
         }
 
-        // used only by _process_certs_and_param_updates
         bool has_pool(const pool_hash &id) const
         {
             return _state->has_pool(id);
         }
 
-        // used only by _process_certs_and_param_updates
         bool has_stake(const stake_ident &id) const
         {
             return _state->has_stake(id);
         }
 
-        // used only by _process_certs_and_param_updates
+        uint64_t stake_deposit(const stake_ident &id) const
+        {
+            return _state->_accounts.at(id).deposit;
+        }
+
         bool has_drep(const credential_t &id) const
         {
             return _state->has_drep(id);
         }
+        uint64_t drep_deposit(const credential_t &) const;
     private:
         // non-serializable members:
         const cardano::config &_cfg;

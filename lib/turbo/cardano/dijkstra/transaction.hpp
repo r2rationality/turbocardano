@@ -178,9 +178,6 @@ namespace turbo::cardano::dijkstra {
     };
 
     struct body_extension_t {
-        std::optional<hash_32> auxiliary_data_hash {};
-        std::optional<hash_32> script_data_hash {};
-        std::optional<uint8_t> network_id {};
         guards_t guards {};
         required_top_level_guards_t required_top_level_guards {};
         direct_deposits_t direct_deposits {};

@@ -32,6 +32,13 @@ namespace turbo::cardano::conway {
         const block_hash &body_hash() const override;
         const tx_list &txs() const override;
         const invalid_tx_set &invalid_txs() const override;
+        std::optional<buffer> auxiliary_bytes(size_t tx_idx) const
+        {
+            const auto it = _meta.find(tx_idx);
+            if (it == _meta.end())
+                return {};
+            return it->second.raw;
+        }
         void to_cbor(era_encoder &) const;
     private:
         babbage::block_header _hdr;

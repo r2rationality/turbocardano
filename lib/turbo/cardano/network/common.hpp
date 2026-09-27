@@ -6,6 +6,7 @@
 
 #include <turbo/common/scheduler-fwd.hpp>
 #include <turbo/asio.hpp>
+#include <stop_token>
 #include <turbo/cardano/common/config.hpp>
 #include <turbo/cardano/network/miniprotocol/blockfetch/messages.hpp>
 
@@ -129,10 +130,22 @@ namespace turbo::cardano::network {
         struct header_response {
             address addr {};
             std::optional<point2> intersect {};
-            std::optional<point3> tip {};
+            // Outer optional: no response yet; inner empty point: a received origin tip.
+            std::optional<optional_point3> tip {};
             std::variant<header_list, error_msg> res {};
         };
         using header_handler = std::function<void(header_response &&)>;
+
+        struct chain_update {
+            bool rollback = false;
+            std::optional<point2> point {};
+            optional_point3 tip {};
+        };
+        // Continues the current ChainSync session; AwaitReply retains server agency.
+        virtual chain_update next_header_sync(std::stop_token = {}, const std::function<void()> & = {})
+        {
+            throw error("persistent ChainSync is not supported by this client");
+        }
 
         explicit client(const address &addr, const cardano::config &/*cfg*/=cardano::config::get())
             : _addr { addr }
@@ -148,21 +161,21 @@ namespace turbo::cardano::network {
 
         void find_tip(const find_handler &handler)
         {
-            point2_list empty {};
+            optional_point2_list empty {};
             _find_intersection_impl(empty, handler);
         }
 
-        void find_intersection(const point2_list &points, const find_handler &handler)
+        void find_intersection(const optional_point2_list &points, const find_handler &handler)
         {
             _find_intersection_impl(points, handler);
         }
 
-        void fetch_headers(const point2_list &points, const size_t max_blocks, const header_handler &handler)
+        void fetch_headers(const optional_point2_list &points, const size_t max_blocks, const header_handler &handler)
         {
             _fetch_headers_impl(points, max_blocks, handler);
         }
 
-        point3 find_tip_sync()
+        optional_point3 find_tip_sync()
         {
             find_response iresp {};
             _find_intersection_impl({}, [&](auto &&r) { iresp = std::move(r); });
@@ -172,7 +185,7 @@ namespace turbo::cardano::network {
             return variant::get_nice<intersection_info_t>(iresp.res).tip;
         }
 
-        intersection_info_t find_intersection_sync(const point2_list &points)
+        intersection_info_t find_intersection_sync(const optional_point2_list &points)
         {
             find_response iresp {};
             _find_intersection_impl(points, [&](auto &&r) { iresp = std::move(r); });
@@ -182,7 +195,7 @@ namespace turbo::cardano::network {
             return variant::get_nice<intersection_info_t>(iresp.res);
         }
 
-        std::pair<header_list, point3> fetch_headers_sync(const point2_list &points, const size_t max_blocks, const bool allow_empty=false)
+        std::pair<header_list, optional_point3> fetch_headers_sync(const optional_point2_list &points, const size_t max_blocks, const bool allow_empty=false)
         {
             client::header_response iresp {};
             fetch_headers(points, max_blocks, [&](auto &&r) {
@@ -199,11 +212,12 @@ namespace turbo::cardano::network {
             return std::make_pair(std::move(headers), std::move(*iresp.tip));
         }
 
-        std::pair<header_list, point3> fetch_headers_sync(const std::optional<point> &local_tip, const size_t max_blocks, const bool allow_empty=false)
+        std::pair<header_list, optional_point3> fetch_headers_sync(const std::optional<point> &local_tip, const size_t max_blocks, const bool allow_empty=false)
         {
-            point2_list points {};
+            optional_point2_list points {};
             if (local_tip)
                 points.emplace_back(*local_tip);
+            points.emplace_back();
             return fetch_headers_sync(points, max_blocks, allow_empty);
         }
 
@@ -222,12 +236,12 @@ namespace turbo::cardano::network {
         const address _addr;
 
     private:
-        virtual void _find_intersection_impl(const point2_list &/*points*/, const find_handler &/*handler*/)
+        virtual void _find_intersection_impl(const optional_point2_list &/*points*/, const find_handler &/*handler*/)
         {
             throw error("cardano::network::client::_find_intersection_impl not implemented!");
         }
 
-        virtual void _fetch_headers_impl(const point2_list &/*points*/, const size_t /*max_blocks*/, const header_handler &/*handler*/)
+        virtual void _fetch_headers_impl(const optional_point2_list &/*points*/, const size_t /*max_blocks*/, const header_handler &/*handler*/)
         {
             throw error("cardano::network::client::_fetch_headers_impl not implemented!");
         }
@@ -265,12 +279,13 @@ namespace turbo::cardano::network {
     struct client_connection: client {
         explicit client_connection(const address &addr, const version_config_t &, const cardano::config &cfg=cardano::config::get(), const asio::worker_ptr &asio_worker=asio::worker::get());
         ~client_connection() override;
+        chain_update next_header_sync(std::stop_token = {}, const std::function<void()> &idle = {}) override;
     private:
         struct impl;
         std::unique_ptr<impl> _impl;
 
-        void _find_intersection_impl(const point2_list &points, const find_handler &handler) override;
-        void _fetch_headers_impl(const point2_list &points, const size_t max_blocks, const header_handler &handler) override;
+        void _find_intersection_impl(const optional_point2_list &points, const find_handler &handler) override;
+        void _fetch_headers_impl(const optional_point2_list &points, const size_t max_blocks, const header_handler &handler) override;
         void _fetch_blocks_impl(const point2 &from, const point2 &to, const block_handler &handler) override;
         void _process_impl(scheduler *sched, asio::worker *) override;
         void _reset_impl() override;

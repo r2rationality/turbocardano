@@ -6,6 +6,7 @@
 #include <turbo/cardano/ledger/types.hpp>
 #include <turbo/common/test.hpp>
 #include <turbo/partitioned-map.hpp>
+#include <turbo/zpp.hpp>
 #include <boost/container/flat_map.hpp>
 
 using namespace turbo;
@@ -41,6 +42,8 @@ suite partitioned_map_suite = [] {
         expect(pm.size() == 2_ul);
         expect(pm.contains(stake2));
         expect(pm.at(stake2).size() == 0_ul);
+        expect(pm.partition(pm.partition_idx(stake1)).get_allocator()
+            != pm.partition(pm.partition_idx(stake2)).get_allocator());
         "iterate"_test = [&] {
             auto it = pm.begin();
             expect(it != pm.end());
@@ -94,8 +97,10 @@ suite partitioned_map_suite = [] {
             expect(it->second.size() == 1_ul);
         };
         "clear and reuse"_test = [&] {
+            const auto old_alloc = pm.partition(pm.partition_idx(stake1)).get_allocator();
             pm.clear();
             expect(pm.empty());
+            expect(pm.partition(pm.partition_idx(stake1)).get_allocator() != old_alloc);
             auto [it, created] = pm.try_emplace(stake1);
             expect(created);
             expect(it == pm.find(stake1));
@@ -104,6 +109,10 @@ suite partitioned_map_suite = [] {
             std::map<cardano::stake_ident, reward_update_list> source {};
             source.try_emplace(stake1);
             std_pmap std_pm { source };
+            my_pmap pooled { source };
+            const auto encoded = turbo::zpp::serialize(std_pm);
+            expect(encoded == turbo::zpp::serialize(pooled));
+            expect(turbo::zpp::deserialize<my_pmap>(encoded) == pooled);
             auto std_it = std_pm.find(stake1);
             expect(std_it != std_pm.end());
             expect(std_it == std_pm.find(stake1));

@@ -6,16 +6,23 @@ usage()
 {
     cat <<'EOF'
 Usage:
-  bash test/gen-coverage.sh [TEST_NAME [OUT_DIR [BUILD_DIR]]]
-  bash test/gen-coverage.sh --cli [OUT_DIR [BUILD_DIR]] -- TADA_ARGUMENTS...
+  bash test/gen-coverage.sh [--ledger-rules] [TEST_NAME [OUT_DIR [BUILD_DIR]]]
+  bash test/gen-coverage.sh [--ledger-rules] --cli [OUT_DIR [BUILD_DIR]] -- TADA_ARGUMENTS...
 
 Examples:
   bash test/gen-coverage.sh 'sync::p2p'
+  bash test/gen-coverage.sh --ledger-rules '*' tmp/coverage-ledger build-cov
   bash test/gen-coverage.sh --cli -- sync --max-slot=100000 tmp/sync-cov
   bash test/gen-coverage.sh --cli tmp/coverage-sync build-cov -- sync --max-slot=100000 tmp/sync-cov
 
 The CLI workload must exit normally for LLVM to write its raw profile. Use a
 bounded command such as sync with --max-slot or --max-epoch.
+
+--ledger-rules reports only production sources under cardano/ledger/rules,
+including implementation fragments compiled by the ledger, index, and txwit
+translation units. It also exports JSON, LCOV, and a text summary. The test
+selection is independent: use '*' to measure all existing tests, or select a
+Conway workload to distinguish Conway execution of shared rule code.
 EOF
 }
 
@@ -27,9 +34,15 @@ MODE=test
 TEST_BIN=tada-test
 OUT_DIR=tmp/coverage
 BUILD_DIR=build-cov
-LLVM_PROFDATA=llvm-profdata-21
-LLVM_COV=llvm-cov-21
+LLVM_PROFDATA=${LLVM_PROFDATA:-llvm-profdata-21}
+LLVM_COV=${LLVM_COV:-llvm-cov-21}
 RUN_ARGS=()
+LEDGER_RULES=false
+
+if [[ ${1:-} == --ledger-rules ]]; then
+    LEDGER_RULES=true
+    shift
+fi
 
 if [[ ${1:-} == --help || ${1:-} == -h ]]; then
     usage
@@ -103,22 +116,47 @@ fi
 echo "Indexing ${#RAW_PROFILES[@]} raw profile(s) into $PROFILE_DATA"
 "$LLVM_PROFDATA" merge -sparse "${RAW_PROFILES[@]}" -o "$PROFILE_DATA"
 
-COV_ARGS=(
-    show
-    -show-branches=percent
-    -ignore-filename-regex=3rdparty/
-)
+IGNORE_REGEX='3rdparty/'
 if [[ $MODE == test ]]; then
-    COV_ARGS+=(-ignore-filename-regex=lib/turbo/cli)
+    IGNORE_REGEX+='|lib/turbo/cli'
 fi
+if [[ $LEDGER_RULES == true ]]; then
+    IGNORE_REGEX+='|\.test\.cpp$|\.bench\.cpp$|\.fuzz\.cpp$'
+    # LLVM reports included .ipp definitions using their own source paths. Filter
+    # by that path, not by the object file which instantiates/compiles the rule.
+    # This also keeps inline rule helpers in the denominator.
+    RULE_ROOT="$SOURCE_DIR/lib/turbo/cardano/ledger/rules"
+    RULE_SOURCES=()
+    while IFS= read -r -d '' source; do
+        RULE_SOURCES+=("$source")
+    done < <(find "$RULE_ROOT" -type f \( -name '*.cpp' -o -name '*.hpp' -o -name '*.ipp' \) \
+        ! -name '*.test.cpp' ! -name '*.bench.cpp' ! -name '*.fuzz.cpp' -print0)
+    if (( ${#RULE_SOURCES[@]} == 0 )); then
+        echo "error: no production ledger rule sources found in $RULE_ROOT" >&2
+        exit 2
+    fi
+fi
+
+COV_ARGS=(show -show-branches=percent "-ignore-filename-regex=$IGNORE_REGEX")
 COV_ARGS+=(
     -format=html
     "-output-dir=$OUT_DIR"
     "$BIN_PATH"
     "-instr-profile=$PROFILE_DATA"
 )
+if [[ $LEDGER_RULES == true ]]; then
+    COV_ARGS+=("${RULE_SOURCES[@]}")
+fi
 
 echo "Generating coverage report into $OUT_DIR"
 "$LLVM_COV" "${COV_ARGS[@]}"
+if [[ $LEDGER_RULES == true ]]; then
+    EXPORT_ARGS=("$BIN_PATH" "-instr-profile=$PROFILE_DATA"
+        "-ignore-filename-regex=$IGNORE_REGEX" "${RULE_SOURCES[@]}")
+    "$LLVM_COV" export -format=text "${EXPORT_ARGS[@]}" > "$OUT_DIR/rules.json"
+    "$LLVM_COV" export -format=lcov "${EXPORT_ARGS[@]}" > "$OUT_DIR/rules.lcov"
+    "$LLVM_COV" report "${EXPORT_ARGS[@]}" > "$OUT_DIR/rules-summary.txt"
+    echo "Rule coverage exports: $OUT_DIR/rules.json, $OUT_DIR/rules.lcov, $OUT_DIR/rules-summary.txt"
+fi
 echo "Coverage report: $OUT_DIR/index.html"
 echo "Raw and indexed profiles: $PROFILE_DIR"

@@ -37,11 +37,7 @@ namespace turbo::cardano::ledger::babbage {
         p.lovelace_per_utxo_byte = 4310;
     }
 
-    void state::_apply_param_update(const param_update &update)
-    {
-        std::string update_desc = _params.apply(update);
-        logger::info("epoch: {} protocol params update: [ {}]", _epoch, update_desc);
-    }
+#include <turbo/cardano/ledger/rules/compatibility/babbage.ipp>
 
     void state::_parse_protocol_params(protocol_params &params, cbor::zero2::value &v) const
     {

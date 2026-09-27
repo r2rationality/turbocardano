@@ -19,5 +19,19 @@ namespace turbo::cardano {
         point2::to_cbor(enc);
         enc.uint(height);
     }
-}
 
+    void optional_point2::to_cbor(cbor::encoder &enc) const
+    {
+        if (has_value())
+            value().to_cbor(enc);
+        else
+            enc.array(0);
+    }
+
+    void optional_point3::to_cbor(cbor::encoder &enc) const
+    {
+        enc.array(2);
+        optional_point2::to_cbor(enc);
+        enc.uint(has_value() ? height : 0);
+    }
+}

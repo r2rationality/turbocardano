@@ -18,6 +18,24 @@ namespace turbo::cardano {
         return { point2::from_cbor(it.read()), it.read().uint() };
     }
 
+    optional_point2 optional_point2::from_cbor(cbor::zero2::value &v)
+    {
+        if (v.indefinite() || (v.special_uint() != 0 && v.special_uint() != 2))
+            throw error("a protocol point must be an array of length zero or two");
+        auto &it = v.array();
+        if (it.done()) return {};
+        return point2 { it.read().uint(), it.read().bytes() };
+    }
+
+    optional_point3 optional_point3::from_cbor(cbor::zero2::value &v)
+    {
+        if (v.indefinite() || v.special_uint() != 2)
+            throw error("a protocol tip must be an array of length two");
+        auto &it = v.array();
+        // The reference codec consumes but ignores the height at origin.
+        return { optional_point2::from_cbor(it.read()), it.read().uint() };
+    }
+
     point point::from_cbor(cbor::zero2::value &v)
     {
         auto &it = v.array();

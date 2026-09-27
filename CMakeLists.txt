@@ -95,12 +95,8 @@ elseif(CMAKE_BUILD_TYPE STREQUAL Fuzzer)
     message("Fuzzer build")
     if (CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
         set(SANITIZER "fuzzer,address,undefined")
-        add_compile_options(-g)
-        add_compile_options(-O3)
-        add_compile_options(-fno-omit-frame-pointer)
-        add_compile_options("-fsanitize=${SANITIZER}")
-        add_link_options("-fsanitize=${SANITIZER}")
-        add_link_options("-static-libsan")
+        add_compile_options(-g -O3 -fno-omit-frame-pointer -ftrivial-auto-var-init=pattern "-fsanitize=${SANITIZER}" "-fno-sanitize-recover=all")
+        add_link_options("-fsanitize=${SANITIZER}" "-static-libsan")
     else()
         message(FATAL_ERROR "Fuzzer builds are only supported with Clang")
     endif()
@@ -118,7 +114,17 @@ elseif(CMAKE_BUILD_TYPE STREQUAL Coverage)
         add_custom_target(coverage
             COMMENT "Running test coverage ..."
             COMMAND ${BASH_EXECUTABLE} "${CMAKE_SOURCE_DIR}/test/gen-coverage.sh"
-                "${COVERAGE_ARGS}" "tmp/coverage" "${CMAKE_BINARY_DIR}"
+                --scope=all --out-dir=tmp/coverage "--build-dir=${CMAKE_BINARY_DIR}"
+                test "${COVERAGE_ARGS}"
+            DEPENDS tada-test
+            WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+            VERBATIM
+        )
+        add_custom_target(coverage-ledger
+            COMMENT "Running ledger rule coverage ..."
+            COMMAND ${BASH_EXECUTABLE} "${CMAKE_SOURCE_DIR}/test/gen-coverage.sh"
+                --scope=ledger --out-dir=tmp/coverage-ledger "--build-dir=${CMAKE_BINARY_DIR}"
+                test "${COVERAGE_ARGS}"
             DEPENDS tada-test
             WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
             VERBATIM

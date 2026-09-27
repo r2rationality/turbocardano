@@ -4,6 +4,7 @@
  * License: https://github.com/r2rationality/turbocardano/blob/main/LICENSE */
 
 #include <turbo/cbor/zero2.hpp>
+#include <turbo/cardano/ledger/rules/utxow/creds-needed.hpp>
 #include <turbo/history.hpp>
 #include <turbo/plutus/context.hpp>
 #include <turbo/plutus/flat.hpp>
@@ -1215,195 +1216,18 @@ namespace turbo::plutus {
         _inputs_set = true;
     }
 
-    void context::prepare()
-    {
-        if (_prepared)
-            return;
-        if (!_inputs_set) [[unlikely]]
-            throw error("transaction inputs must be set before transaction-context preparation");
-
-        const auto &pv = _require_protocol_ver();
-        _shared.reserve(3);
-        for (const auto &[id, _]: redeemers()) {
-            const auto &script = _scripts.at(redeemer_script(id));
-            const auto typ = script.type();
-            if (_shared.contains(typ))
-                continue;
-            data_encoder enc { _alloc, typ, pv };
-            _shared.try_emplace(typ, enc.context_shared(*this));
-        }
-        _prepared = true;
-    }
+#include <turbo/cardano/ledger/rules/script-validation/collect.ipp>
 
     const tx_base &context::tx() const
     {
         return *_tx;
     }
 
-    prepared_script context::apply_script(allocator &&script_alloc, const script_info &script, const std::initializer_list<term> args, const std::optional<ex_units> &budget) const
-    {
-        const auto &pv = _require_protocol_ver();
-        const flat::script s { script_alloc, script.script(), script.type(), pv.major };
-        term t = s.program();
-        for (auto it = args.begin(); it != args.end(); ++it) {
-            // Uncomment to debug potential script context generation issues
-            // file::write(install_path(fmt::format("tmp/script-{}-{}-args-my-{}.txt", script.hash(), script.type(), it - args.begin())), fmt::format("{}\n", *it));
-            if (std::next(it) != args.end()) {
-                if (script.type() == script_type::plutus_v1 || script.type() == script_type::plutus_v2)
-                    t = term { script_alloc, apply { t, *it } };
-            } else {
-                t = term { script_alloc, apply { t, *it } };
-            }
-        }
-        // Uncomment to debug potential script context generation issues
-        // file::write(install_path("tmp/script-with-args.uplc"), fmt::format("(program {} {})", s_it->second.ver, t));
-        // file::write(install_path("tmp/script-with-args.flat"), flat::encode_cbor(s_it->second.ver, t));
-        return prepared_script { std::move(script_alloc),  script.hash(), script.type(), t, s.version(), budget };
-    }
+#include <turbo/cardano/ledger/rules/utxow/redeemer-budgets.ipp>
 
-    term context::term_from_datum(allocator &alc, const datum_hash &hash) const
-    {
-        return { alc, constant { alc, datums().at(hash) } };
-    }
+#include <turbo/cardano/ledger/rules/script-validation/evaluate.ipp>
 
-    term context::term_from_datum(allocator &alc, const uint8_vector &datum) const
-    {
-        return { alc, constant { alc, data::from_cbor(alc, datum) } };
-    }
-
-    static script_hash proposal_script_hash(const gov_action_t &ga)
-    {
-        return std::visit<script_hash>([](const auto &a) {
-            using T = std::decay_t<decltype(a)>;
-            if constexpr (std::is_same_v<T, gov_action_t::parameter_change_t>
-                    || std::is_same_v<T, gov_action_t::treasury_withdrawals_t>) {
-                if (!a.policy_id) [[unlikely]]
-                    throw error(fmt::format("gov_action type {} has no policy script", typeid(T).name()));
-                return *a.policy_id;
-            }
-            throw error(fmt::format("unsupported gov_action type: {}", typeid(T).name()));
-            // Unreachable and needed only to Make Visual C++ happy
-            return script_hash {};
-        }, ga.val);
-    }
-
-    prepared_script context::prepare_script(const tx_redeemer &r) const
-    {
-        if (!_prepared) [[unlikely]]
-            throw error("transaction context must be prepared before preparing scripts");
-        allocator script_alloc {};
-        auto t_redeemer = term { script_alloc, constant { script_alloc, data::from_cbor(script_alloc, r.data) } };
-        switch (r.tag) {
-            case redeemer_tag::spend: {
-                const auto &in = input_at(r.ref_idx);
-                const auto addr = in.data.addr();
-                if (const auto pay_id = addr.pay_id(); pay_id.type == pay_ident::ident_type::SHELLEY_SCRIPT) [[likely]] {
-                    const auto &script = _scripts.at(pay_id.hash);
-                    // The formal Conway spec keeps Plutus context construction
-                    // abstract. Haskell implements CIP-0069 by giving V3 scripts
-                    // only ScriptContext; the spending datum is represented as
-                    // Maybe Datum inside ScriptInfo rather than as a separate
-                    // argument.
-                    if (script.type() == script_type::plutus_v3)
-                        return apply_script(std::move(script_alloc), script, { t_redeemer, data(script_alloc, script.type(), r) }, r.budget);
-                    std::optional<term> t_datum {};
-                    if (in.data.datum) {
-                        std::visit([&](const auto &v) {
-                            using T = std::decay_t<decltype(v)>;
-                            if constexpr (std::is_same_v<T, datum_hash>) {
-                                if (datums().contains(v))
-                                    t_datum = term_from_datum(script_alloc, v);
-                            } else if constexpr (std::is_same_v<T, uint8_vector>) {
-                                t_datum = term_from_datum(script_alloc, v);
-                            } else {
-                                throw error(fmt::format("unsupported datum type: {}", typeid(T).name()));
-                            }
-                        }, in.data.datum->val);
-                    }
-                    if (t_datum)
-                        return apply_script(std::move(script_alloc), script, { *t_datum, t_redeemer, data(script_alloc, script.type(), r) }, r.budget);
-                    return apply_script(std::move(script_alloc), script, { t_redeemer, data(script_alloc, script.type(), r) }, r.budget);
-                }
-                throw error(fmt::format("tx {} (spend) input #{}: the output address is not a payment script: {}!", _tx->hash(), r.ref_idx, in));
-                break;
-            }
-            case redeemer_tag::mint: {
-                const auto policy_id = mint_at(r.ref_idx);
-                const auto &script = scripts().at(policy_id);
-                return apply_script(std::move(script_alloc), script, { t_redeemer, data(script_alloc, script.type(), r) }, r.budget);
-            }
-            case redeemer_tag::cert: {
-                const auto &script = scripts().at(cert_cred_at(r.ref_idx).hash);
-                return apply_script(std::move(script_alloc), script, { t_redeemer, data(script_alloc, script.type(), r) }, r.budget);
-            }
-            case redeemer_tag::reward: {
-                const auto &script = scripts().at(withdraw_at(r.ref_idx).hash());
-                return apply_script(std::move(script_alloc), script, { t_redeemer, data(script_alloc, script.type(), r) }, r.budget);
-            }
-            case redeemer_tag::vote: {
-                const auto &script = scripts().at(voter_at(r.ref_idx).hash);
-                return apply_script(std::move(script_alloc), script, { t_redeemer, data(script_alloc, script.type(), r) }, r.budget);
-            }
-            case redeemer_tag::propose: {
-                const auto &p = proposal_at(r.ref_idx);
-                const auto &script = scripts().at(proposal_script_hash(p.procedure.action));
-                return apply_script(std::move(script_alloc), script, { t_redeemer, data(script_alloc, script.type(), r) }, r.budget);
-            }
-            [[unlikely]] default:
-                throw error(fmt::format("tx: {} unsupported redeemer_tag: {}", _tx->hash(), static_cast<int>(r.tag)));
-        }
-    }
-
-    ex_units context::validate_redeemer_budgets(const redeemer_map &redeemers, const ex_units &limit)
-    {
-        ex_units total {};
-        for (const auto &[id, redeemer]: redeemers) {
-            if (redeemer.budget.mem > limit.mem - total.mem
-                    || redeemer.budget.steps > limit.steps - total.steps) [[unlikely]] {
-                throw error(fmt::format(
-                    "the total redeemer execution-unit budget exceeds maxTxExUnits {} at {}#{}: "
-                    "accumulated {{ mem: {}, steps: {} }}, next {}",
-                    limit, id.tag, id.ref_idx, total.mem, total.steps, redeemer.budget));
-            }
-            total.mem += redeemer.budget.mem;
-            total.steps += redeemer.budget.steps;
-        }
-        return total;
-    }
-
-    ex_units context::eval_script(prepared_script &ps) const
-    {
-        try {
-            const auto &pv = _require_protocol_ver();
-            machine m { ps.alloc, cost_models().for_script(ps.typ, builtins::semantics_variant(ps.typ, pv.major)), ps.typ, ps.budget, pv.major };
-            return m.evaluate_no_res(ps.expr);
-        } catch (const std::exception &ex) {
-            throw error(fmt::format("script {} {}: {}", ps.typ, ps.hash, ex.what()));
-        }
-    }
-
-    script_hash context::redeemer_script(const redeemer_id &r) const
-    {
-        switch (r.tag) {
-            case redeemer_tag::spend: {
-                const auto &in = input_at(r.ref_idx);
-                const auto addr = in.data.addr();
-                if (const auto pay_id = addr.pay_id(); pay_id.type == pay_ident::ident_type::SHELLEY_SCRIPT) [[likely]]
-                    return pay_id.hash;
-                throw error(fmt::format("tx {} (spend) input #{}: the output address is not a payment script: {}!", _tx->hash(), r.ref_idx, in));
-            }
-            case redeemer_tag::mint: return mint_at(r.ref_idx);
-            case redeemer_tag::cert: return cert_cred_at(r.ref_idx).hash;
-            case redeemer_tag::reward: return withdraw_at(r.ref_idx).hash();
-            case redeemer_tag::vote: return voter_at(r.ref_idx).hash;
-            case redeemer_tag::propose: {
-                const auto &p = proposal_at(r.ref_idx);
-                return proposal_script_hash(p.procedure.action);
-            }
-            [[unlikely]] default:
-                throw error(fmt::format("tx: {} unsupported redeemer_tag: {}", _tx->hash(), static_cast<int>(r.tag)));
-        };
-    }
+#include <turbo/cardano/ledger/rules/utxow/script-purpose.ipp>
 
     template<typename T>
     typename T::mapped_type nth_or_die(const T &t, size_t idx)
@@ -1451,7 +1275,17 @@ namespace turbo::plutus {
 
     const voter_t &context::voter_at(const uint64_t r_idx) const
     {
-        return votes().nth_or_die(r_idx).voter;
+        // Voting redeemers index distinct voters, not individual votes on actions.
+        const voter_t *previous = nullptr;
+        uint64_t index = 0;
+        for (const auto &vote: votes()) {
+            if (!previous || (vote.voter <=> *previous) != std::strong_ordering::equal) {
+                if (index++ == r_idx)
+                    return vote.voter;
+                previous = &vote.voter;
+            }
+        }
+        throw error("voting redeemer index is out of bounds");
     }
 
     const conway::vote_set &context::votes() const

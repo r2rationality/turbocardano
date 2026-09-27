@@ -70,6 +70,17 @@ namespace turbo::cardano::network {
             return false;
         }
 
+        void poll()
+        {
+            for (auto &[id, p]: _protocols) {
+                if (!p.busy.load(std::memory_order_acquire))
+                    p.observer->poll([this, id](data_generator_t &&data) {
+                        if (!try_send(id, std::move(data)))
+                            throw error("cannot send a pending protocol response");
+                    });
+            }
+        }
+
         bool available_egress() const
         {
             _check_state();
@@ -422,6 +433,11 @@ namespace turbo::cardano::network {
         return _impl->try_send(mp, [](uint8_vector data_copy) -> data_generator_t {
             co_yield std::move(data_copy);
         }(data));
+    }
+
+    void multiplexer::poll()
+    {
+        _impl->poll();
     }
 
     bool multiplexer::alive() const

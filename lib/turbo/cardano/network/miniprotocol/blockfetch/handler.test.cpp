@@ -11,6 +11,7 @@
 #include <turbo/common/variant.hpp>
 #include <turbo/common/zstd.hpp>
 #include "messages.hpp"
+#include <turbo/sync/mocks.hpp>
 
 namespace {
     namespace dt = turbo;
@@ -71,6 +72,48 @@ suite cardano_network_miniprotocol_blockfetch_suite = [] {
             expect_equal(compressed_msg::encoding_zstd_max, decoded_maximum.encoding);
             expect_equal(maximum.payload, decoded_maximum.payload);
             expect_equal(zstd::default_compression_level, decoded_maximum.compression_level());
+        };
+
+        "stream remains readable through rollback"_test = [] {
+            const auto chain = sync::gen_chain({ .height=2 });
+            for (const bool compressed: { false, true }) {
+                const file::tmp_directory dir { "blockfetch-live" };
+                file_remover remover;
+                auto live = std::make_shared<chunk_registry>(dir.path(), chunk_registry::mode::store,
+                    cardano::config { chain.cfg }, scheduler::get(), remover);
+                live->accept_anything_or_throw({}, chain.tip, [&] { live->add_buffer(0, chain.data); });
+                const auto first = live->chunks().begin()->second.blocks.front().point2();
+                const auto last = static_cast<point2>(*live->tip());
+                const auto path = live->full_path(live->chunks().begin()->second.rel_path());
+                auto source = std::make_shared<chain_source>(live);
+                handler h { source, config_t { .block_compression=compressed } };
+                std::optional<data_generator_t> pending;
+                h.data(encode(msg_request_range_t { first, last }), [&](data_generator_t &&gen) {
+                    pending.emplace(std::move(gen));
+                });
+                expect(fatal(pending && pending->resume()));
+                expect(std::holds_alternative<msg_start_batch_t>(decode(pending->result())));
+                live->truncate({});
+                source->publish({});
+                remover.remove();
+                expect(std::filesystem::exists(path));
+                uint8_vector received;
+                bool done = false;
+                while (pending->resume()) {
+                    auto msg = decode(pending->result());
+                    if (const auto *b = std::get_if<msg_block_t>(&msg)) received << b->bytes;
+                    else if (const auto *c = std::get_if<msg_compressed_blocks_t>(&msg)) received << c->bytes();
+                    else done = std::holds_alternative<msg_batch_done_t>(msg);
+                }
+                expect(done);
+                expect_equal(received, chain.data);
+                pending.reset();
+                remover.remove();
+                expect(!std::filesystem::exists(path));
+                mock_response_processor_t<msg_t> resp { decode };
+                h.data(encode(msg_request_range_t { first, last }), std::ref(resp));
+                expect(std::holds_alternative<msg_no_blocks_t>(resp.at(0)));
+            }
         };
 
         "client done"_test = [&] {

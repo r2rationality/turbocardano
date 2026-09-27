@@ -3,6 +3,7 @@
 - [Features](#features)
 - [Requirements](#requirements)
 - [Test it yourself](#test-it-yourself)
+- [Public compressing proxy node](#public-compressing-proxy-node)
 - [Quality](#quality)
 - [Roadmap](#roadmap)
 - [Compilation](#compilation)
@@ -119,8 +120,10 @@ docker run -it --rm -v turbo:/data tada tip /data
 
 (Optional) Start the experimental Node server with block data compression enabled, listening on 0.0.0.0:3001:
 ```
-docker run -it --rm -p 3001:3001 -v turbo:/data tada node-api /data --peer-ip=0.0.0.0
+docker run -it --rm -p 3001:3001 -v turbo:/data tada node-api /data --ip=0.0.0.0 --no-sync
 ```
+
+The `node-api` server follows a random upstream peer by default and publishes validated chain updates while serving downstream peers. The use of `--no-sync` above ensures that the subsequent `sync` command will transfer exactly the same data as the previous one.
 
 (Optional) Re-download blockchain data from the experimental server started in the previous command (with compression enabled), where:
 - ```172.17.0.2``` to be replaced with the IP address on the Docker's host machine of the node-api server exposed by Docker;
@@ -154,6 +157,20 @@ docker run -it --rm -v turbo:/data tada revalidate /data
 ```
 docker run -it --rm -v turbo:/data tada txwit-all /data
 ```
+
+## Public compressing proxy node
+
+Build the proxy Docker container:
+```
+docker build -t tada-proxy -f Dockerfile.proxy .
+```
+
+Start a continuously syncing mainnet proxy with block data compression enabled, listening on 0.0.0.0:3001:
+```
+docker run -it --rm -p 3001:3001 -v turbo:/data tada-proxy
+```
+
+The proxy reuses the `turbo` volume from the preceding examples, including any pre-synced blockchain data, and follows a random upstream peer by default. To select an upstream, append `--peer-host=HOST --peer-port=3001` to the run command. Allow inbound TCP port 3001 through your host/cloud firewall and forward it through your router if needed; clients connect to your host's public address on port 3001 using the Cardano node protocol.
 
 # Spread the word
 Many in the Cardano community, including some Cardano core developers, don't believe that it's possible to make Cardano Node noticeably faster.

@@ -13,8 +13,9 @@ namespace turbo::index::timed_update {
 
 namespace turbo::cardano::ledger::conway {
     // Public ledger-state facade. Formal-rule entry points live in
-    // conway/{certs,gov,ratify,enact}.hpp and deliberately use the constructor
-    // names from the Agda Conway specification.
+    // rules/{certs,govcert,gov,ratify,enact}/ and deliberately use the constructor
+    // names from the Agda Conway specification. Inherited rules live under the
+    // same rules/ root; their namespaces retain the existing state ownership.
     using namespace cardano::conway;
 
     struct vrf_state: babbage::vrf_state {
@@ -33,23 +34,8 @@ namespace turbo::cardano::ledger::conway {
             return archive(self.deposited, self.anchor, self.expire_epoch, self.delegs);
         }
 
-        static uint64_t compute_expire_epoch(
-            const protocol_params &pp,
-            const uint64_t current_epoch,
-            const uint64_t dormant_epochs=0)
-        {
-            return current_epoch + pp.drep_activity - dormant_epochs;
-        }
+#include <turbo/cardano/ledger/rules/govcert/expiry.ipp>
 
-        static uint64_t compute_reg_expire_epoch(
-            const protocol_params &pp,
-            const uint64_t current_epoch,
-            const uint64_t dormant_epochs=0)
-        {
-            if (pp.protocol_ver.bootstrap_phase())
-                return current_epoch + pp.drep_activity;
-            return compute_expire_epoch(pp, current_epoch, dormant_epochs);
-        }
         void to_cbor(era_encoder &) const;
     };
 
@@ -101,19 +87,7 @@ namespace turbo::cardano::ledger::conway {
 
         static committee_t from_json(const json::value &);
         void to_cbor(era_encoder &) const;
-        size_t active_size(const member_key_map &hot_keys, const uint64_t current_epoch) const
-        {
-            size_t size = 0;
-            for (const auto &[cold_id, expire_epoch]: members) {
-                const auto hot_it = hot_keys.find(cold_id);
-                if (current_epoch <= expire_epoch
-                        && hot_it != hot_keys.end()
-                        && std::holds_alternative<credential_t>(hot_it->second.val)) {
-                    ++size;
-                }
-            }
-            return size;
-        }
+#include <turbo/cardano/ledger/rules/ratify/committee.ipp>
     };
 
     using prev_gov_action_id_t = array_optional_t<gov_action_id_t>;
@@ -173,6 +147,8 @@ namespace turbo::cardano::ledger::conway {
         }
     };
 
+    enum class pool_default_vote_t: uint8_t { abstain, no_confidence, no };
+
     struct pulsing_data_t {
         proposal_map_copy proposals {};
         drep_info_map_copy drep_state {};
@@ -180,6 +156,7 @@ namespace turbo::cardano::ledger::conway {
         drep_distr_t drep_voting_power {};
         pool_stake_distribution pool_voting_power {};
         bool drep_state_updated = false;
+        flat_map<pool_hash, pool_default_vote_t> pool_default_votes {};
 
         void to_zpp(zpp_encoder &) const;
         void from_zpp(parallel_decoder &);
@@ -190,6 +167,10 @@ namespace turbo::cardano::ledger::conway {
         state(babbage::state &&);
 
         using babbage::state::process_cert;
+        void finish_certificates() override;
+        void finish_transaction() override;
+        void withdraw_reward(const stake_ident &, uint64_t) override;
+        void rotate_snapshots() override;
 
         bool committee_accepted(const gov_action_state_t &ga) const;
         bool dreps_accepted(const gov_action_state_t &ga) const;
@@ -203,6 +184,7 @@ namespace turbo::cardano::ledger::conway {
         void process_cert(const cert_t &, const cert_loc_t &loc) override;
         void run_pulser_if_ready() override;
 
+        void process_cert(const stake_dereg_cert &, const cert_loc_t &) override;
         virtual void process_cert(const reg_cert &, const cert_loc_t &);
         virtual void process_cert(const unreg_cert &, const cert_loc_t &);
         virtual void process_cert(const vote_deleg_cert &, const cert_loc_t &);
@@ -233,9 +215,7 @@ namespace turbo::cardano::ledger::conway {
             return _drep_state;
         }
     protected:
-        enum class default_vote_t {
-            abstain, no_confidence, no
-        };
+        using default_vote_t = pool_default_vote_t;
 
         struct voting_threshold_t {
             struct no_voting_threshold_t {};
@@ -269,7 +249,42 @@ namespace turbo::cardano::ledger::conway {
         std::optional<uint64_t> _conway_start_epoch {};
         bool _ratify_ready = false;
 
+        // Transaction identity and deferred certificate cleanup; never serialized.
+        std::optional<std::pair<uint64_t, size_t>> _certificate_tx {};
+        std::map<credential_t, set_t<credential_t>> _pending_drep_removals {};
+        void _begin_transaction(const cert_loc_t &);
+        bool _withdrawal_accounts_registered(const gov_action_t &) const;
+        bool _known_committee_cold_id(const credential_t &) const;
+        void register_stake(uint64_t, const stake_ident &, std::optional<uint64_t>, size_t=0, size_t=0) override;
+        void _register_delegating_stake(const stake_ident &, uint64_t, const cert_loc_t &);
+        void _register_stake(uint64_t, const stake_ident &, std::optional<uint64_t>, size_t, size_t);
+        void _delegate_vote(const stake_ident &, const drep_t &);
+
+        // Ordered LEDGER dispatch enters the transaction once before these rules.
+        // Public process_cert/proposal/vote methods remain single-event adapters.
+        template<typename Certificate>
+        void _apply_cert(const Certificate &c, const cert_loc_t &loc)
+        {
+            babbage::state::process_cert(c, loc);
+        }
+        void _apply_cert(const stake_dereg_cert &, const cert_loc_t &);
+        void _apply_cert(const reg_cert &, const cert_loc_t &);
+        void _apply_cert(const unreg_cert &, const cert_loc_t &);
+        void _apply_cert(const vote_deleg_cert &, const cert_loc_t &);
+        void _apply_cert(const stake_vote_deleg_cert &, const cert_loc_t &);
+        void _apply_cert(const stake_reg_deleg_cert &, const cert_loc_t &);
+        void _apply_cert(const vote_reg_deleg_cert &, const cert_loc_t &);
+        void _apply_cert(const stake_vote_reg_deleg_cert &, const cert_loc_t &);
+        void _apply_cert(const auth_committee_hot_cert &, const cert_loc_t &);
+        void _apply_cert(const resign_committee_cold_cert &, const cert_loc_t &);
+        void _apply_cert(const reg_drep_cert &, const cert_loc_t &);
+        void _apply_cert(const unreg_drep_cert &, const cert_loc_t &);
+        void _apply_cert(const update_drep_cert &, const cert_loc_t &);
+        void _apply_proposal(const proposal_t &, const cert_loc_t &);
+        void _apply_vote(const vote_info_t &, const cert_loc_t &);
+
         // previously public method
+        void delegate_stake(const stake_ident &, const pool_hash &) override;
         virtual void delegate_vote(const stake_ident &, const drep_t &, const cert_loc_t &);
         void retire_stake(uint64_t slot, const stake_ident &stake_id, std::optional<uint64_t> deposit) override;
 
@@ -323,7 +338,8 @@ namespace turbo::cardano::ledger::conway {
         void _gov_remove_with_descendants(const gov_action_id_t &gid);
         void _gov_finalize();
         void _gov_enact();
-        void _gov_make_pulsing_snapshot();
+        void _snapshot_pool_default_votes();
+        void _gov_make_pulsing_snapshot(bool pool_defaults_ready=false);
     };
 }
 

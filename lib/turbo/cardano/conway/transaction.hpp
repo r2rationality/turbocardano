@@ -92,6 +92,7 @@ namespace turbo::cardano::conway {
 
     struct transaction_output_t {
         tx_out_data value {};
+        uint32_t encoded_size = 0;
 
         static transaction_output_t from_cbor(cbor::zero2::value &);
         void to_cbor(era_encoder &) const;
@@ -99,6 +100,7 @@ namespace turbo::cardano::conway {
 
     struct transaction_outputs_t {
         tx_output_list value {};
+        std::vector<uint32_t> encoded_sizes {};
 
         static transaction_outputs_t from_cbor(cbor::zero2::value &);
         void to_cbor(era_encoder &) const;
@@ -111,6 +113,11 @@ namespace turbo::cardano::conway {
     };
 
     struct transaction_body_t: babbage::transaction_body_t {
+        std::vector<uint32_t> output_sizes {};
+        uint32_t collateral_return_size = 0;
+        std::optional<hash_32> auxiliary_data_hash {};
+        std::optional<hash_32> script_data_hash {};
+        std::optional<uint8_t> network_id {};
         voting_procedures_t votes {};
         proposal_set proposals {};
         std::optional<uint64_t> current_treasury {};
@@ -134,6 +141,7 @@ namespace turbo::cardano::conway {
     };
 
     struct transaction_witness_set_t: babbage::transaction_witness_set_t {
+        buffer datum_bytes {};
         static transaction_witness_set_t from_cbor(cbor::zero2::value &);
         void to_cbor(era_encoder &) const;
     };
@@ -154,6 +162,9 @@ namespace turbo::cardano::conway {
         virtual const proposal_set &proposals() const =0;
         virtual std::optional<uint64_t> current_treasury() const =0;
         void parse_witnesses(cbor::zero2::value &) override;
+        buffer datum_bytes() const { return _datum_bytes; }
+    private:
+        buffer _datum_bytes {};
     };
 
     struct tx: tx_base {
@@ -178,6 +189,7 @@ namespace turbo::cardano::conway {
         const vote_set &votes() const override;
         const proposal_set &proposals() const override;
         std::optional<uint64_t> current_treasury() const override;
+        const transaction_body_t &body() const { return _body; }
         void body_to_cbor(era_encoder &) const;
         void witnesses_to_cbor(era_encoder &) const;
     private:

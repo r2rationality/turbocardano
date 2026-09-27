@@ -156,6 +156,8 @@ namespace turbo::cardano::ledger::shelley {
         virtual const shelley_delegate_schedule &shelley_delegs_schedule() const;
         virtual void genesis_deleg_update(uint64_t slot, const key_hash &hash, const pool_hash &pool_id, const vrf_vkey &vrf_vkey);
         virtual void rotate_snapshots();
+        virtual void finish_certificates() {}
+        virtual void finish_transaction() { finish_certificates(); }
 
         virtual void process_cert(const stake_reg_cert &, const cert_loc_t &);
         virtual void process_cert(const stake_dereg_cert &, const cert_loc_t &);

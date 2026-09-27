@@ -22,10 +22,8 @@ namespace turbo::cli::repack {
                 scheduler::get(), file_remover::get(), false
             };
             const auto stats = cr.repack();
-            logger::info(
-                "repack complete: analyzed {} chunks, repacked {}, merged {} partial groups, compressed size {} -> {} bytes",
-                stats.chunks_analyzed, stats.chunks_repacked, stats.partial_groups_merged,
-                stats.compressed_size_before, stats.compressed_size_after);
+            if (!stats.chunks_repacked)
+                logger::info("repack: no chunks need repacking");
         }
     };
     static auto instance = command::reg(std::make_shared<cmd_t>());

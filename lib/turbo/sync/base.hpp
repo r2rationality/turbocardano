@@ -9,13 +9,13 @@
 #include <turbo/chunk-registry.hpp>
 
 namespace turbo::sync {
-    enum class validation_mode_t { turbo, full, none };
+    using validation_mode_t = validator::validation_mode;
     extern validation_mode_t validation_mode_from_text(std::string_view);
 
     struct peer_info {
         virtual ~peer_info() =default;
         virtual std::string id() const =0;
-        virtual const cardano::point3 &tip() const =0;
+        virtual const cardano::optional_point3 &tip() const =0;
         virtual const cardano::optional_point &intersection() const =0;
         virtual void intersection(const cardano::optional_point &) =0;
     };

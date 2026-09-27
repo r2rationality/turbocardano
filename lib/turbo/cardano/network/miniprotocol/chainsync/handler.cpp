@@ -9,8 +9,8 @@
 
 namespace turbo::cardano::network::miniprotocol::chainsync {
     struct handler::impl {
-        explicit impl(std::shared_ptr<chunk_registry> cr):
-            _cr { std::move(cr) }
+        explicit impl(std::shared_ptr<chain_source> source):
+            _source { std::move(source) }
         {
         }
 
@@ -19,6 +19,12 @@ namespace turbo::cardano::network::miniprotocol::chainsync {
             if (!_state.is<st_idle_t>()) [[unlikely]]
                 throw error(fmt::format("no messages are expected in state {} but got one: {} bytes", _state.name(), bytes.size()));
             _process_st_idle_msg(bytes, send_func);
+        }
+
+        void poll(const protocol_send_func &send)
+        {
+            if (_state.is<st_must_reply_t>())
+                _next(send, false);
         }
 
         void failed(const std::string_view)
@@ -66,9 +72,11 @@ namespace turbo::cardano::network::miniprotocol::chainsync {
             std::chrono::system_clock::time_point _start = std::chrono::system_clock::now();
         };
 
-        const std::shared_ptr<const chunk_registry> _cr;
+        const std::shared_ptr<chain_source> _source;
+        std::shared_ptr<const chain_source::view> _cursor_view;
+        bool _initial_rollback = false;
         state_t _state {};
-        std::optional<point2> _isect {};
+        optional_point2 _isect {};
 
         void _send(const protocol_send_func &send_func, msg_t &&m)
         {
@@ -115,41 +123,62 @@ namespace turbo::cardano::network::miniprotocol::chainsync {
             throw error(fmt::format("messages of type {} are not expected!", typeid(M).name()));
         }
 
+        optional_point3 _tip(const chain_source::view &v) const
+        {
+            return v.tip;
+        }
+
+        void _process_msg(const msg_done_t &, const protocol_send_func &)
+        {
+            _state = st_done_t {};
+        }
+
         void _process_msg(const msg_find_intersect_t &msg, const protocol_send_func &send_func)
         {
+            const auto view = _source->current();
+            _isect.reset();
+            _initial_rollback = false;
+            _cursor_view = view;
             for (const auto &p: msg.points) {
-                if (const auto block_it = _cr->find_block(p); block_it != _cr->cend()) {
-                    _isect = block_it->point2();
-                    return _respond(send_func, msg_intersect_found_t { block_it->point2(), _cr->tip().value() });
+                if (!p || view->find(*p)) {
+                    _isect = p;
+                    _initial_rollback = true;
+                    return _respond(send_func, msg_intersect_found_t { p, _tip(*view) });
                 }
             }
-            if (const auto tip = _cr->tip(); tip)
-                return _respond(send_func, msg_intersect_not_found_t { *tip });
-            return _respond(send_func, msg_intersect_not_found_t { point { _cr->config().byron_genesis_hash, 0 } });
+            _respond(send_func, msg_intersect_not_found_t { _tip(*view) });
+        }
+
+        void _next(const protocol_send_func &send, const bool can_await)
+        {
+            const auto view = _source->current();
+            if (_isect && !view->find(*_isect)) {
+                auto old_pos = _cursor_view ? _cursor_view->find(*_isect) : std::nullopt;
+                _isect.reset();
+                while (old_pos) {
+                    const auto p = _cursor_view->block(*old_pos).point2();
+                    if (view->find(p)) { _isect = p; break; }
+                    old_pos = _cursor_view->previous(*old_pos);
+                }
+                _initial_rollback = true;
+            }
+            _cursor_view = view;
+            if (_initial_rollback) {
+                _initial_rollback = false;
+                return _respond(send, msg_roll_backward_t { _isect, _tip(*view) });
+            }
+            auto pos = _isect ? view->next(*view->find(*_isect)) : chain_source::view::position { 0, 0 };
+            if (pos != view->end()) {
+                _isect = view->block(pos).point2();
+                return _respond(send, msg_roll_forward_t { _source->read_header(*view, pos), _tip(*view) });
+            }
+            if (can_await)
+                _respond(send, msg_await_reply_t {});
         }
 
         void _process_msg(const msg_request_next_t &, const protocol_send_func &send_func)
         {
-            // By default, stream from the starting block
-            auto it = _cr->cbegin();
-            // If there is an intersection we stream from the first block after it
-            if (_isect) {
-                it = _cr->find_block(*_isect);
-                if (it == _cr->cend()) [[unlikely]]
-                    throw error(fmt::format("internal error: cannot find the intersection block!"));
-                ++it;
-            }
-            if (it != _cr->cend()) [[likely]] {
-                // simulate the Cardano Node behavior
-                //if (it == _cr->cbegin()) [[unlikely]]
-                //    _respond(send_func, msg_roll_backward_t { optional_point2 {}, *_cr->tip() });
-                if (it != _cr->cend()) [[likely]] {
-                    _isect = it->point2();
-                    auto hdr = it.header();
-                    return _respond(send_func, msg_roll_forward_t { std::move(hdr), _cr->tip().value() });
-                }
-            }
-            _respond(send_func, msg_await_reply_t {});
+            _next(send_func, true);
         }
 
         void _process_st_idle_msg(const buffer bytes, const protocol_send_func &send_func)
@@ -162,8 +191,13 @@ namespace turbo::cardano::network::miniprotocol::chainsync {
         }
     };
 
-    handler::handler(std::shared_ptr<chunk_registry> cr):
-        _impl { std::make_unique<impl>(std::move(cr)) }
+    handler::handler(std::shared_ptr<chunk_registry> cr)
+        : handler { std::make_shared<chain_source>(std::move(cr)) }
+    {
+    }
+
+    handler::handler(std::shared_ptr<chain_source> source):
+        _impl { std::make_unique<impl>(std::move(source)) }
     {
     }
 
@@ -172,6 +206,11 @@ namespace turbo::cardano::network::miniprotocol::chainsync {
     void handler::data(const buffer bytes, const protocol_send_func &send_func)
     {
         _impl->data(bytes, send_func);
+    }
+
+    void handler::poll(const protocol_send_func &send)
+    {
+        _impl->poll(send);
     }
 
     void handler::failed(const std::string_view err)

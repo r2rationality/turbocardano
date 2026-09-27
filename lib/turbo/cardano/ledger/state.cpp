@@ -18,6 +18,14 @@
 #endif
 
 namespace turbo::cardano::ledger {
+    uint64_t state::drep_deposit(const credential_t &id) const
+    {
+        const auto *conway_state = dynamic_cast<const conway::state *>(_state.get());
+        if (!conway_state)
+            return 0;
+        const auto it = conway_state->drep_state().find(id);
+        return it == conway_state->drep_state().end() ? 0 : it->second.deposited;
+    }
     state::state(const cardano::config &cfg, scheduler &sched, const init_mode mode):
         _cfg { cfg }, _sched { sched },
         _state { std::make_unique<shelley::state>(_cfg, _sched, mode) },
@@ -252,21 +260,7 @@ namespace turbo::cardano::ledger {
         _transition_ledger_era(from_era, to_era);
     }
 
-    void state::start_epoch(const std::optional<uint64_t> new_epoch)
-    {
-        const auto prev_pv = _state->_params.protocol_ver;
-        _state->start_epoch(new_epoch);
-        if (!_vrf_state->kes_counters().empty())
-            _vrf_state->finish_epoch(_state->_params.extra_entropy);
-        const auto new_pv = _state->_params.protocol_ver;
-        if (new_pv != prev_pv) {
-            if (new_pv < prev_pv) [[unlikely]]
-                throw error(fmt::format("protocol downgrades are not supported: went from {} to {}", prev_pv, new_pv));
-            _transition_era(prev_pv.era(), new_pv.era());
-            const auto tip_slot = slot::from_epoch(_state->_epoch, _state->_epoch_slot, _cfg);
-            track_era(new_pv.era(), tip_slot);
-        }
-    }
+#include <turbo/cardano/ledger/rules/new-epoch/dispatch.ipp>
 
     void state::process_cert(const cert_t &cert, const cert_loc_t &loc)
     {
@@ -291,8 +285,9 @@ namespace turbo::cardano::ledger {
     update_effects_t state::process_timed_updates(timed_update_list &&updates)
     {
         update_effects_t effects {};
-        for (auto &&upd: updates)
-            _state->_process_timed_update(effects.collected_collateral, effects.collateral_refund, std::move(upd));
+        auto [collateral, refund] = _state->_process_timed_updates(std::move(updates));
+        effects.collected_collateral = std::move(collateral);
+        effects.collateral_refund = refund;
         return effects;
     }
 
@@ -301,19 +296,17 @@ namespace turbo::cardano::ledger {
         _state->_process_utxo_updates(std::move(updates));
     }
 
-    void state::finish_update_processing(update_effects_t &&effects, const bool run_pulser)
-    {
-        _state->_process_collateral_use(std::move(effects.collected_collateral));
-        if (effects.collateral_refund)
-            _state->sub_fees(effects.collateral_refund);
-        if (run_pulser)
-            _state->run_pulser_if_ready();
-    }
+#include <turbo/cardano/ledger/rules/ledger/dispatch.ipp>
 
     void state::process_updates(updates_t &&updates)
     {
-        for (const auto &u: updates.blocks)
-            track_era(u.era, u.slot);
-        _state->process_updates(std::move(updates));
+        const auto last_slot = updates.blocks.empty()
+            ? optional_slot {} : optional_slot { updates.blocks.back().slot };
+        process_block_updates(std::move(updates.blocks));
+        auto effects = process_timed_updates(std::move(updates.timed));
+        if (last_slot)
+            tick(*last_slot);
+        process_utxo_updates(std::move(updates.utxos));
+        finish_update_processing(std::move(effects));
     }
 }

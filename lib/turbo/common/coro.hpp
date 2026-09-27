@@ -42,13 +42,14 @@ namespace turbo::coro {
             {
             }
 
-            void unhandled_exception()
+            void unhandled_exception() noexcept
             {
-                std::terminate();
+                _exception = std::current_exception();
             }
         private:
             friend generator_t;
             std::optional<T> _current_value {};
+            std::exception_ptr _exception {};
         };
 
         generator_t(generator_t&& t) noexcept:
@@ -77,6 +78,8 @@ namespace turbo::coro {
             if (!_coro || _coro.done())
                 return false;
             _coro.resume();
+            if (const auto &ex = _coro.promise()._exception)
+                std::rethrow_exception(ex);
             return !_coro.done();
         }
 
