@@ -3,13 +3,14 @@
  * Copyright (c) 2024-2026 R2 Rationality OÜ (info at r2rationality dot com)
  * License: https://github.com/r2rationality/turbocardano/blob/main/LICENSE */
 
-#include "handler.hpp"
 #include <turbo/cardano/network/mock.hpp>
 #include <turbo/chunk-registry.hpp>
 #include <turbo/common/test.hpp>
 #include <turbo/common/variant.hpp>
-#include "messages.hpp"
 #include <turbo/sync/mocks.hpp>
+#include <turbo/storage/test.hpp>
+#include "handler.hpp"
+#include "messages.hpp"
 
 namespace {
     namespace dt = turbo;
@@ -36,8 +37,8 @@ namespace {
 suite cardano_network_miniprotocol_chainsync_suite = [] {
     "cardano::network::miniprotocol::chainsync"_test = [] {
         const file::tmp_directory cr_empty_dir { "test-chainsync-empty-chain" };
-        const auto cr_empty = std::make_shared<chunk_registry>(cr_empty_dir.path(), chunk_registry::mode::store);
-        const auto cr = std::make_shared<chunk_registry>(install_path("data/chunk-registry"), chunk_registry::mode::store);
+        const auto cr_empty = std::make_shared<chunk_registry>(cr_empty_dir.path());
+        const auto cr = std::make_shared<chunk_registry>(turbo::storage::sample_registry_path(), chunk_registry_settings_t { .mode=chunk_registry::mode::store });
 
         "find_intersect empty"_test = [&] {
             chainsync::handler h { cr };
@@ -190,8 +191,7 @@ suite cardano_network_miniprotocol_chainsync_suite = [] {
             const file::tmp_directory dir { "chainsync-live" };
             const auto chain = sync::gen_chain({ .height=2 });
             file_remover remover;
-            auto live = std::make_shared<chunk_registry>(dir.path(), chunk_registry::mode::store,
-                cardano::config { chain.cfg }, scheduler::get(), remover);
+            auto live = std::make_shared<chunk_registry>(dir.path(), chunk_registry_settings_t { .ccfg=cardano::config { chain.cfg }, .fr=remover });
             auto source = std::make_shared<chain_source>(live);
             chainsync::handler h { source };
             mock_response_processor_t<chainsync::msg_t> resp { decode };
@@ -199,7 +199,7 @@ suite cardano_network_miniprotocol_chainsync_suite = [] {
             expect(fatal(std::holds_alternative<chainsync::msg_await_reply_t>(resp.at(0))));
             h.poll(std::ref(resp));
             expect_equal(resp.size(), 1);
-            live->accept_anything_or_throw({}, chain.tip, [&] { live->add_buffer(0, chain.data); });
+            live->accept_anything_or_throw({}, *chain.tip, [&] { live->add_buffer(0, chain.data); });
             h.poll(std::ref(resp));
             expect_equal(resp.size(), 1); // unannounced commits remain invisible
             source->publish({});
@@ -220,7 +220,7 @@ suite cardano_network_miniprotocol_chainsync_suite = [] {
             expect_equal(*back.target, static_cast<point2>(target));
             expect_equal(back.tip, optional_point3 { target });
             const auto tail = static_cast<buffer>(chain.data).subbuf(target.end_offset);
-            live->accept_anything_or_throw(target, chain.tip, [&] { live->add_buffer(target.end_offset, uint8_vector { tail }); });
+            live->accept_anything_or_throw(target, *chain.tip, [&] { live->add_buffer(target.end_offset, uint8_vector { tail }); });
             source->publish(target);
             h.data(encode(chainsync::msg_request_next_t {}), std::ref(resp));
             const auto &forward = dt::variant::get_nice<chainsync::msg_roll_forward_t>(resp.messages().back());

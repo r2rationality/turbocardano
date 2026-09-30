@@ -18,6 +18,7 @@
 #include <turbo/indexer.hpp>
 #include <turbo/json.hpp>
 #include <turbo/storage/chunk-info.hpp>
+#include <turbo/storage/commit.hpp>
 #include <turbo/storage/const-iterator.hpp>
 #include <turbo/storage/const-reverse-iterator.hpp>
 #include <turbo/validator.hpp>
@@ -54,7 +55,7 @@ namespace turbo {
 
         [[nodiscard]] const cardano::block_hash &last_block_hash() const
         {
-            return _chunks.back()->last_block_hash;
+            return _chunks.back()->last_block.hash;
         }
 
         [[nodiscard]] uint64_t first_slot() const
@@ -64,7 +65,7 @@ namespace turbo {
 
         [[nodiscard]] uint64_t last_slot() const
         {
-            return _chunks.back()->last_slot;
+            return _chunks.back()->last_block.slot;
         }
 
         [[nodiscard]] uint64_t start_offset() const
@@ -167,6 +168,7 @@ namespace turbo {
         std::function<void()> start_tx {};
         std::function<void()> prepare_tx {};
         std::function<void()> rollback_tx {};
+        // In-memory finalization only. Persistent outputs are registered during stage_tx.
         std::function<void()> commit_tx {};
         std::function<void(const cardano::optional_point &, bool)> truncate {};
         std::function<void(const cardano::block_base &)> on_block_validate {};
@@ -174,11 +176,27 @@ namespace turbo {
         std::function<void(uint64_t, const epoch_info &)> on_epoch_update {};
         std::function<void(std::string_view, uint64_t, uint64_t)> on_progress {};
         std::function<void(const storage::chunk_info &, buffer)> on_chunk_data {};
+        // Called after final truncation; persist and register the accepted state.
+        std::function<void()> stage_tx {};
+    };
+
+    struct chunk_registry_settings_t {
+        enum class mode_t { store, index, validate };
+
+        mode_t mode = mode_t::validate;
+        bool validate_vrf = true;
+        bool continuous = false;
+        cardano::config ccfg = cardano::config::get();
+        file_remover &fr = file_remover::get();
+        scheduler &sched = scheduler::get();
+        // Existing committed state is authoritative unless salvage is requested.
+        // A database without registry state is salvaged automatically.
+        bool recover_orphans = false;
     };
 
     struct chunk_registry {
-        enum class mode { store, index, validate };
-        enum class repack_mode_t { full, merge_closed };
+        using mode = chunk_registry_settings_t::mode_t;
+        enum class repack_mode_t { full, merge_closed, merge_fragmented };
 
         struct repack_stats_t {
             size_t chunks_analyzed = 0;
@@ -209,7 +227,6 @@ namespace turbo {
         struct active_transaction {
             cardano::optional_point start {};
             std::optional<progress_point> target {};
-            bool prepared = false;
             bool restore_ledger = false;
 
             uint64_t start_offset() const
@@ -256,10 +273,9 @@ namespace turbo {
             return std::filesystem::canonical(db_dir);
         }
 
-        explicit chunk_registry(const std::string &data_dir, mode mode=mode::validate,
-            cardano::config ccfg=cardano::config::get(), scheduler &sched=scheduler::get(), file_remover &fr=file_remover::get(),
-            bool auto_maintenance=true, bool validate_vrf=true, bool continuous=false);
+        explicit chunk_registry(const std::string &data_dir, chunk_registry_settings_t settings={});
         ~chunk_registry();
+        mode operating_mode() const noexcept { return _mode; }
 
         // Interoperability
 
@@ -322,6 +338,7 @@ namespace turbo {
 
         const std::filesystem::path &data_dir() const;
         std::string rel_path(const std::filesystem::path &full_path) const;
+        // Resolve a relative chunk path without creating directories; '..' is forbidden.
         std::string full_path(const std::filesystem::path &rel_path) const;
         uint64_t read_holding_chunk(uint8_vector &chunk_data, const uint64_t offset) const;
         cbor::zero2::parsed_value read_from_chunk_buffer(const uint64_t value_offset, const buffer &chunk_data, const uint64_t chunk_offset) const;
@@ -329,24 +346,36 @@ namespace turbo {
 
         // state modifying methods
 
-        void maintenance();
+        // Transaction outputs mirror their final paths under a unique staging directory.
+        std::string stage_path(const std::filesystem::path &relative) const;
+        std::string read_path(const std::filesystem::path &relative) const;
+        void stage_output(const std::filesystem::path &relative);
+        // Reconcile committed state and reclaim unused files. Explicit salvage
+        // may also validate and adopt unregistered chunks.
+        void maintenance(bool recover_orphans=false);
         bool continuous() const noexcept { return _continuous; }
-        // Recovery preserves stored blocks and rebuilds lagging derived state.
-        void recover();
         std::vector<cardano::point> checkpoint_points() const;
         repack_stats_t checkpoint(bool force=true);
         bool checkpoint_requested() const { return _checkpoint_requested.load(std::memory_order_acquire); }
         void request_checkpoint() { _checkpoint_requested.store(true, std::memory_order_release); }
-        void revalidate(const chunk_list &chunks, const cardano::optional_point &target,
+        // Replay the registered prefix through a chunk boundary; nullopt selects genesis.
+        void revalidate(cardano::optional_point target,
             std::chrono::steady_clock::duration checkpoint_interval=validator::snapshot_policy::catchup_interval);
         void before_commit(std::function<void()> check) { _before_commit = std::move(check); }
+        // merge_fragmented applies the threshold per logical chunk, including the open chunk.
         repack_stats_t repack(repack_mode_t mode=repack_mode_t::full, size_t fragment_threshold=0);
+        // Importing an empty source is a no-op.
         void import(const chunk_registry &src_cr);
-        progress_point add_buffer(uint64_t offset, uint8_vector uncompressed, std::optional<uint8_vector> compressed={}, int32_t compression_level=0);
+        static constexpr int32_t default_compression_level = 9;
+        progress_point add_buffer(uint64_t offset, uint8_vector uncompressed, int32_t compression_level=default_compression_level);
+        progress_point add_compressed(uint64_t offset, uint8_vector compressed, int32_t compression_level=0);
+        // The caller guarantees that compressed decodes exactly to uncompressed.
+        // Only that correspondence is trusted; normal block/chunk validation still applies.
+        progress_point add_buffer_trusted(uint64_t offset, buffer uncompressed, buffer compressed, int32_t compression_level=0);
         void add_file(uint64_t offset, const std::string &local_path, int32_t compression_level=0);
-        [[nodiscard]] std::exception_ptr accept_progress(const cardano::optional_point &start, const std::optional<progress_point> &target, const std::function<void()> &action);
-        void accept_anything_or_throw(const cardano::optional_point &start, const std::optional<progress_point> &target, const std::function<void()> &action);
-        //void accept_progress_or_throw(const cardano::optional_point &start, const std::optional<progress_point> &target, const std::function<void()> &action);
+        // Ingestion requires an explicit target; a target at slot zero is valid.
+        [[nodiscard]] std::exception_ptr accept_progress(const cardano::optional_point &start, const progress_point &target, const std::function<void()> &action);
+        void accept_anything_or_throw(const cardano::optional_point &start, const progress_point &target, const std::function<void()> &action);
         void truncate(const cardano::optional_point &new_tip);
 
         // data export
@@ -356,6 +385,24 @@ namespace turbo {
         std::string node_export_ledger(const std::filesystem::path &ledger_dir, const cardano::optional_point &imm_tip, int prio=1000) const;
     private:
         friend const_iterator;
+
+        struct maintenance_scan_t {
+            std::map<std::string, uint64_t> chunks;
+            std::vector<std::string> temporary;
+        };
+
+        maintenance_scan_t _scan_storage() const;
+        void _require_clean_storage(const maintenance_scan_t &scan, const chunk_map &chunks) const;
+        void _repair_or_require_clean_storage(const maintenance_scan_t &scan, chunk_map &chunks,
+            const file_remover::remove_point_map &marked);
+        indexer::slice_list _inspect_derived_state(const chunk_map &chunks, const file_remover::remove_point_map &marked) const;
+        void _maintenance(maintenance_scan_t scan, bool recover_orphans);
+        void _recover_orphans(const std::vector<std::string> &paths, const maintenance_scan_t &scan);
+        void _recover_registered();
+        enum class replay_mode { registered, orphans, revalidation };
+        void _replay(const chunk_list &chunks, const cardano::optional_point &start,
+            optional_progress_point target, std::chrono::steady_clock::duration checkpoint_interval,
+            replay_mode mode=replay_mode::registered);
 
         struct repack_plan_t;
         std::unique_ptr<repack_plan_t> _prepare_repack(repack_mode_t mode, size_t fragment_threshold=0) const;
@@ -367,8 +414,10 @@ namespace turbo {
         std::atomic_bool _checkpoint_requested { false };
         std::function<void()> _before_commit {};
 
+        const mode _mode;
         const std::filesystem::path _data_dir;
         const std::filesystem::path _db_dir;
+        std::unique_ptr<storage::registry_writer_lock> _writer_lock {};
         const cardano::config _cardano_cfg;
         scheduler &_sched;
         file_remover &_file_remover;
@@ -377,11 +426,13 @@ namespace turbo {
         std::unique_ptr<indexer::incremental> _indexer {};
         std::unique_ptr<validator::incremental> _validator {};
         std::optional<active_transaction> _transaction {};
+        std::unique_ptr<storage::commit_journal> _journal {};
+        std::vector<std::shared_ptr<void>> _transaction_pins {};
         mutable mutex::unique_lock::mutex_type _tx_progress_mutex alignas(mutex::alignment) {};
         mutable std::map<std::string, uint64_t> _tx_progress_max {};
         mutable std::atomic_size_t _tx_progress_parse { 0 };
         const std::string _state_path;
-        const std::string _state_path_pre;
+        bool _state_needs_save = false;
         mutable mutex::unique_lock::mutex_type _update_mutex alignas(mutex::alignment) {};
         chunk_map _chunks {};
         // Active transaction data
@@ -402,15 +453,17 @@ namespace turbo {
         void _my_prepare_tx();
         void _my_rollback_tx();
         void _my_commit_tx();
-        void _require_better_candidate_chain();
-        // can commit progress while still returning the error that stopped the attempt
+        void _require_better_candidate_chain(bool allow_existing_prefix=false);
+        // Can commit progress while still returning the error that stopped the attempt.
+        // An unset target is reserved for internal transactions selecting genesis.
         [[nodiscard]] std::exception_ptr _accept_progress(const cardano::optional_point &start, const std::optional<progress_point> &target,
                 const bool aim_progress, const std::function<void()> &action);
         void _start_tx(cardano::optional_point start, const std::optional<progress_point> &target);
         void _prepare_tx();
         void _rollback_tx();
         void _commit_tx();
-        void _save_state(const std::string &path);
+        void _stage_state(storage::commit_journal &journal) const;
+        void _commit_state(std::unique_ptr<storage::commit_journal> journal);
         void _do_truncate(const cardano::optional_point &new_tip, const bool track_changes);
         progress_point _add(const uint64_t offset, const std::string &local_path, buffer uncompressed,
             uint64_t compressed_size, int32_t compression_level, std::optional<cardano::block_hash> data_hash={});

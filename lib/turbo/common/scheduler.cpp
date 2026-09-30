@@ -38,8 +38,8 @@ namespace fmt {
 
 namespace turbo {
     struct scheduler::impl {
-        explicit impl(const size_t user_num_workers)
-            : _num_workers { _find_num_workers(user_num_workers) }
+        explicit impl(const size_t user_num_workers):
+            _num_workers{user_num_workers}
         {
             if (_num_workers == 0) [[unlikely]]
                 throw error("the number of worker threads must be greater than zero!");
@@ -360,17 +360,6 @@ namespace turbo {
         std::atomic_bool _wait_all_done_running { false };
         std::atomic<std::chrono::time_point<std::chrono::system_clock>> _report_next_time { std::chrono::system_clock::now() + default_update_interval };
 
-        static size_t _find_num_workers(size_t user_num_workers)
-        {
-            const char *env_workers_str = std::getenv("DT_WORKERS");
-            if (env_workers_str != nullptr) {
-                size_t env_workers = std::stoul(env_workers_str);
-                if (env_workers != 0)
-                    return env_workers;
-            }
-            return user_num_workers;
-        }
-
         std::optional<size_t> _get_worker_id() const
         {
             const auto w_it = _worker_ids.find(boost::this_thread::get_id());
@@ -543,6 +532,17 @@ namespace turbo {
                 progress::get().inform();
         }
     };
+
+    size_t scheduler::default_worker_count()
+    {
+        if (const auto *env_workers_str = std::getenv("TURBO_WORKERS"); env_workers_str != nullptr) {
+            const auto env_workers = std::stoul(env_workers_str);
+            if (env_workers != 0) {
+                return env_workers;
+            }
+        }
+        return std::max(1U, std::thread::hardware_concurrency());
+    }
 
     scheduler::scheduler(size_t user_num_workers)
         : _impl { std::make_unique<impl>(user_num_workers) }

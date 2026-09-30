@@ -5,6 +5,7 @@
 
 #include <turbo/cli/common.hpp>
 #include <turbo/chunk-registry.hpp>
+#include <turbo/storage/test.hpp>
 
 namespace turbo::cli::test_recreate_cr_state {
     struct cmd: command {
@@ -22,19 +23,18 @@ namespace turbo::cli::test_recreate_cr_state {
             const auto &src_dir = *opts.at("src-dir");
             const auto &dst_dir = *opts.at("dst-dir");
             std::filesystem::remove_all(dst_dir);
-            chunk_registry cr { dst_dir, chunk_registry::mode::store };
             const auto j_state = json::load(src_dir + "/compressed/state.json").as_object();
-            cr.accept_anything_or_throw({}, json::value_to<uint64_t>(j_state.at("chunks").as_array().back().at("lastSlot")), [&] {
-                uint64_t offset = 0;
-                for (const auto &j_chunk: j_state.at("chunks").as_array()) {
-                    const auto chunk_name = fmt::format("{}.zstd", json::value_to<std::string_view>(j_chunk.at("hash")));
-                    const auto src_path = fmt::format("{}/compressed/chunk/{}", src_dir, chunk_name);
-                    const auto dst_path = cr.full_path(chunk_name);
-                    std::filesystem::copy(src_path, dst_path);
-                    cr.add_file(offset, dst_path);
-                    offset += json::value_to<uint64_t>(j_chunk.at("size"));
-                }
-            });
+            storage::chunk_fixture_t fixture { dst_dir };
+            uint64_t offset = 0;
+            for (const auto &j_chunk: j_state.at("chunks").as_array()) {
+                const auto chunk = storage::chunk_info::from_json(j_chunk.as_object());
+                const auto src_path = src_dir + "/compressed/" + chunk.rel_path();
+                const auto compressed = file::read(src_path);
+                const auto raw = zstd::decompress(compressed);
+                fixture.add_trusted(offset, raw, compressed);
+                offset += raw.size();
+            }
+            fixture.save();
         }
     };
     static auto instance = command::reg(std::make_shared<cmd>());

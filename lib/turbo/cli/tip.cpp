@@ -22,7 +22,7 @@ namespace turbo::cli::tip {
         {
             const auto &data_dir = args.at(0);
             const auto mode = common::cr_mode(opts);
-            const chunk_registry cr { data_dir, mode };
+            const chunk_registry cr { data_dir, chunk_registry_settings_t { .mode=mode } };
             const auto tip = cr.tip();
             logger::info("the local tip: {}", tip);
             if (mode == chunk_registry::mode::validate) {

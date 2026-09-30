@@ -12,12 +12,9 @@
 !data/**
 !test/
 !test/**
-!publisher/
-!publisher/**
 !CMakeLists.txt
 !docker-dev.sh
 !docker-test.sh
-!docker-publisher.sh
 
 # Exclude Git metadata, including submodule .git files.
 **/.git

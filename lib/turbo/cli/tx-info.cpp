@@ -19,7 +19,7 @@ namespace turbo::cli::tx_info {
         {
             const std::string &data_dir = args.at(0);
             const auto tx_hash = cardano::tx_hash::from_hex(args.at(1));
-            chunk_registry cr { data_dir, chunk_registry::mode::index };
+            chunk_registry cr { data_dir, chunk_registry_settings_t { .mode=chunk_registry::mode::index } };
             reconstructor r { cr };
             const auto tx_info = r.find_tx(tx_hash);
             if (!tx_info) [[unlikely]]

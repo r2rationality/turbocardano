@@ -57,18 +57,60 @@ suite turbo_common_error_suite = [] {
             auto f = [] { throw error("Hello!"); };
             expect_throws_msg(f, "Hello!");
         };
+        "single argument remains literal"_test = [] {
+            expect_throws_msg([] { throw error("unmatched { and literal {}"); }, "unmatched { and literal {}");
+            const std::string message { "runtime message: {}" };
+            expect_throws_msg([&] { throw error(message); }, message);
+        };
         "integers"_test = [] {
-            auto f = [] { throw error(fmt::format("Hello {}!", 123)); };
+            auto f = [] { throw error("Hello {}!", 123); };
             expect_throws_msg(f, "Hello 123!");
         };
+        "multiple formatted arguments"_test = [] {
+            expect_throws_msg([] { throw error("{}: {:04x}", "value", 42); }, "value: 002a");
+        };
         "string"_test = [] {
-            auto f = [&] { throw error(fmt::format("Hello {}!", "world")); };
+            auto f = [&] { throw error("Hello {}!", "world"); };
             expect_throws_msg(f, "Hello world!");
         };
         "buffer"_test = [] {
             byte_array<4> buf { 0xDE, 0xAD, 0xBE, 0xEF };
-            auto f = [&] { throw error(fmt::format("Hello {}!", buf)); };
+            auto f = [&] { throw error("Hello {}!", buf); };
             expect_throws_msg(f, "Hello DEADBEEF!");
+        };
+        "exception argument preserves the cause overload"_test = [] {
+            const auto check = [](auto &&cause) {
+                const error nested { "context {}", std::forward<decltype(cause)>(cause) };
+                const std::string_view message { nested.what() };
+                expect(message.starts_with("context {} caused by "));
+                expect(message.find(": error2") != std::string_view::npos);
+            };
+            error2 mutable_cause;
+            const error2 const_cause;
+            const std::exception &base_cause = const_cause;
+            check(mutable_cause);
+            check(const_cause);
+            check(base_cause);
+            check(error2 {});
+        };
+        "explicitly formatted message with a cause"_test = [] {
+            const auto check = [](auto &&cause) {
+                const error nested { fmt::format("cannot commit {}: {:04x}", "transaction", 42), std::forward<decltype(cause)>(cause) };
+                const std::string_view message { nested.what() };
+                expect(message.starts_with("cannot commit transaction: 002a caused by "));
+                expect(message.find(": error2") != std::string_view::npos);
+            };
+            error2 mutable_cause;
+            const error2 const_cause;
+            const std::exception &base_cause = const_cause;
+            check(mutable_cause);
+            check(const_cause);
+            check(base_cause);
+            check(error2 {});
+        };
+        "explicitly formatted custom argument with a cause"_test = [] {
+            byte_array<4> bytes { 0xDE, 0xAD, 0xBE, 0xEF };
+            expect_throws_msg([&] { throw error(fmt::format("invalid hash {}", bytes), error2 {}); }, "invalid hash DEADBEEF caused by ");
         };
         "error_sys_ok"_test = [] {
             auto f = [&] { errno = 0; throw error_sys(fmt::format("Hello {}!", "world")); };

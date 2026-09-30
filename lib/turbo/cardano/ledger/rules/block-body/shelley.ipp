@@ -32,13 +32,14 @@
 
     void state::process_block(const uint64_t end_offset, const uint64_t slot)
     {
-        if (end_offset > _end_offset)
+        if (end_offset > _end_offset) {
             _end_offset = end_offset;
-        if (_params.protocol_ver.major >= 2) {
-            const auto epoch_slot = cardano::slot { slot, _cfg }.epoch_slot();
-            if (epoch_slot >= _cfg.shelley_voting_deadline)
-                ++_blocks_past_voting_deadline;
-            if (epoch_slot > _epoch_slot)
-                _epoch_slot = epoch_slot;
+        }
+        const auto epoch_slot = cardano::slot { slot, _cfg }.epoch_slot();
+        if (_params.protocol_ver.major >= 2 && epoch_slot >= _cfg.shelley_voting_deadline) {
+            ++_blocks_past_voting_deadline;
+        }
+        if (epoch_slot > _epoch_slot) {
+            _epoch_slot = epoch_slot;
         }
     }

@@ -28,30 +28,22 @@ namespace turbo::cli::validate {
                 max_epoch = std::stoull(*opt_it->second);
             const auto validation_mode = sync::validation_mode_from_text(opts.at("validation").value());
             progress_guard pg { "parse", "merge", "validate" };
-            cardano::optional_point max_block {};
-            chunk_list chunks {};
-            bool has_data = false;
-            {
-                chunk_registry cr { data_dir, chunk_registry::mode::store };
-                has_data = !cr.empty();
+            chunk_registry cr { data_dir };
+            auto max_block = cr.tip();
+            if (max_epoch) {
+                max_block.reset();
                 for (const auto &[offset, chunk]: cr.chunks()) {
-                    if (max_epoch && cr.make_slot(chunk.last_slot).epoch() > *max_epoch)
-                        continue;
+                    if (cr.make_slot(chunk.last_block.slot).epoch() > *max_epoch) {
+                        break;
+                    }
                     max_block = chunk.blocks.back().point();
-                    chunks.emplace_back(chunk);
                 }
-                if (!max_epoch)
-                    max_block = cr.tip();
             }
-            if (has_data) {
+            if (!cr.empty()) {
                 if (max_epoch)
                     logger::info("revalidating up to and including epoch: {}", *max_epoch);
-                // remove all previously prepared indices and validator snapshots
-                std::filesystem::remove_all(std::filesystem::path { data_dir } / "index");
-                std::filesystem::remove_all(std::filesystem::path { data_dir } / "validate");
-                std::filesystem::remove_all(std::filesystem::path { data_dir } / "checkpoints");
-                chunk_registry cr { data_dir, chunk_registry::mode::validate, cardano::config::get(),
-                    scheduler::get(), file_remover::get(), false };
+                // The replay transaction truncates derived state at genesis.
+                // Do not manufacture an inconsistent registry before opening it.
                 chunk_processor progress_proc {
                     .on_progress = [](const auto name, const auto rel_pos, const auto rel_target) {
                         progress::get().update(std::string { name }, rel_pos, rel_target);
@@ -62,13 +54,13 @@ namespace turbo::cli::validate {
                     cr.remove_processor(progress_proc);
                 } };
                 cr.validation(validation_mode);
-                cr.revalidate(chunks, max_block);
+                cr.revalidate(max_block);
                 if (max_epoch)
                     cr.remover().remove();
                 if (!cr.chunks().empty()) {
                     const auto &last_chunk = cr.chunks().rbegin()->second;
                     logger::info("validation complete last_slot: {} last_block: {} took: {:0.1f} secs",
-                        last_chunk.last_slot, last_chunk.last_block_hash, t.stop(false));
+                        last_chunk.last_block.slot, last_chunk.last_block.hash, t.stop(false));
                 } else {
                     logger::info("validation complete with an empty chain took: {:0.1f} secs", t.stop(false));
                 }
@@ -78,7 +70,6 @@ namespace turbo::cli::validate {
         }
     private:
         using chunk_registry = turbo::chunk_registry;
-        using chunk_list = chunk_registry::chunk_list;
     };
     static auto instance = command::reg(std::make_shared<cmd>());
 }

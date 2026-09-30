@@ -23,7 +23,7 @@ namespace turbo::cli::pay_history {
             cardano::address_buf addr_raw { args.at(1) };
             if (addr_raw.size() == 28)
                 addr_raw.insert(addr_raw.begin(), 0x61);
-            chunk_registry cr { data_dir, chunk_registry::mode::index };
+            chunk_registry cr { data_dir, chunk_registry_settings_t { .mode=chunk_registry::mode::index } };
             reconstructor r { cr };
             cardano::address addr { addr_raw };
             std::cout << fmt::format("{}", r.find_history(addr.pay_id()));

@@ -3,6 +3,7 @@
  * Copyright (c) 2024-2026 R2 Rationality OÜ (info at r2rationality dot com)
  * License: https://github.com/r2rationality/turbocardano/blob/main/LICENSE */
 
+#include <array>
 #include <turbo/common/scheduler.hpp>
 #include <turbo/cardano.hpp>
 #include <turbo/chunk-registry.hpp>
@@ -13,42 +14,156 @@
 #include <turbo/indexer.hpp>
 
 namespace turbo::indexer {
-    struct incremental::impl {
-        impl(chunk_registry &cr, indexer_map &&indexers)
-            : _cr { cr }, _indexers { std::move(indexers) }, _idx_dir { storage_dir(_cr.data_dir().string()) },
-                _index_state_path { (_idx_dir / "state.json").string() },
-                _index_state_pre_path { (_idx_dir / "state-pre.json").string() },
-                _mergeable { _mergeable_indexers(_indexers) }
+    namespace {
+        struct index_state_t {
+            slice_list slices;
+            std::set<std::string> unused_files;
+            bool repaired = false;
+        };
+
+        index_state_t load_state(const std::filesystem::path &dir, const std::set<std::string> &names,
+            const storage::chunk_map &chunks, const bool strict, const file_remover::remove_point_map &marked={})
         {
-            file::set_max_open_files();
-            for (auto &[name, idxr_ptr]: _indexers) {
-                idxr_ptr->clean_up();
-            }
-            uint64_t end_offset = 0;
-            if (std::filesystem::exists(_index_state_path)) {
-                auto j_slices = json::load(_index_state_path).as_array();
-                bool stop = false;
-                for (auto &j: j_slices) {
-                    auto slice = merger::slice::from_json(j.as_object());
-                    for (auto &[name, idxr_ptr]: _indexers) {
-                        if (idxr_ptr->mergeable() && !idxr_ptr->exists(slice.slice_id)) {
-                            logger::warn("missing slice {} of index {} - truncating to the previous slice", slice.slice_id, name);
-                            stop = true;
-                            break;
-                        }
+            index_state_t state;
+            for (const auto &name: names) {
+                const auto path = dir / name;
+                if (!std::filesystem::is_directory(path)) [[unlikely]] {
+                    throw error(fmt::format("missing index directory {}: open the registry in validation mode first", path.string()));
+                }
+                for (const auto &entry: std::filesystem::directory_iterator(path)) {
+                    if (entry.is_regular_file()) {
+                        state.unused_files.emplace(fmt::format("{}/{}/{}", dir.string(), name, entry.path().filename().string()));
                     }
-                    if (stop)
-                        break;
-                    if (slice.offset != end_offset) {
-                        logger::warn("offset of slice {} is not continuous - truncating to the previous slice", slice.slice_id);
-                        break;
-                    }
-                    _slices.add(std::move(slice));
-                    end_offset = slice.offset + slice.size;
                 }
             }
-            if (end_offset != indexed_bytes()) [[unlikely]]
+            const auto path = dir / "state.json";
+            if (std::filesystem::exists(path)) {
+                uint64_t end_offset = 0;
+                const auto metadata = json::load(path.string());
+                for (const auto &value: metadata.as_array()) {
+                    auto slice = merger::slice::from_json(value.as_object());
+                    std::vector<std::string> files;
+                    for (const auto &name: names) {
+                        files.emplace_back(index::indexer_base::reader_path(dir.string(), name, slice.slice_id));
+                    }
+                    const bool complete = std::ranges::all_of(files, [&](const auto &file) {
+                        return state.unused_files.contains(file) && !index::indexer_base::temporary_file(file);
+                    });
+                    if (!complete || slice.offset != end_offset || !slice.size || slice.end_offset() < slice.offset
+                            || !storage::matches_block_boundary(chunks, slice.end_offset(), slice.max_slot)) [[unlikely]] {
+                        if (strict) {
+                            throw error(fmt::format("inconsistent index slice {}: open the registry in validation mode first", slice.slice_id));
+                        }
+                        logger::warn("ignoring inconsistent index slice {} and its successors", slice.slice_id);
+                        state.repaired = true;
+                        break;
+                    }
+                    for (const auto &file: files) {
+                        if (strict && marked.contains(file)) [[unlikely]] {
+                            throw error(fmt::format("index file {} is marked for deletion: open the registry in validation mode first", file));
+                        }
+                        state.unused_files.erase(file);
+                    }
+                    end_offset = slice.end_offset();
+                    state.slices.emplace_back(std::move(slice));
+                }
+            }
+            if (strict && !state.unused_files.empty()) [[unlikely]] {
+                throw error(fmt::format("unused index file {}: open the registry in validation mode first", *state.unused_files.begin()));
+            }
+            return state;
+        }
+    }
+
+    slice_list inspect_state(const std::filesystem::path &data_dir, const storage::chunk_map &chunks,
+        const file_remover::remove_point_map &marked, const bool required)
+    {
+        const auto dir = std::filesystem::weakly_canonical(data_dir / "index");
+        const bool state_exists = std::filesystem::exists(dir / "state.json");
+        if (!state_exists && (required || std::filesystem::exists(dir))) [[unlikely]] {
+            throw error("missing index state: open the registry in validation mode first");
+        }
+        if (!state_exists) {
+            return {};
+        }
+        if (std::filesystem::exists(dir / "state-pre.json")) [[unlikely]] {
+            throw error("unfinished index transaction: open the registry in validation mode first");
+        }
+        const auto require_empty = [&](const char *name) {
+            const auto path = dir / name;
+            if (std::filesystem::exists(path) && (!std::filesystem::is_directory(path) || !std::filesystem::is_empty(path))) [[unlikely]] {
+                throw error(fmt::format("unfinished ledger index data {}: open the registry in validation mode first", path.string()));
+            }
+        };
+        for (const auto *name: index_layout_t::ledger) {
+            require_empty(name);
+        }
+        for (const auto *name: index_layout_t::auxiliary) {
+            require_empty(name);
+        }
+        return load_state(dir, { index_layout_t::query.begin(), index_layout_t::query.end() }, chunks, true, marked).slices;
+    }
+
+    void clean_up_ledger_data(const indexer_map &indexers, const std::filesystem::path &index_dir)
+    {
+        for (const auto &[name, indexer]: indexers) {
+            if (!indexer->mergeable()) {
+                std::filesystem::remove_all(indexer->chunk_dir());
+                indexer->reset();
+            }
+        }
+        for (const auto *name: index_layout_t::auxiliary) {
+            std::filesystem::remove_all(index_dir / name);
+        }
+    }
+
+    void chunk_indexer_list_t::index_block(const cardano::block_container &block) const
+    {
+        for (const auto &idx: *this) {
+            idx->index(block);
+        }
+        block->foreach_tx([&](const auto &tx) {
+            for (const auto &idx: *this) {
+                idx->index_tx(tx);
+            }
+        });
+        block->foreach_invalid_tx([&](const auto &tx) {
+            for (const auto &idx: *this) {
+                idx->index_invalid_tx(tx);
+            }
+        });
+    }
+
+    struct incremental::impl {
+        impl(chunk_registry &cr, indexer_map &&indexers, const storage::chunk_map &chunks, std::optional<slice_list> slices)
+            : _cr { cr }, _indexers { std::move(indexers) }, _idx_dir { storage_dir(_cr.data_dir().string()) },
+                _index_state_path { (_idx_dir / "state.json").string() },
+                _mergeable { _mergeable_indexers(_indexers) }
+        {
+            if (!slices && cr.operating_mode() != chunk_registry::mode::validate) [[unlikely]] {
+                throw error("index maintenance requires opening the registry in validation mode");
+            }
+            file::set_max_open_files();
+            bool repaired = false;
+            if (!slices) {
+                clean_up_ledger_data(_indexers, _idx_dir);
+                auto state = load_state(_idx_dir, _mergeable, chunks, false);
+                for (const auto &path: state.unused_files) {
+                    _cr.remover().mark(path);
+                }
+                repaired = state.repaired;
+                slices = std::move(state.slices);
+            }
+            const auto end_offset = slices->empty() ? 0 : slices->back().end_offset();
+            for (const auto &slice: *slices) {
+                _retain_slice(slice);
+            }
+            if (end_offset != indexed_bytes()) [[unlikely]] {
                 throw error(fmt::format("internal error: indexed size calculation is incorrect: {} vs {}", end_offset, indexed_bytes()));
+            }
+            if (cr.operating_mode() == chunk_registry::mode::validate && (repaired || !std::filesystem::exists(_index_state_path))) {
+                _save_json_slices(_index_state_path);
+            }
             _cr.register_processor(_proc);
             logger::info("indices have data up to offset {}", end_offset);
         }
@@ -72,12 +187,15 @@ namespace turbo::indexer {
 
         slice_path_list reader_paths(const std::string &name, const slice_list &slcs) const
         {
-            return indexer::multi_reader_paths(_idx_dir.string(), name, slcs);
+            slice_path_list paths;
+            for (const auto &slice: slcs)
+                paths.emplace_back(_indexers.at(name)->reader_path(slice.slice_id));
+            return paths;
         }
 
         slice_path_list reader_paths(const std::string &name) const
         {
-            return indexer::multi_reader_paths(_idx_dir.string(), name, slices());
+            return reader_paths(name, slices());
         }
 
         uint64_t indexed_bytes() const
@@ -96,9 +214,9 @@ namespace turbo::indexer {
             return _idx_dir;
         }
 
-        chunk_indexer_list make_chunk_indexers(uint64_t chunk_offset)
+        chunk_indexer_list_t make_chunk_indexers(uint64_t chunk_offset)
         {
-            chunk_indexer_list chunk_indexers {};
+            chunk_indexer_list_t chunk_indexers {};
             for (auto &[name, idxr_ptr]: _indexers)
                 chunk_indexers.emplace_back(idxr_ptr->make_chunk_indexer("update", chunk_offset));
             return chunk_indexers;
@@ -108,7 +226,7 @@ namespace turbo::indexer {
         const indexer_map _indexers;
         const std::filesystem::path _idx_dir;
         const std::string _index_state_path;
-        const std::string _index_state_pre_path;
+
         const std::set<std::string> _mergeable;
         mutable mutex::unique_lock::mutex_type _slices_mutex alignas(mutex::alignment) {};
         merger::tree _slices {};
@@ -119,16 +237,25 @@ namespace turbo::indexer {
         std::vector<merger::slice> _slices_truncated {};
         std::vector<merger::slice> _slices_added {};
         chunk_processor _proc {
-            [this] { return _idx_end_offset(); },
-            [this] { _idx_start_tx(); },
-            [this] { _idx_prepare_tx(); },
-            [this] { _idx_rollback_tx(); },
-            [this] { _idx_commit_tx(); },
-            [this](const auto &new_tip, const auto track) { _idx_truncate(new_tip, track); },
-            {},
-            {},
-            [this](const auto epoch, const auto &info) { _idx_on_epoch_update(epoch, info); }
+            .end_offset=[this] { return _idx_end_offset(); },
+            .start_tx=[this] { _idx_start_tx(); },
+            .prepare_tx=[this] { _idx_prepare_tx(); },
+            .rollback_tx=[this] { _idx_rollback_tx(); },
+            .commit_tx=[this] { _idx_commit_tx(); },
+            .truncate=[this](const auto &new_tip, const auto track) { _idx_truncate(new_tip, track); },
+            .on_epoch_update=[this](const auto epoch, const auto &info) { _idx_on_epoch_update(epoch, info); },
+            .stage_tx=[this] { _idx_stage_tx(); }
         };
+
+        void _retain_slice(const merger::slice &slice)
+        {
+            _slices.add(slice);
+            if (_cr.operating_mode() == chunk_registry::mode::validate) {
+                for (const auto &name: _mergeable) {
+                    _cr.remover().unmark(_indexers.at(name)->reader_path(slice.slice_id));
+                }
+            }
+        }
 
         static std::set<std::string> _mergeable_indexers(const indexer_map &indexers)
         {
@@ -151,7 +278,7 @@ namespace turbo::indexer {
                     if (idxr_ptr->disk_size(slice_id) > 0)
                         input_paths.emplace_back(idxr_ptr->reader_path(slice_id));
                 }
-                const auto output_path = idxr_ptr->reader_path(output_slice.slice_id);
+                const auto output_path = idxr_ptr->write_path(output_slice.slice_id);
                 const auto priority = prio_base - static_cast<int64_t>(output_slice.offset);
                 _cr.sched().submit("merge:schedule-" + output_path, priority, [this, idxr_ptr, output_path, priority, input_paths, indices_awaited, on_merge] {
                     // merge tasks must have a higher priority + 50 so that the actual merge tasks free up file handles
@@ -201,7 +328,7 @@ namespace turbo::indexer {
                     {
                         mutex::scoped_lock lk { _slices_mutex };
                         const auto old_indexed_size = _slices.continuous_size();
-                        _slices.add(output_slice);
+                        _retain_slice(output_slice);
                         _slices_added.emplace_back(output_slice);
                         const auto new_indexed_size = _slices.continuous_size();
                         if (new_indexed_size > old_indexed_size) {
@@ -248,7 +375,7 @@ namespace turbo::indexer {
                 }
                 _cr.sched().process(true);
                 for (auto &&new_slice: updated) {
-                    _slices.add(new_slice);
+                    _retain_slice(new_slice);
                     if (track_changes)
                         _slices_added.emplace_back(new_slice);
                 }
@@ -275,31 +402,42 @@ namespace turbo::indexer {
                 _schedule_final_merge(lk, true);
             }
             _cr.sched().process(true);
-            _save_json_slices(_index_state_pre_path);
+        }
+
+        void _idx_stage_tx()
+        {
+            for (const auto &[offset, slice]: _slices) {
+                for (const auto &name: _mergeable) {
+                    const auto filename = std::filesystem::path { _indexers.at(name)->write_path(slice.slice_id) }.filename();
+                    _cr.stage_output(std::filesystem::path { "index" } / name / filename);
+                    _cr.remover().unmark(index::indexer_base::reader_path(_idx_dir.string(), name, slice.slice_id));
+                }
+            }
+            _save_json_slices(_cr.stage_path("index/state.json"));
+            _cr.stage_output("index/state.json");
         }
 
         void _idx_rollback_tx()
         {
-            for (const auto &s: _slices_added) {
+            // The registry discarded staged outputs before invoking rollback.
+            for (const auto &s: _slices_added)
                 _slices.erase(s.offset);
-                for (auto &[name, idxr_ptr]: _indexers)
-                    _cr.remover().mark(idxr_ptr->reader_path(s.slice_id));
-            }
             _slices_added.clear();
             for (const auto &s: _slices_truncated) {
-                _slices.add(s);
+                _retain_slice(s);
             }
             _slices_truncated.clear();
         }
 
         void _idx_commit_tx()
         {
-            if (!std::filesystem::exists(_index_state_pre_path)) [[unlikely]]
-                throw error(fmt::format("the prepared chunk_registry state file is missing: {}!", _index_state_pre_path));
-            std::filesystem::rename(_index_state_pre_path, _index_state_path);
             for (const auto &s: _slices_truncated) {
-                for (auto &[name, idxr_ptr]: _indexers)
-                    _cr.remover().mark(idxr_ptr->reader_path(s.slice_id));
+                const auto retained = _slices.find(s.offset);
+                if (retained == _slices.end() || retained->second.slice_id != s.slice_id) {
+                    for (const auto &name: _mergeable) {
+                        _cr.remover().mark(_indexers.at(name)->reader_path(s.slice_id));
+                    }
+                }
             }
             _slices_truncated.clear();
             _slices_added.clear();
@@ -307,7 +445,7 @@ namespace turbo::indexer {
 
         void _idx_on_chunk_add(const storage::chunk_info &chunk, const cardano::parsed_block_list &blocks) const
         {
-            chunk_indexer_list chunk_indexers {};
+            chunk_indexer_list_t chunk_indexers {};
             for (auto &[name, idxr_ptr]: _indexers)
                 chunk_indexers.emplace_back(idxr_ptr->make_chunk_indexer("update", chunk.offset));
             for (const auto &blk_ptr: blocks) {
@@ -339,14 +477,14 @@ namespace turbo::indexer {
         }
     };
 
-    incremental::incremental(chunk_registry &cr, indexer_map &&indexers)
-        : _impl { std::make_unique<impl>(cr, std::move(indexers)) }
+    incremental::incremental(chunk_registry &cr, indexer_map &&indexers, const storage::chunk_map &chunks, std::optional<slice_list> slices)
+        : _impl { std::make_unique<impl>(cr, std::move(indexers), chunks, std::move(slices)) }
     {
     }
 
     incremental::~incremental() =default;
 
-    chunk_indexer_list incremental::make_chunk_indexers(const uint64_t chunk_offset)
+    chunk_indexer_list_t incremental::make_chunk_indexers(const uint64_t chunk_offset)
     {
         return _impl->make_chunk_indexers(chunk_offset);
     }
@@ -394,10 +532,10 @@ namespace turbo::indexer {
     {
         const auto idx_dir = incremental::storage_dir(data_dir);
         indexer_map indexers {};
-        indexers.emplace(std::make_shared<index::stake_ref::indexer>(idx_dir, "stake-ref", sched));
-        indexers.emplace(std::make_shared<index::pay_ref::indexer>(idx_dir, "pay-ref", sched));
-        indexers.emplace(std::make_shared<index::tx::indexer>(idx_dir, "tx", sched));
-        indexers.emplace(std::make_shared<index::txo_use::indexer>(idx_dir, "txo-use", sched));
+        indexers.emplace(std::make_shared<index::stake_ref::indexer>(idx_dir, index_layout_t::stake_ref, sched));
+        indexers.emplace(std::make_shared<index::pay_ref::indexer>(idx_dir, index_layout_t::pay_ref, sched));
+        indexers.emplace(std::make_shared<index::tx::indexer>(idx_dir, index_layout_t::tx, sched));
+        indexers.emplace(std::make_shared<index::txo_use::indexer>(idx_dir, index_layout_t::txo_use, sched));
         return indexers;
     }
 }

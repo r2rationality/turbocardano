@@ -7,6 +7,7 @@
 #include <chrono>
 #include <turbo/cardano/common/common.hpp>
 #include <turbo/sync/base.hpp>
+#include <turbo/storage/chunk-info.hpp>
 
 namespace turbo::sync::p2p {
     struct peer_info: sync::peer_info {
@@ -60,7 +61,7 @@ namespace turbo::sync::p2p {
 
     struct syncer: sync::syncer {
         static constexpr size_t auto_max_inflight_bytes = 0;
-        static constexpr size_t inflight_bytes_per_worker = size_t{128} << 20U;
+        static constexpr size_t inflight_bytes_per_worker = storage::chunk_work_policy_t::bytes_per_worker;
 
         explicit syncer(chunk_registry &cr, size_t max_inflight_bytes);
         explicit syncer(chunk_registry &cr,
@@ -72,7 +73,7 @@ namespace turbo::sync::p2p {
             std::optional<cardano::network::address> addr={},
             const cardano::network::version_config_t &versions={}) const;
         void cancel_tasks(uint64_t max_valid_offset) override;
-        void sync_attempt(sync::peer_info &peer, cardano::optional_slot max_slot) override;
+        bool sync_attempt(sync::peer_info &peer, cardano::optional_slot max_slot) override;
         // on_update runs on the chain writer after a fully validated commit.
         void follow(std::stop_token, const std::function<void(const cardano::optional_point &)> &on_update,
             std::optional<cardano::network::address> addr={},

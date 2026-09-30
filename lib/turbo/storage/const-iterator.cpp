@@ -196,7 +196,7 @@ namespace turbo::storage {
     buffer const_iterator::_prep_chunk_cache() const
     {
         const auto rel_path = _chunk_it->second.rel_path();
-        const auto path = full_path(_cr._db_dir, _chunk_it->second.rel_path());
+        const auto path = _cr.full_path(_chunk_it->second.rel_path());
         if (!_chunk_cache || _chunk_cache->full_path != path || _chunk_it->second.data_size != _chunk_cache->data.size()) {
             _chunk_cache.emplace(path, zstd::read(path));
         }
@@ -229,7 +229,7 @@ namespace turbo::storage {
             return { uint8_vector {}, last_it, fast_compression_level };
         const auto &chunk = _chunk_it->second;
         if (**this == chunk.blocks.front() && last_it._chunk_it != _chunk_it) {
-            const auto path = full_path(_cr._db_dir, _chunk_it->second.rel_path());
+            const auto path = _cr.full_path(_chunk_it->second.rel_path());
             return {
                 file::read(path),
                 const_iterator { _cr, _chunks, std::next(_chunk_it), 0 },

@@ -3,9 +3,10 @@
  * Copyright (c) 2024-2026 R2 Rationality OÜ (info at r2rationality dot com)
  * License: https://github.com/r2rationality/turbocardano/blob/main/LICENSE */
 
-#include "const-iterator.hpp"
 #include <turbo/chunk-registry.hpp>
 #include <turbo/common/benchmark.hpp>
+#include <turbo/storage/test.hpp>
+#include "const-iterator.hpp"
 
 namespace {
     using namespace turbo;
@@ -16,8 +17,8 @@ namespace {
 suite storage_const_iterator_bench_suite = [] {
     using namespace turbo::storage;
     "storage::const_iterator"_test = [] {
-        static std::string data_dir = install_path("./data/chunk-registry");
-        const chunk_registry cr { data_dir, chunk_registry::mode::store };
+        static std::string data_dir = turbo::storage::sample_registry_path();
+        const chunk_registry cr { data_dir, chunk_registry_settings_t { .mode=chunk_registry::mode::store } };
 
         ankerl::nanobench::Bench b {};
         b.title("storage::const_iterator")

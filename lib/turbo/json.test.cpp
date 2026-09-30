@@ -53,6 +53,19 @@ suite json_suite = [] {
             auto j_parsed = json::parse_signed(file::read(t.path()), vk);
             expect(j_parsed == j_val) << json::serialize(j_parsed);
         };
+        "save_pretty empty and nested containers"_test = [] {
+            expect_equal(json::serialize_pretty(json::object {}), std::string { "{\n}" });
+            expect_equal(json::serialize_pretty(json::array {}), std::string { "[\n]" });
+            const json::value nested = json::object {
+                { "empty", json::array {} },
+                { "nested", json::array { json::object {}, json::array {} } }
+            };
+            const auto pretty = json::serialize_pretty(nested);
+            expect(boost::json::parse(pretty) == nested);
+            expect_equal(pretty, std::string {
+                "{\n  \"empty\": [\n  ],\n  \"nested\": [\n    {\n    },\n    [\n    ]\n  ]\n}"
+            });
+        };
         "array copy constructor"_test = [] {
             auto meta = json::load("./etc/mainnet/turbo.json").as_object();
             expect(meta.contains("hosts"));

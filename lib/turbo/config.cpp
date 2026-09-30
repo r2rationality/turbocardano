@@ -10,9 +10,9 @@
 namespace turbo {
     static bool install_dir_ok(const std::filesystem::path &dir)
     {
-        if (!std::filesystem::exists(dir / "etc" / "mainnet" / "config.json") && !std::getenv("DT_ETC"))
+        if (!std::filesystem::exists(dir / "etc" / "mainnet" / "config.json") && !std::getenv("TURBO_ETC"))
             return false;
-        if (!std::filesystem::exists(dir / "log") && !std::getenv("DT_ETC"))
+        if (!std::filesystem::exists(dir / "log") && !std::getenv("TURBO_ETC"))
             return false;
         return true;
     }
@@ -84,7 +84,7 @@ namespace turbo {
     std::string configs_dir::default_path()
     {
         std::optional<std::string> path = _configs_default_path();
-        if (const char *env_path = std::getenv("DT_ETC"); !path && env_path)
+        if (const char *env_path = std::getenv("TURBO_ETC"); !path && env_path)
             path.emplace(env_path);
         if (!path)
             path.emplace(install_path("etc/mainnet"));

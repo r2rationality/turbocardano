@@ -28,7 +28,7 @@ namespace turbo::cardano::network {
             std::optional<position> find(const point2 &p) const
             {
                 auto it = std::lower_bound(chunks.begin(), chunks.end(), p.slot,
-                    [](const auto &c, uint64_t slot) { return c->info.last_slot < slot; });
+                    [](const auto &c, uint64_t slot) { return c->info.last_block.slot < slot; });
                 for (; it != chunks.end() && (*it)->info.first_slot <= p.slot; ++it) {
                     const auto &blocks = (*it)->info.blocks;
                     auto b = std::lower_bound(blocks.begin(), blocks.end(), p.slot,
@@ -90,6 +90,10 @@ namespace turbo::cardano::network {
         // Called by the sole chain writer after all validation and commit work.
         void publish(const optional_point &intersection)
         {
+            // The live writer bounds fragmentation before publishing the new view.
+            // Existing readers retain pins on the files in their previous views.
+            if (_cr->continuous())
+                _cr->repack(chunk_registry::repack_mode_t::merge_fragmented, 3);
             const auto old = current();
             auto next = std::make_shared<view>(_cr->config());
             next->tip = _cr->tip();

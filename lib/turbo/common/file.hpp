@@ -211,12 +211,14 @@ namespace turbo::file {
         void close()
         {
             if (_f != NULL) {
-                if (std::fclose(_f) != 0) [[unlikely]]
+                const auto result = std::fclose(_f);
+                _f = NULL; // The stream is unusable even if fclose fails.
+                // Keep failed closes counted conservatively: OS handle release is uncertain.
+                if (result != 0) [[unlikely]]
                     throw error(fmt::format("failed to close file {}!", _path));
-                _f = NULL;
+                _open_files().fetch_sub(1, std::memory_order_relaxed);
                 _buf.clear();
                 _buf.shrink_to_fit();
-                _open_files().fetch_sub(1, std::memory_order_relaxed);
             }
         }
 
@@ -285,6 +287,7 @@ namespace turbo::file {
         {
             write_stream os { tmp_path };
             os.write(buffer.data(), buffer.size());
+            os.close();
         }
         std::filesystem::rename(tmp_path, path);
     }
@@ -296,6 +299,7 @@ namespace turbo::file {
         {
             write_stream os { tmp_path };
             os.write(buffer.data(), buffer.size());
+            os.close();
         }
         std::filesystem::rename(tmp_path, path);
     }

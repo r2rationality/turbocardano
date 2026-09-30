@@ -31,7 +31,7 @@ namespace turbo::cardano::network {
             miniprotocol::handshake::result_t dummy_res {};
             const auto [p_it, created] = _protocols.try_emplace(it->first, it->second(dummy_res));
             dynamic_cast<miniprotocol::handshake::observer_t &>(*p_it->second.observer.get()).on_success([&](const auto &res) {
-                logger::info("handshake succeeded with version: {}", res.version);
+                logger::info("inbound connection: negotiated protocol version {}", res.version);
                 for (const auto &[mp, factory]: _config) {
                     if (mp != mini_protocol::handshake) {
                         const auto [it, created] = _protocols.try_emplace(mp, factory(res));

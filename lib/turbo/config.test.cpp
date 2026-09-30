@@ -56,17 +56,17 @@ suite config_suite = [] {
             expect(cfg.at("topology").at("bootstrapPeers").at(0).at("address").as_string() == std::string_view { "backbone.cardano.iog.io" });
         };
         "non-standard-location"_test = [] {
-            expect(std::getenv("DT_ETC") == nullptr);
+            expect(std::getenv("TURBO_ETC") == nullptr);
             expect_equal(install_path("etc/mainnet"), configs_dir::default_path());
-            my_setenv("DT_ETC", "./etc-missing");
-            expect(std::getenv("DT_ETC") != nullptr);
+            my_setenv("TURBO_ETC", "./etc-missing");
+            expect(std::getenv("TURBO_ETC") != nullptr);
             expect_equal(std::string { "./etc-missing" }, configs_dir::default_path());
             expect(throws([] { configs_dir cfg { configs_dir::default_path() }; }));
-            my_setenv("DT_ETC", nullptr);
-            expect(std::getenv("DT_ETC") == nullptr);
+            my_setenv("TURBO_ETC", nullptr);
+            expect(std::getenv("TURBO_ETC") == nullptr);
         };
         "non-standard-location override"_test = [] {
-            expect(std::getenv("DT_ETC") == nullptr);
+            expect(std::getenv("TURBO_ETC") == nullptr);
             expect_equal(install_path("etc/mainnet"), configs_dir::default_path());
             configs_dir::set_default_path("./new-path");
             expect(configs_dir::default_path() == "./new-path") << configs_dir::default_path();

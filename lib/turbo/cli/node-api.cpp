@@ -7,13 +7,16 @@
 #include <turbo/cardano/network/server.hpp>
 #include <turbo/sync/p2p.hpp>
 #include <turbo/common/scope-exit.hpp>
-#include <boost/asio/signal_set.hpp>
 #include <csignal>
 #include <cstdlib>
 #include <charconv>
 #include <limits>
 #include <thread>
 #include "common.hpp"
+#ifdef _MSC_VER
+#   include <SDKDDKVer.h>
+#endif
+#include <boost/asio/signal_set.hpp>
 
 namespace turbo::cli::node_api {
     using namespace turbo::cardano::network;
@@ -109,8 +112,7 @@ namespace turbo::cli::node_api {
             std::optional<address> peer;
             if (const auto it = opts.find("peer-host"); it != opts.end() && it->second)
                 peer.emplace(*it->second, opts.at("peer-port").value());
-            auto cr = std::make_shared<chunk_registry>(data_dir, chunk_registry::mode::validate,
-                cardano::config::get(), scheduler::get(), file_remover::get(), true, true, true);
+            auto cr = std::make_shared<chunk_registry>(data_dir, chunk_registry_settings_t { .continuous=true });
             if (shutdown.token().stop_requested()) return;
             auto source = std::make_shared<chain_source>(cr, cache_bytes);
             sync::p2p::syncer syncer { *cr };

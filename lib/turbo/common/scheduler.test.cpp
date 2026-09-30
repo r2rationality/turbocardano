@@ -2,16 +2,39 @@
  * Copyright (c) 2024-2025 R2 Rationality OÜ (info at r2rationality dot com) */
 
 #include <array>
+#include <cstdlib>
 #include <future>
 #include <thread>
 #include <turbo/common/test.hpp>
 #include "scheduler.hpp"
+#include "scope-exit.hpp"
 
 using namespace std::literals;
 using namespace turbo;
 
 suite turbo_common_scheduler_suite = [] {
     "turbo::common::scheduler"_test = [] {
+        "explicit worker counts take precedence over the environment"_test = [] {
+            const auto set_workers = [](const char *value) {
+#if defined(_WIN32)
+                const auto result = _putenv_s("TURBO_WORKERS", value ? value : "");
+#else
+                const auto result = value ? setenv("TURBO_WORKERS", value, 1) : unsetenv("TURBO_WORKERS");
+#endif
+                if (result != 0) [[unlikely]] {
+                    throw error("cannot set TURBO_WORKERS");
+                }
+            };
+            const auto *current = std::getenv("TURBO_WORKERS");
+            const auto previous = current ? std::optional<std::string> { current } : std::nullopt;
+            const auto restore = make_scope_exit([&] { set_workers(previous ? previous->c_str() : nullptr); });
+            set_workers("2");
+            expect_equal(scheduler {}.num_workers(), size_t { 2 });
+            expect_equal(scheduler { 1 }.num_workers(), size_t { 1 });
+            expect(throws([] { scheduler sched { 0 }; }));
+            set_workers("invalid");
+            expect_equal(scheduler { 1 }.num_workers(), size_t { 1 });
+        };
         /*"chained_scheduling"_test = [] {
             scheduler s {};
             size_t preproc_calls = 0;

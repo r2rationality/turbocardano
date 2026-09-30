@@ -18,8 +18,7 @@ namespace turbo::cli::repack {
         {
             progress_guard pg { "repack" };
             chunk_registry cr {
-                args.at(0), chunk_registry::mode::store, cardano::config::get(),
-                scheduler::get(), file_remover::get(), false
+                args.at(0), chunk_registry_settings_t { .mode=chunk_registry::mode::store }
             };
             const auto stats = cr.repack();
             if (!stats.chunks_repacked)

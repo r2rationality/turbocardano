@@ -22,8 +22,8 @@ namespace turbo::cli::truncate {
             chunk_registry cr { data_dir };
             cardano::optional_point max_block {};
             for (const auto &[last_byte_offset, chunk]: cr.chunks()) {
-                if (cr.make_slot(chunk.last_slot).epoch() <= epoch) {
-                    const cardano::point last_block { chunk.last_block_hash, chunk.last_slot,
+                if (cr.make_slot(chunk.last_block.slot).epoch() <= epoch) {
+                    const cardano::point last_block { chunk.last_block.hash, chunk.last_block.slot,
                         chunk.blocks.back().height, chunk.blocks.back().end_offset() };
                     if (!max_block || *max_block < last_block)
                         max_block = last_block;

@@ -299,7 +299,7 @@ namespace turbo::cli::test_cbor_dataset {
                 if (test_name == "expected")
                     continue;
 
-                auto &result = res[relative_path];
+                auto &result = res[relative_path.string()];
                 const auto codec_it = codecs.find(type_name);
                 if (codec_it == codecs.end()) {
                     result = "unsupported";

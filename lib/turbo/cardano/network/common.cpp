@@ -236,6 +236,7 @@ namespace turbo::cardano::network {
                 if constexpr (std::is_same_v<T, miniprotocol::handshake::msg_accept_version_t>) {
                     if (mv.version < _version_cfg.min || mv.version > _version_cfg.max) [[unlikely]]
                         throw error(fmt::format("peer at {}:{} ignored the requested protocol version range and returned {}!", _addr.host, _addr.port, mv.version));
+                    logger::info("outbound peer {}: negotiated protocol version {}", _addr, mv.version);
                 } else {
                     throw error(fmt::format("peer at {}:{} refused the requested protocol versions!", _addr.host, _addr.port));
                 }
@@ -325,9 +326,10 @@ namespace turbo::cardano::network {
                 co_return std::move(*result);
         }
 
-        boost::asio::awaitable<void> _receive_blocks(tcp::socket &socket, uint8_vector parse_buf, const block_handler &handler)
+        // True means BatchDone was received; an interrupted stream cannot be reused.
+        boost::asio::awaitable<bool> _receive_blocks(tcp::socket &socket, uint8_vector parse_buf, const block_handler &handler)
         {
-            bool deliver = true;
+            bool batch_done = false;
             for (;;) {
                 _check_stop(_stop);
                 while (!parse_buf.empty()) {
@@ -338,20 +340,18 @@ namespace turbo::cardano::network {
                         const auto go_on = std::visit([&](auto &&mv) -> bool {
                             using T = std::decay_t<decltype(mv)>;
                             if constexpr (std::is_same_v<T, miniprotocol::blockfetch::msg_block_t>) {
-                                if (deliver)
-                                    deliver = handler(block_response_t { std::move(mv) });
+                                return handler(block_response_t { std::move(mv) });
                             } else if constexpr (std::is_same_v<T, miniprotocol::blockfetch::msg_compressed_blocks_t>) {
-                                if (deliver)
-                                    deliver = handler(block_response_t { std::move(mv) });
+                                return handler(block_response_t { std::move(mv) });
                             } else if constexpr (std::is_same_v<T, miniprotocol::blockfetch::msg_batch_done_t>) {
+                                batch_done = true;
                                 return false;
                             } else {
                                 throw error(fmt::format("unexpected blockfetch message: {}!", msg.index()));
                             }
-                            return true;
                         }, std::move(msg));
                         if (!go_on)
-                            co_return;
+                            co_return batch_done;
                         parse_buf.erase(parse_buf.begin(), parse_buf.begin() + resp_cbor.get().data_raw().size());
                     } catch (const cbor::zero2::incomplete_error &) {
                         // exit the while loop and wait for more data
@@ -378,7 +378,7 @@ namespace turbo::cardano::network {
                 switch (const auto typ = resp_items.read().uint(); typ) {
                     case 2: {
                         resp.erase(resp.begin(), resp.begin() + resp_cbor.get().data_raw().size());
-                        co_await _receive_blocks(*_conn, std::move(resp), [&](block_response_t blk) {
+                        const auto completed = co_await _receive_blocks(*_conn, std::move(resp), [&](block_response_t blk) {
                             std::visit([&](const auto &rv) {
                                 using T = std::decay_t<decltype(rv)>;
                                 if constexpr (std::is_same_v<T, miniprotocol::blockfetch::msg_block_t>) {
@@ -389,6 +389,10 @@ namespace turbo::cardano::network {
                             }, blk);
                             return handler(std::move(blk));
                         });
+                        if (!completed) {
+                            logger::debug("block fetch interrupted; closing connection before BatchDone");
+                            _conn.reset();
+                        }
                         break;
                     }
                     case 3: {

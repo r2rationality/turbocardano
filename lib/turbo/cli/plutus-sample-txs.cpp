@@ -31,7 +31,7 @@ namespace turbo::cli::plutus_sample_txs {
         void run(const arguments &args, const options &opts) const override
         {
             file::set_max_open_files();
-            const chunk_registry cr { args.at(0), chunk_registry::mode::store };
+            const chunk_registry cr { args.at(0), chunk_registry_settings_t { .mode=chunk_registry::mode::store } };
             const auto &out_path = args.at(1);
             const uint32_t seed = std::stoul(*opts.at("seed"));
             const uint64_t sample_size = std::stoull(*opts.at("sample"));

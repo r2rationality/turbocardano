@@ -125,6 +125,8 @@ namespace turbo::cardano::network {
         using msg_block_t = miniprotocol::blockfetch::msg_block_t;
         using msg_compressed_blocks_t = miniprotocol::blockfetch::msg_compressed_blocks_t;
         using block_response_t = std::variant<msg_block_t, msg_compressed_blocks_t, error_msg>;
+        // Returning false interrupts the fetch and closes the connection. Return true
+        // through the last block to consume BatchDone and keep the connection reusable.
         using block_handler = std::function<bool(block_response_t)>;
 
         struct header_response {

@@ -29,7 +29,7 @@ namespace turbo::cli::txwit_prep {
         void run(const arguments &args) const override
         {
             file::set_max_open_files();
-            chunk_registry cr { args.at(0), chunk_registry::mode::store };
+            chunk_registry cr { args.at(0), chunk_registry_settings_t { .mode=chunk_registry::mode::store } };
             const auto &out_dir = args.at(1);
             std::filesystem::create_directories(out_dir);
 

@@ -37,7 +37,7 @@ namespace turbo::cli::test_stake_balances {
             const double max_pct = std::stod(opts.at("sample-ratio-max").value());
             timer t { "complete test", logger::level::info };
             auto [ledger_stake_dist, ledger_slot] = parse_ledger_snapshot(ledger_path);
-            chunk_registry cr { data_dir, chunk_registry::mode::index };
+            chunk_registry cr { data_dir, chunk_registry_settings_t { .mode=chunk_registry::mode::index } };
             reconstructor r { cr };
             if (ledger_slot != r.last_slot()) [[unlikely]]
                 throw error(fmt::format("ledger last slot: {} does not match raw data last slot: {}", ledger_slot, r.last_slot()));

@@ -62,8 +62,9 @@ namespace turbo::sync {
             if (!peer.intersection() || (peer.intersection() < target && peer.intersection() < peer_tip)) {
                 for (size_t num_retries = max_retries; num_retries; --num_retries) {
                     logger::info("syncing from {} to {}", peer.intersection(), target);
+                    bool limit_reached = false;
                     const auto ex_ptr = _parent.accept_progress(peer.intersection(), target, [&] {
-                        _parent.sync_attempt(peer, max_slot);
+                        limit_reached = _parent.sync_attempt(peer, max_slot);
                     });
                     const auto end_tip = _cr.tip();
                     const auto made_progress = end_tip && peer.intersection() < end_tip;
@@ -72,7 +73,7 @@ namespace turbo::sync {
                             _cr.repack(chunk_registry::repack_mode_t::merge_closed, repack_fragment_threshold);
                         });
                     if (!ex_ptr) {
-                        if (made_progress && end_tip < target) {
+                        if (!limit_reached && made_progress && end_tip < target) {
                             peer.intersection(end_tip);
                             ++num_retries;
                             continue;

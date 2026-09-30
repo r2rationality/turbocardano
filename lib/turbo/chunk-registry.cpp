@@ -3,18 +3,25 @@
  * Copyright (c) 2024-2026 R2 Rationality OÜ (info at r2rationality dot com)
  * License: https://github.com/r2rationality/turbocardano/blob/main/LICENSE */
 
+#include <atomic>
 #include <chrono>
 #include <future>
 #include <numeric>
 #include <tuple>
+#include <unordered_set>
 #include <turbo/common/scope-exit.hpp>
 #include <turbo/cardano.hpp>
 #include <turbo/cardano/ledger/state.hpp>
 #include <turbo/chunk-registry.hpp>
+#include <turbo/storage/replay.hpp>
 
 namespace turbo {
     namespace {
         using compression_level_list_t = std::vector<int32_t>;
+
+        struct candidate_chain_rejected_t: error {
+            using error::error;
+        };
 
         // Chunk metadata supplies this relative path from its data hash, so no
         // containment or filesystem canonicalization is needed here.
@@ -34,6 +41,185 @@ namespace turbo {
         static_assert(valid_slot_successor(1, 0, 1, 1));
         static_assert(!valid_slot_successor(1, 0, 1, 2));
 
+        void require_block_successor(const cardano::point2 &previous, const uint64_t previous_era,
+            const cardano::block_hash &previous_hash, const uint64_t slot, const uint64_t era, const bool check_hash=true)
+        {
+            if (!valid_slot_successor(previous.slot, previous_era, slot, era)) [[unlikely]] {
+                throw error(fmt::format("block slot {} is not after predecessor slot {}", slot, previous.slot));
+            }
+            if (check_hash && previous_hash != previous.hash) [[unlikely]] {
+                throw error(fmt::format("block at slot {} has predecessor hash {} instead of {}", slot, previous_hash, previous.hash));
+            }
+        }
+
+        struct orphan_chunk_t {
+            storage::chunk_info source;
+            uint64_t first_era = 0;
+            uint64_t last_era = 0;
+            uint64_t last_height = 0;
+        };
+
+        orphan_chunk_t inspect_orphan(const std::string &path, const uint64_t compressed_size,
+            const std::filesystem::path &db_dir, const cardano::config &cfg, std::vector<cardano::block_hash> &hashes)
+        {
+            const auto raw = zstd::read(path);
+            orphan_chunk_t candidate;
+            auto &source = candidate.source;
+            source.data_size = raw.size();
+            source.compressed_size = compressed_size;
+            crypto::blake2b::digest(source.data_hash, raw);
+            if (std::filesystem::path { path } != std::filesystem::path { trusted_chunk_path(db_dir, source) }) [[unlikely]] {
+                throw error("chunk filename does not match its content hash");
+            }
+            storage::block_reader_t reader { raw, 0, cfg };
+            while (!reader.done()) {
+                const auto block = reader.next();
+                if (hashes.empty()) {
+                    source.prev_block_hash = block->prev_hash();
+                    source.first_slot = block->slot();
+                    candidate.first_era = block->era();
+                } else {
+                    require_block_successor(source.last_block, candidate.last_era,
+                        block->prev_hash(), block->slot(), block->era());
+                }
+                source.last_block = { block->slot(), block->hash() };
+                candidate.last_height = block->height();
+                candidate.last_era = block->era();
+                hashes.push_back(source.last_block.hash);
+            }
+            if (hashes.empty()) [[unlikely]] {
+                throw error("empty unregistered chunk");
+            }
+            source.num_blocks = hashes.size();
+            return candidate;
+        }
+
+        std::vector<std::optional<orphan_chunk_t>> discover_orphans(const std::vector<std::string> &paths,
+            const std::map<std::string, uint64_t> &sizes, const std::filesystem::path &db_dir,
+            const cardano::config &cfg, scheduler &sched)
+        {
+            std::vector<std::optional<orphan_chunk_t>> candidates(paths.size());
+            std::unordered_set<cardano::block_hash> hashes;
+            std::mutex hashes_mutex;
+            std::atomic_bool duplicate = false;
+            storage::replay_batch_t batch { sched };
+            for (size_t i = 0; i < paths.size(); ++i) {
+                if (duplicate.load(std::memory_order_relaxed)) [[unlikely]] {
+                    break;
+                }
+                uint64_t raw_bytes;
+                try {
+                    std::array<uint8_t, 18> header {};
+                    file::read_stream stream { paths[i] };
+                    const auto size = stream.try_read(header);
+                    raw_bytes = zstd::decompressed_size(buffer { header.data(), size });
+                    if (raw_bytes > zstd::max_zstd_buffer) [[unlikely]] {
+                        throw error("oversized unregistered chunk");
+                    }
+                } catch (const std::exception &ex) {
+                    logger::warn("cannot inspect chunk {}: {}", paths[i], ex.what());
+                    continue;
+                }
+                const auto compressed_size = sizes.at(paths[i]);
+                batch.admit(raw_bytes, compressed_size);
+                if (duplicate.load(std::memory_order_relaxed)) [[unlikely]] {
+                    break;
+                }
+                sched.submit("recover-discover", 100, [&, i, compressed_size] {
+                    if (duplicate.load(std::memory_order_relaxed)) [[unlikely]] {
+                        return;
+                    }
+                    try {
+                        std::vector<cardano::block_hash> chunk_hashes;
+                        auto candidate = inspect_orphan(paths[i], compressed_size, db_dir, cfg, chunk_hashes);
+                        {
+                            std::scoped_lock lock { hashes_mutex };
+                            if (duplicate.load(std::memory_order_relaxed)) [[unlikely]] {
+                                return;
+                            }
+                            for (const auto &hash: chunk_hashes) {
+                                if (!hashes.emplace(hash).second) [[unlikely]] {
+                                    duplicate.store(true, std::memory_order_relaxed);
+                                    break;
+                                }
+                            }
+                        }
+                        candidates[i] = std::move(candidate);
+                    } catch (const std::exception &ex) {
+                        logger::warn("cannot recover chunk {}: {}", paths[i], ex.what());
+                    }
+                });
+            }
+            batch.drain();
+            if (duplicate.load(std::memory_order_relaxed)) [[unlikely]] {
+                logger::warn("duplicate blocks in unregistered chunks; discarding all unregistered downloads");
+                return {};
+            }
+            return candidates;
+        }
+
+        struct orphan_chain_t {
+            storage::chunk_list chunks;
+            optional_progress_point target;
+        };
+
+        orphan_chain_t select_orphans(const std::vector<std::optional<orphan_chunk_t>> &candidates,
+            const cardano::optional_point &start, uint64_t era, const cardano::block_hash &genesis)
+        {
+            std::map<cardano::block_hash, std::vector<const orphan_chunk_t *>> successors;
+            size_t available = 0;
+            for (const auto &candidate: candidates) {
+                if (candidate) {
+                    successors[candidate->source.prev_block_hash].push_back(&*candidate);
+                    ++available;
+                }
+            }
+            for (auto &[hash, chunks]: successors) {
+                std::ranges::sort(chunks, [](const auto *a, const auto *b) {
+                    return std::tie(a->source.first_slot, a->source.data_hash)
+                        < std::tie(b->source.first_slot, b->source.data_hash);
+                });
+            }
+            cardano::point2 previous = start ? static_cast<cardano::point2>(*start) : cardano::point2 { 0, genesis };
+            uint64_t offset = start ? start->end_offset : 0;
+            orphan_chain_t chain;
+            for (;;) {
+                const auto it = successors.find(previous.hash);
+                if (it == successors.end()) {
+                    break;
+                }
+                const orphan_chunk_t *selected = nullptr;
+                for (const auto *candidate: it->second) {
+                    if (offset && !valid_slot_successor(previous.slot, era, candidate->source.first_slot, candidate->first_era)) {
+                        continue;
+                    }
+                    if (selected) {
+                        logger::warn("fork in unregistered downloads after {}; keeping candidate {} and discarding alternative {}",
+                            previous, selected->source.rel_path(), candidate->source.rel_path());
+                    } else {
+                        selected = candidate;
+                    }
+                }
+                successors.erase(it);
+                if (!selected) {
+                    break;
+                }
+                auto source = selected->source.without_blocks();
+                source.offset = offset;
+                previous = source.last_block;
+                offset = source.end_offset();
+                era = selected->last_era;
+                chain.target.emplace(source.last_block.slot, offset);
+                chain.target->height = selected->last_height;
+                chain.chunks.emplace_back(std::move(source));
+            }
+            if (available > chain.chunks.size()) {
+                logger::warn("discarding {} unregistered chunks that do not connect at the selected chunk boundaries",
+                    available - chain.chunks.size());
+            }
+            return chain;
+        }
+
         void load_chunk_registry_state(storage::chunk_map &chunks, const std::string &path)
         {
             const auto state_data = file::read(path);
@@ -49,8 +235,9 @@ namespace turbo {
                         loaded_chunks.size(), compression_levels.size()));
                 }
                 auto level_it = compression_levels.begin();
-                for (auto &[last_byte_offset, chunk]: loaded_chunks)
+                for (auto &[last_byte_offset, chunk]: loaded_chunks) {
                     chunk.compression_level = *level_it++;
+                }
             }
             chunks = std::move(loaded_chunks);
         }
@@ -76,8 +263,9 @@ namespace turbo {
         {
             compression_level_list_t compression_levels {};
             compression_levels.reserve(chunks.size());
-            for (const auto &[last_byte_offset, chunk]: chunks)
+            for (const auto &[last_byte_offset, chunk]: chunks) {
                 compression_levels.emplace_back(chunk.compression_level);
+            }
             uint8_vector state_data {};
             ::zpp::bits::out out { state_data };
             out(chunks, compression_levels).or_throw();
@@ -192,14 +380,11 @@ namespace turbo {
             return checkpoints;
         }
 
-        void restore_checkpoint(const std::filesystem::path &data_dir)
+        void restore_checkpoint(const std::filesystem::path &data_dir, const storage::chunk_map &chunks)
         {
             const auto root = data_dir / "checkpoints";
             if (!std::filesystem::exists(root))
                 return; // legacy database: recover its independent processor positions
-            storage::chunk_map chunks;
-            if (std::filesystem::exists(data_dir / "compressed/state.bin"))
-                load_chunk_registry_state(chunks, (data_dir / "compressed/state.bin").string());
             auto candidates = read_checkpoints(root);
             std::erase_if(candidates, [&](const auto &checkpoint) { return !checkpoint.belongs_to(chunks); });
             if (!candidates.empty()) {
@@ -235,36 +420,68 @@ namespace turbo {
         }
     }
 
-    chunk_registry::chunk_registry(const std::string &data_dir, const mode mode,
-        cardano::config ccfg, scheduler &sched, file_remover &fr, const bool auto_maintenance, const bool validate_vrf, const bool continuous)
-        : _continuous { continuous }, _data_dir { data_dir }, _db_dir { init_db_dir((_data_dir / "compressed").string()) },
-            _cardano_cfg { std::move(ccfg) }, _sched { sched }, _file_remover { fr },
-            _state_path { (_db_dir / "state.bin").string() },
-            _state_path_pre { (_db_dir / "state-pre.bin").string() }
+    chunk_registry::chunk_registry(const std::string &data_dir, chunk_registry_settings_t settings)
+        : _continuous { settings.continuous }, _mode { settings.mode }, _data_dir { std::filesystem::weakly_canonical(data_dir) },
+            _db_dir { settings.mode == mode::validate ? init_db_dir((_data_dir / "compressed").string())
+                : std::filesystem::weakly_canonical(_data_dir / "compressed") },
+            _cardano_cfg { std::move(settings.ccfg) }, _sched { settings.sched }, _file_remover { settings.fr },
+            _state_path { (_db_dir / "state.bin").string() }
     {
         timer t { "chunk-registry construct" };
-        restore_revalidation_source(_data_dir);
-        if (mode == mode::validate)
-            restore_checkpoint(_data_dir);
+        if (settings.recover_orphans && _mode != mode::validate)
+            throw error("orphan recovery requires a validating registry: '{}'", _data_dir);
+        if (_mode == mode::validate)
+            _writer_lock = std::make_unique<storage::registry_writer_lock>(_data_dir);
+        storage::commit_journal::recover(_data_dir, _mode == mode::validate);
+        if (settings.mode != mode::validate && std::filesystem::exists(revalidation_source_path(_data_dir))) [[unlikely]] {
+            throw error("interrupted revalidation requires opening the registry in validation mode first");
+        }
+        if (settings.mode == mode::validate) {
+            restore_revalidation_source(_data_dir);
+        }
+        chunk_map chunks;
+        const bool state_exists = std::filesystem::exists(_state_path);
+        _state_needs_save = !state_exists;
+        if (!state_exists && _mode != mode::validate) [[unlikely]] {
+            throw error("missing registry state: open the registry in validation mode first");
+        }
+        // Independent I/O: merge the inventory with metadata only after both finish.
+        auto inventory = std::async(std::launch::async, [this] { return _scan_storage(); });
+        if (state_exists) {
+            load_chunk_registry_state(chunks, _state_path);
+        }
+        auto scan = inventory.get();
+        std::optional<indexer::slice_list> index_slices;
+        file_remover::remove_point_map marked;
+        if (settings.mode == mode::validate) {
+            restore_checkpoint(_data_dir, chunks);
+            std::filesystem::create_directories(_db_dir / "chunk");
+        } else {
+            _require_clean_storage(scan, chunks);
+            marked = _file_remover.removable();
+        }
+        _repair_or_require_clean_storage(scan, chunks, marked);
+        if (_mode != mode::validate) {
+            index_slices = _inspect_derived_state(chunks, marked);
+        }
         std::unique_ptr<indexer::incremental> loaded_indexer {};
         std::unique_ptr<validator::incremental> loaded_validator {};
-        chunk_map chunks {};
         size_t init_task_idx = 0;
-        switch (mode) {
+        switch (settings.mode) {
             case mode::validate: {
                 _sched.submit("chunk-registry-init:indexer", static_cast<int64_t>(init_task_idx++), [&] {
                     loaded_indexer = std::make_unique<indexer::incremental>(
-                        *this, validator::default_indexers(_data_dir.string(), _sched));
+                        *this, validator::default_indexers(_data_dir.string(), _sched), chunks);
                 });
                 _sched.submit("chunk-registry-init:validator", static_cast<int64_t>(init_task_idx++), [&] {
-                    loaded_validator = std::make_unique<validator::incremental>(*this, validate_vrf);
+                    loaded_validator = std::make_unique<validator::incremental>(*this, chunks, settings.validate_vrf);
                 });
                 break;
             }
             case mode::index: {
                 _sched.submit("chunk-registry-init:indexer", static_cast<int64_t>(init_task_idx++), [&] {
                     loaded_indexer = std::make_unique<indexer::incremental>(
-                        *this, indexer::default_list(_data_dir.string(), _sched));
+                        *this, indexer::default_list(_data_dir.string(), _sched), chunks, std::move(index_slices));
                 });
                 break;
             }
@@ -272,97 +489,42 @@ namespace turbo {
                 // do nothing
                 break;
             [[unlikely]] default:
-                throw error(fmt::format("unsupported mode: {}", static_cast<int>(mode)));
+                throw error(fmt::format("unsupported mode: {}", static_cast<int>(settings.mode)));
         }
-        const auto load_registry_state = [&] {
-            if (std::filesystem::exists(_state_path))
-                load_chunk_registry_state(chunks, _state_path);
-        };
         if (init_task_idx > 0) {
-            _sched.submit("chunk-registry-init:state", static_cast<int64_t>(init_task_idx++), load_registry_state);
             _sched.process(true);
-        } else {
-            load_registry_state();
         }
         _indexer = std::move(loaded_indexer);
         _validator = std::move(loaded_validator);
 
-        file_set known_chunks {};
+        std::vector<std::string> recovery_inputs;
         std::vector<std::shared_ptr<void>> revalidation_pins;
-        if (std::filesystem::exists(revalidation_source_path(_data_dir)))
-            for (const auto &[offset, chunk]: chunks)
-                revalidation_pins.emplace_back(_file_remover.pin(trusted_chunk_path(_db_dir, chunk)));
+        if (std::filesystem::exists(revalidation_source_path(_data_dir))) {
+            for (const auto &[offset, chunk]: chunks) {
+                recovery_inputs.emplace_back(trusted_chunk_path(_db_dir, chunk));
+                revalidation_pins.emplace_back(_file_remover.pin(recovery_inputs.back()));
+            }
+        }
         scope_exit preserve_revalidation_source { [&] {
-            if (std::filesystem::exists(revalidation_source_path(_data_dir)))
-                for (const auto &path: known_chunks) _file_remover.unmark(path);
+            if (std::filesystem::exists(revalidation_source_path(_data_dir))) {
+                for (const auto &path: recovery_inputs) {
+                    _file_remover.unmark(path);
+                }
+            }
         }};
 
-        size_t num_mismatches = 0;
-        for (auto chunk_it = chunks.begin(); chunk_it != chunks.end(); ++chunk_it) {
-            auto &chunk = chunk_it->second;
-            const auto path = trusted_chunk_path(_db_dir, chunk);
-            std::error_code ec {};
-            const uint64_t file_size = std::filesystem::file_size(path, ec);
-            if (ec) {
-                logger::info("load_state: file access error for {}: {} - ignoring it and the following chunks!",
-                    chunk.rel_path(), ec.message());
-                chunks.erase(chunk_it, chunks.end());
-                break;
-            }
-            if (file_size != chunk.compressed_size) {
-                logger::warn(
-                    "load_state: validating stale compression metadata for {}: recorded size: {} actual size: {}",
-                    chunk.rel_path(), chunk.compressed_size, file_size);
-                const auto expected_size = chunk.data_size;
-                const auto expected_hash = chunk.data_hash;
-                _sched.submit("chunk-registry-check", -static_cast<int64_t>(num_mismatches),
-                    [path, expected_size, expected_hash] {
-                        const auto uncompressed = zstd::read(path);
-                        if (uncompressed.size() != expected_size) [[unlikely]] {
-                            throw error(fmt::format(
-                                "chunk {} decompressed to {} bytes instead of the recorded {}",
-                                path, uncompressed.size(), expected_size));
-                        }
-                        cardano::block_hash data_hash {};
-                        crypto::blake2b::digest(data_hash, uncompressed);
-                        if (data_hash != expected_hash) [[unlikely]] {
-                            throw error(fmt::format(
-                                "chunk {} has uncompressed data hash {} instead of the recorded {}",
-                                path, data_hash, expected_hash));
-                        }
-                    });
-                ++num_mismatches;
-                chunk.compressed_size = file_size;
-                chunk.compression_level = 0;
-            }
-        }
-        if (num_mismatches > 0) {
-            _sched.process(true);
-            logger::warn("load_state: repaired stale compression metadata for {} chunks; compression levels are now unknown",
-                num_mismatches);
-        }
         for (auto &&[last_byte_offset, chunk]: chunks) {
-            auto path = trusted_chunk_path(_db_dir, chunk);
             _add(std::move(chunk), false);
-            known_chunks.emplace(std::move(path));
-        }
-        if (num_mismatches > 0)
-            _save_state(_state_path);
-        for (const auto &entry: std::filesystem::recursive_directory_iterator { _db_dir }) {
-            auto path = entry.path();
-            path.make_preferred();
-            auto path_str = path.string();
-            if (entry.is_regular_file() && entry.path().extension() == ".zstd" && !known_chunks.contains(path_str))
-                _file_remover.mark(path_str);
         }
         logger::info("chunk_registry has data up to offset {}", num_bytes());
-        if (auto_maintenance) {
-            if (_validator) {
-                recover();
-                std::filesystem::remove(revalidation_source_path(_data_dir));
-            }
-            else
-                maintenance();
+        _state_needs_save |= _chunks.size() != chunks.size();
+        if (_mode != mode::validate && (_chunks.size() != chunks.size() || !_unmerged_chunks.empty())) [[unlikely]] {
+            throw error("inconsistent registry metadata: open the registry in validation mode first");
+        }
+        if (_mode == mode::validate) {
+            _maintenance(std::move(scan), settings.recover_orphans || !state_exists);
+            revalidation_pins.clear();
+            _file_remover.remove();
         }
     }
 
@@ -423,58 +585,53 @@ namespace turbo {
         return _validator->validation(mode);
     }
 
-    void chunk_registry::recover()
+    void chunk_registry::_recover_registered()
     {
-        if (!_validator || !_indexer)
-            return;
         if (_chunks.empty()) {
-            if (max_end_offset()) truncate({});
+            if (max_end_offset()) [[unlikely]] {
+                truncate({});
+            }
             return;
         }
         const auto stored_tip = _chunks.rbegin()->second.blocks.back().point();
         const auto start = tip();
         if (start == cardano::optional_point { stored_tip }) {
-            if (max_end_offset() != num_bytes()) truncate(start);
+            if (max_end_offset() != num_bytes()) [[unlikely]] {
+                truncate(start);
+            }
             return;
         }
         const auto start_offset = start ? start->end_offset : 0;
-        std::vector<chunk_info> tail;
-        for (const auto &[offset, chunk]: _chunks)
-            if (chunk.end_offset() > start_offset)
-                tail.emplace_back(chunk);
+        chunk_list tail;
+        for (const auto &[offset, chunk]: _chunks) {
+            if (chunk.end_offset() > start_offset) {
+                tail.emplace_back(chunk.without_blocks());
+            }
+        }
         logger::info("replaying stored blocks from {} to {}", start, stored_tip);
         const auto previous_mode = validation(validator::validation_mode::full);
-        const auto previous_check = std::exchange(_before_commit, {});
         scope_exit restore_settings { [&] {
-            _before_commit = previous_check;
-            if (!tx())
+            if (!tx()) [[likely]] {
                 validation(previous_mode);
-        }};
-        before_commit([&] {
-            if (tip() != cardano::optional_point { stored_tip })
-                throw error("stored-chain recovery did not reach its target");
-            if (previous_check) previous_check();
-        });
-        accept_anything_or_throw(start, progress_point { stored_tip }, [&] {
-            for (const auto &chunk: tail) {
-                auto compressed = file::read(full_path(chunk.rel_path()));
-                auto bytes = zstd::decompress(compressed);
-                const auto skip = start_offset > chunk.offset ? start_offset - chunk.offset : 0;
-                if (skip) {
-                    bytes.erase(bytes.begin(), bytes.begin() + skip);
-                    add_buffer(chunk.offset + skip, std::move(bytes));
-                } else {
-                    add_buffer(chunk.offset, std::move(bytes), std::move(compressed), chunk.compression_level);
-                }
             }
-        });
+        }};
+        _replay(tail, start, stored_tip, validator::snapshot_policy::catchup_interval);
     }
 
-    void chunk_registry::revalidate(const chunk_list &chunks, const cardano::optional_point &target,
+    void chunk_registry::revalidate(cardano::optional_point target,
         const std::chrono::steady_clock::duration checkpoint_interval)
     {
-        if (_transaction || !_validator || !_indexer)
+        if (_transaction || _journal || !_validator || !_indexer) [[unlikely]] {
             throw error("revalidation requires an idle validating registry");
+        }
+        if (target) {
+            const auto it = _chunks.find(target->end_offset - 1);
+            if (it == _chunks.end() || it->second.blocks.back().point() != *target) [[unlikely]] {
+                throw error("revalidation target must be a registered chunk boundary");
+            }
+            target = it->second.blocks.back().point();
+        }
+        chunk_list chunks;
         const auto source = revalidation_source_path(_data_dir);
         if (!std::filesystem::exists(source)) {
             const auto temporary = source.string() + ".tmp";
@@ -486,53 +643,299 @@ namespace turbo {
         for (const auto &[offset, chunk]: _chunks) {
             input_paths.emplace_back(full_path(chunk.rel_path()));
             input_pins.emplace_back(_file_remover.pin(input_paths.back()));
+            if (target && chunk.end_offset() <= target->end_offset) {
+                chunks.emplace_back(chunk.without_blocks());
+            }
         }
         scope_exit preserve_input { [&] {
-            if (std::filesystem::exists(source))
-                for (const auto &path: input_paths) _file_remover.unmark(path);
+            if (std::filesystem::exists(source)) {
+                for (const auto &path: input_paths) {
+                    _file_remover.unmark(path);
+                }
+            }
         }};
+        _replay(chunks, {}, target, checkpoint_interval, replay_mode::revalidation);
+    }
+
+    chunk_registry::maintenance_scan_t chunk_registry::_scan_storage() const
+    {
+        maintenance_scan_t scan;
+        for (const auto *name: { "compressed/state.bin", "compressed/state-pre.bin", "compressed/revalidate-source.bin",
+                "index/state.json", "index/state-pre.json" }) {
+            for (const auto *suffix: { ".tmp", ".restore" }) {
+                const auto path = (_data_dir / name).string() + suffix;
+                if (std::filesystem::exists(path)) {
+                    scan.temporary.emplace_back(path);
+                }
+            }
+        }
+        const auto chunk_dir = _db_dir / "chunk";
+        if (!std::filesystem::exists(chunk_dir)) {
+            return scan;
+        }
+        for (const auto &entry: std::filesystem::directory_iterator { chunk_dir }) {
+            if (!entry.is_regular_file()) [[unlikely]] {
+                throw error(fmt::format("unexpected entry in chunk directory: {}", entry.path().string()));
+            }
+            auto path = entry.path();
+            path.make_preferred();
+            const auto extension = path.extension();
+            if (extension != ".zstd" && extension != ".tmp") [[unlikely]] {
+                throw error(fmt::format("unexpected file in chunk directory: {}; expected .zstd or .tmp", path.string()));
+            }
+            if (extension == ".tmp") {
+                scan.temporary.emplace_back(path.string());
+                continue;
+            }
+            scan.chunks.emplace(path.string(), entry.file_size());
+        }
+        return scan;
+    }
+
+    void chunk_registry::_require_clean_storage(const maintenance_scan_t &scan, const chunk_map &chunks) const
+    {
+        if (!std::filesystem::is_regular_file(_state_path) || std::filesystem::exists(_db_dir / "state-pre.bin")
+                || std::filesystem::exists(revalidation_source_path(_data_dir))) [[unlikely]] {
+            throw error("unfinished registry state: open the registry in validation mode first");
+        }
+        // Reconciliation below verifies each registered path; matching counts
+        // then exclude unregistered files without building another path set.
+        if (scan.chunks.size() != chunks.size() || !scan.temporary.empty()) [[unlikely]] {
+            throw error("registry recovery or cleanup required: open the registry in validation mode first");
+        }
+    }
+
+    void chunk_registry::_repair_or_require_clean_storage(const maintenance_scan_t &scan, chunk_map &chunks,
+        const file_remover::remove_point_map &marked)
+    {
+        std::vector<std::pair<chunk_info *, uint64_t>> repairs;
+        for (auto chunk_it = chunks.begin(); chunk_it != chunks.end(); ++chunk_it) {
+            auto &chunk = chunk_it->second;
+            const auto path = trusted_chunk_path(_db_dir, chunk);
+            const auto file_it = scan.chunks.find(path);
+            if (_mode != mode::validate && (file_it == scan.chunks.end()
+                    || file_it->second != chunk.compressed_size || marked.contains(path))) [[unlikely]] {
+                throw error(fmt::format("chunk {} requires repair: open the registry in validation mode first", path));
+            }
+            if (file_it == scan.chunks.end()) [[unlikely]] {
+                logger::info("load_state: missing file {} - ignoring it and the following chunks!", chunk.rel_path());
+                chunks.erase(chunk_it, chunks.end());
+                _state_needs_save = true;
+                break;
+            }
+            const auto file_size = file_it->second;
+            if (file_size == chunk.compressed_size) {
+                continue;
+            }
+            logger::warn(
+                "load_state: validating stale compression metadata for {}: recorded size: {} actual size: {}",
+                chunk.rel_path(), chunk.compressed_size, file_size);
+            const auto expected_size = chunk.data_size;
+            const auto expected_hash = chunk.data_hash;
+            _sched.submit("chunk-registry-check", -static_cast<int64_t>(repairs.size()),
+                [path, expected_size, expected_hash] {
+                    const auto uncompressed = zstd::read(path);
+                    if (uncompressed.size() != expected_size) [[unlikely]] {
+                        throw error(fmt::format(
+                            "chunk {} decompressed to {} bytes instead of the recorded {}",
+                            path, uncompressed.size(), expected_size));
+                    }
+                    cardano::block_hash data_hash {};
+                    crypto::blake2b::digest(data_hash, uncompressed);
+                    if (data_hash != expected_hash) [[unlikely]] {
+                        throw error(fmt::format(
+                            "chunk {} has uncompressed data hash {} instead of the recorded {}",
+                            path, data_hash, expected_hash));
+                    }
+                });
+            repairs.emplace_back(&chunk, file_size);
+        }
+        if (!repairs.empty()) {
+            _sched.process(true);
+            // Workers only validate bytes. Publish metadata changes together
+            // after every check has succeeded.
+            for (const auto &[chunk, size]: repairs) {
+                chunk->compressed_size = size;
+                chunk->compression_level = 0;
+            }
+            _state_needs_save = true;
+            logger::warn("load_state: repaired stale compression metadata for {} chunks; compression levels are now unknown",
+                repairs.size());
+        }
+    }
+
+    indexer::slice_list chunk_registry::_inspect_derived_state(const chunk_map &chunks, const file_remover::remove_point_map &marked) const
+    {
+        const auto stored_end = chunks.empty() ? 0 : chunks.rbegin()->second.end_offset();
+        auto slices = indexer::inspect_state(_data_dir, chunks, marked, _mode == mode::index);
+        const auto indexed_end = slices.empty() ? 0 : slices.back().end_offset();
+        if ((_mode == mode::index || std::filesystem::exists(_data_dir / "index/state.json")) && indexed_end != stored_end) [[unlikely]] {
+            throw error("indexes do not cover the stored chain: open the registry in validation mode first");
+        }
+        const auto dir = std::filesystem::weakly_canonical(_data_dir / "validate");
+        const auto path = dir / "state.json";
+        if (!std::filesystem::exists(dir)) {
+            return slices;
+        }
+        if (!std::filesystem::is_regular_file(path)) [[unlikely]] {
+            throw error("missing ledger state metadata: open the registry in validation mode first");
+        }
+        std::set<std::filesystem::path> known { path };
+        const auto state = json::load(path.string());
+        if (state.as_array().size() > 2) [[unlikely]] {
+            throw error("ledger snapshot cleanup required: open the registry in validation mode first");
+        }
+        for (const auto &value: state.as_array()) {
+            const auto snap = validator::snapshot::from_json(value);
+            const auto file = dir / snapshot_relative_path(snap.end_offset).filename();
+            if (!snap.matches(chunks) || !std::filesystem::is_regular_file(file)
+                    || marked.contains(file.string()) || !known.emplace(file).second) [[unlikely]] {
+                throw error("inconsistent ledger snapshot: open the registry in validation mode first");
+            }
+        }
+        for (const auto &entry: std::filesystem::directory_iterator(dir)) {
+            if (entry.is_regular_file() && !known.contains(entry.path())) [[unlikely]] {
+                throw error("ledger cleanup required: open the registry in validation mode first");
+            }
+        }
+        return slices;
+    }
+
+    void chunk_registry::_recover_orphans(const std::vector<std::string> &paths, const maintenance_scan_t &scan)
+    {
+        if (paths.empty()) {
+            return;
+        }
+        logger::info("examining {} unregistered chunk files for recovery", paths.size());
+        const auto start = tip();
+        const auto start_era = start ? find_block_by_offset(start->end_offset - 1).era : 0;
+        const auto chain = [&] {
+            const auto candidates = discover_orphans(paths, scan.chunks, _db_dir, _cardano_cfg, _sched);
+            return select_orphans(candidates, start, start_era, _cardano_cfg.byron_genesis_hash);
+        }();
+        if (chain.chunks.empty()) {
+            return;
+        }
+        logger::info("recovering {} downloaded chunks from offset {} to {}", chain.chunks.size(),
+            start ? start->end_offset : 0, chain.chunks.back().end_offset());
+        const auto previous_mode = validation(validator::validation_mode::full);
+        scope_exit restore_mode { [&] {
+            if (!tx()) [[likely]] {
+                validation(previous_mode);
+            }
+        }};
+        _replay(chain.chunks, start, chain.target, validator::snapshot_policy::catchup_interval, replay_mode::orphans);
+    }
+
+    void chunk_registry::_replay(const chunk_list &chunks, const cardano::optional_point &start,
+        optional_progress_point target, const std::chrono::steady_clock::duration checkpoint_interval,
+        const replay_mode mode)
+    {
+        // Transactions can truncate or supersede these files before later
+        // batches consume them. Keep the originals available across checkpoints.
+        std::vector<std::string> paths;
+        std::vector<std::shared_ptr<void>> pins;
+        paths.reserve(chunks.size());
+        pins.reserve(chunks.size());
+        for (const auto &chunk: chunks) {
+            paths.emplace_back(trusted_chunk_path(_db_dir, chunk));
+            pins.emplace_back(_file_remover.pin(paths.back()));
+        }
+        bool complete = false;
+        scope_exit preserve_input { [&] {
+            if (!complete) [[unlikely]] {
+                for (const auto &path: paths) {
+                    _file_remover.unmark(path);
+                }
+            }
+        }};
+        const auto start_offset = start ? start->end_offset : 0;
         auto last_checkpoint = std::chrono::steady_clock::now();
-        optional_progress_point progress_target;
         if (target) {
-            progress_target.emplace(*target);
-            progress_target->final_checkpoint = true;
+            target->final_checkpoint = true;
         }
         size_t next = 0;
+        bool external_check_failed = false;
         const auto previous_check = std::exchange(_before_commit, {});
         scope_exit restore_check { [&] { _before_commit = previous_check; } };
         _before_commit = [&] {
-            const auto expected = next ? chunks.at(next - 1).blocks.back().point() : cardano::optional_point {};
-            if (tip() != expected)
+            const auto actual = tip();
+            const bool reached = next
+                ? actual && static_cast<cardano::point2>(*actual) == chunks.at(next - 1).last_block
+                : actual == start;
+            if (!reached) [[unlikely]] {
                 throw error("revalidation did not reach the submitted prefix");
-            if (previous_check) previous_check();
+            }
+            if (previous_check) {
+                try {
+                    previous_check();
+                } catch (...) {
+                    external_check_failed = true;
+                    throw;
+                }
+            }
         };
         do {
-            accept_anything_or_throw(next ? tip() : cardano::optional_point {}, progress_target, [&] {
+            const auto committed_tip = next ? tip() : start;
+            const auto failure = _accept_progress(committed_tip, target, false, [&] {
+                storage::replay_batch_t batch { _sched };
                 while (next < chunks.size()) {
                     const auto epoch = make_slot(chunks.at(next).first_slot).epoch();
-                    const auto end = std::min(chunks.size(), next + 32);
-                    for (; next < end && make_slot(chunks.at(next).first_slot).epoch() == epoch; ++next) {
+                    for (; next < chunks.size() && make_slot(chunks.at(next).first_slot).epoch() == epoch; ++next) {
                         const auto &chunk = chunks.at(next);
-                        const auto path = full_path(chunk.rel_path());
-                        _sched.submit("parse", 100, [this, &chunk, path] {
-                            add_file(chunk.offset, path, chunk.compression_level);
+                        const auto &path = paths.at(next);
+                        const auto replay_offset = next ? chunks.at(next - 1).end_offset() : start_offset;
+                        // A partial chunk is recompressed after trimming its prefix.
+                        // Budget for the larger of the input and output allocations.
+                        const auto compressed_bytes = chunk.offset < replay_offset
+                            ? std::max<uint64_t>(chunk.compressed_size, ZSTD_compressBound(chunk.data_size))
+                            : chunk.compressed_size;
+                        batch.admit(chunk.data_size, compressed_bytes);
+                        _sched.submit("parse", 100, [this, &chunk, path, replay_offset] {
+                            if (chunk.offset < replay_offset) {
+                                const auto bytes = zstd::read(path);
+                                const auto skip = replay_offset - chunk.offset;
+                                if (skip >= bytes.size()) [[unlikely]] {
+                                    throw error("invalid replay suffix");
+                                }
+                                const auto suffix = static_cast<buffer>(bytes).subbuf(skip);
+                                const auto compressed = zstd::compress(suffix, default_compression_level);
+                                add_buffer_trusted(replay_offset, suffix, compressed, default_compression_level);
+                            } else {
+                                add_file(chunk.offset, path, chunk.compression_level);
+                            }
                         });
                     }
-                    _sched.process(true);
-                    if (next < chunks.size() && make_slot(chunks.at(next).first_slot).epoch() == epoch)
-                        continue;
+                    batch.drain();
                     _my_prepare_tx();
                     _validator->flush();
-                    if (std::chrono::steady_clock::now() - last_checkpoint >= checkpoint_interval && next < chunks.size())
+                    if (std::chrono::steady_clock::now() - last_checkpoint >= checkpoint_interval && next < chunks.size()) {
                         _validator->request_checkpoint();
-                    if (checkpoint_requested())
+                    }
+                    if (checkpoint_requested()) {
                         break;
+                    }
                 }
+                // Retire the recovery source in the same commit as the final
+                // replayed state, including a deliberate truncation to genesis.
+                if (mode == replay_mode::revalidation && next == chunks.size())
+                    _journal->remove("compressed/revalidate-source.bin");
             });
+            if (failure) [[unlikely]] {
+                // Only orphan replay is best-effort. Registered-chain recovery,
+                // explicit commit hooks, and failed rollback must still propagate.
+                if (mode != replay_mode::orphans || external_check_failed || tx()
+                        || tip() != committed_tip || num_bytes() != (committed_tip ? committed_tip->end_offset : 0)
+                        || valid_end_offset() != max_end_offset()) [[unlikely]] {
+                    std::rethrow_exception(failure);
+                }
+                logger::warn("discarding unregistered candidate after replay failure; restored tip: {}", committed_tip);
+                return;
+            }
             checkpoint(next == chunks.size());
             last_checkpoint = std::chrono::steady_clock::now();
         } while (next < chunks.size());
-        std::filesystem::remove(source);
+        complete = true;
     }
 
     struct chunk_registry::repack_plan_t {
@@ -540,6 +943,7 @@ namespace turbo {
             chunk_info chunk {};
             std::vector<chunk_map::const_iterator> sources {};
             std::string path {};
+            std::shared_ptr<void> pin {};
             bool recent = false;
         };
 
@@ -547,13 +951,7 @@ namespace turbo {
         std::map<uint64_t, item_t> items;
         repack_stats_t stats;
 
-        ~repack_plan_t()
-        {
-            std::error_code ec;
-            std::filesystem::remove_all(directory, ec);
-            if (ec)
-                logger::warn("failed to remove repack directory {}: {}", directory, ec.message());
-        }
+        std::unique_ptr<storage::commit_journal> journal;
     };
 
     std::vector<cardano::point> chunk_registry::checkpoint_points() const
@@ -567,7 +965,7 @@ namespace turbo {
 
     chunk_registry::repack_stats_t chunk_registry::checkpoint(const bool force)
     {
-        if (_transaction)
+        if (_transaction || _journal)
             throw error("checkpoint requires an idle registry");
         if (!_validator || !_indexer)
             return {};
@@ -614,8 +1012,13 @@ namespace turbo {
         repack_stats_t repacked;
         if (repacking.valid()) {
             auto plan = repacking.get();
-            if (plan)
-                logger::run_log_errors([&] { repacked = _commit_repack(*plan); });
+            if (plan) {
+                const auto failure = logger::run_log_errors([&] { repacked = _commit_repack(*plan); });
+                // Optional repacking may fail before publication. A pending
+                // commit instead requires recovery before the registry is used.
+                if (failure && _journal && _journal->decided())
+                    std::rethrow_exception(failure);
+            }
         }
         _coordinated_checkpoint_offset = points.front().end_offset;
         _checkpoint_requested.store(false, std::memory_order_release);
@@ -627,18 +1030,16 @@ namespace turbo {
         const auto *snapshot = _validator->snapshots().at_offset(point.end_offset);
         if (!snapshot)
             throw error("checkpoint ledger snapshot is missing");
-        const auto directory = _data_dir / "checkpoints" / fmt::format("{}-{}", point.end_offset,
-            std::chrono::system_clock::now().time_since_epoch().count());
-        bool published = false;
-        std::vector<std::string> temporary_indices;
-        scope_exit cleanup { [&] {
-            for (const auto &path: temporary_indices)
-                _file_remover.mark(path);
-            if (!published) {
-                std::error_code ec;
-                std::filesystem::remove_all(directory, ec);
-            }
+        storage::commit_journal staging { _data_dir };
+        const auto directory = staging.stage("checkpoint");
+        const auto published = _data_dir / "checkpoints" / fmt::format("{}-{}", point.end_offset, staging.id());
+        scope_exit reset_index_paths { [&] {
+            logger::run_log_errors([&] { _sched.process(true); });
+            for (const auto &[name, index]: _indexer->indexers())
+                index->work_dir({});
         } };
+        for (const auto &[name, index]: _indexer->indexers())
+            index->work_dir((directory / "index").string());
         std::filesystem::create_directories(directory / "index");
         std::filesystem::create_directories(directory / "validate");
         indexer::slice_list slices;
@@ -653,10 +1054,6 @@ namespace turbo {
             for (const auto &[name, index]: _indexer->indexers()) {
                 if (!index->mergeable())
                     continue;
-                const auto path = index->reader_path(tail.slice_id);
-                // Sparse indices need no truncation when all entries precede the boundary.
-                link_checkpoint_file(index->reader_path(slice.slice_id), path);
-                temporary_indices.emplace_back(path);
                 index->schedule_truncate(slice.slice_id, tail.slice_id, point.end_offset);
             }
             _sched.process(true);
@@ -665,7 +1062,8 @@ namespace turbo {
         }
         json::array files;
         const auto link_file = [&](const std::filesystem::path &relative_path) {
-            link_checkpoint_file(_data_dir / relative_path, directory / relative_path);
+            if (!std::filesystem::exists(directory / relative_path))
+                link_checkpoint_file(_data_dir / relative_path, directory / relative_path);
             files.emplace_back(relative_path.generic_string());
         };
         json::array index_state;
@@ -688,23 +1086,88 @@ namespace turbo {
             { "version", checkpoint_manifest_t::current_version }, { "offset", point.end_offset }, { "height", point.height },
             { "hash", fmt::format("{}", point.hash) }, { "files", std::move(files) }
         });
-        published = true;
-        return directory;
+        // A checkpoint is independent of live state and publishes with one rename.
+        std::filesystem::create_directories(published.parent_path());
+        std::filesystem::rename(directory, published);
+        return published;
     }
 
-    void chunk_registry::maintenance()
+    void chunk_registry::maintenance(const bool recover_orphans)
     {
-        if (valid_end_offset() != max_end_offset()) {
-            logger::warn("the local chain is not in a consistent state, performing maintenance ...");
-            truncate(tip());
-            _file_remover.remove();
-        } else {
-            logger::info("the local chain is in a consistent state");
+        if (_transaction || _journal) [[unlikely]] {
+            throw error("registry maintenance requires an idle registry");
         }
+        if (recover_orphans && _mode != mode::validate)
+            throw error("orphan recovery requires a validating registry: '{}'", _data_dir);
+        auto scan = _scan_storage();
+        if (_mode != mode::validate) {
+            _require_clean_storage(scan, _chunks);
+            const auto marked = _file_remover.removable();
+            _repair_or_require_clean_storage(scan, _chunks, marked);
+            _inspect_derived_state(_chunks, marked);
+            return;
+        }
+        _maintenance(std::move(scan), recover_orphans);
+        _file_remover.remove();
+    }
+
+    void chunk_registry::_maintenance(maintenance_scan_t scan, const bool recover_orphans)
+    {
+        _file_remover.unmark(_state_path);
+        for (const auto &path: scan.temporary) {
+            _file_remover.mark(path, std::chrono::seconds { 0 });
+        }
+        for (const auto &[offset, chunk]: _chunks) {
+            const auto path = trusted_chunk_path(_db_dir, chunk);
+            _file_remover.unmark(path);
+            scan.chunks.erase(path);
+        }
+        std::vector<std::string> candidates;
+        std::vector<std::shared_ptr<void>> pins;
+        if (recover_orphans) {
+            const auto obsolete = _file_remover.removable();
+            for (const auto &[path, size]: scan.chunks) {
+                if (obsolete.contains(path))
+                    continue;
+                candidates.emplace_back(path);
+                pins.emplace_back(_file_remover.pin(path));
+            }
+        }
+        _recover_registered();
+        _recover_orphans(candidates, scan);
+        if (valid_end_offset() != max_end_offset()) [[unlikely]] {
+            throw error("registry maintenance did not restore a consistent boundary");
+        }
+        // Publish the reconciled registry before deleting recovery inputs or obsolete files.
+        // Startup repairs use the same publication protocol as normal transactions.
+        std::vector<std::string> obsolete_state;
+        for (const auto *relative: { "compressed/revalidate-source.bin", "compressed/state-pre.bin", "index/state-pre.json" })
+            if (std::filesystem::exists(_data_dir / relative))
+                obsolete_state.emplace_back(relative);
+        if (_state_needs_save || !obsolete_state.empty()) {
+            auto journal = std::make_unique<storage::commit_journal>(_data_dir);
+            for (const auto &relative: obsolete_state)
+                journal->remove(relative);
+            _commit_state(std::move(journal));
+        }
+        pins.clear();
+        // Reconcile the original inventory with the final registry. Files made
+        // obsolete during replay/repacking are already tracked by the remover.
+        for (const auto &[offset, chunk]: _chunks) {
+            scan.chunks.erase(trusted_chunk_path(_db_dir, chunk));
+        }
+        for (const auto &[path, size]: scan.chunks) {
+            _file_remover.mark(path, std::chrono::seconds { 0 });
+        }
+        // The caller releases its recovery pins before collecting these files.
     }
 
     chunk_registry::repack_stats_t chunk_registry::repack(const repack_mode_t mode, const size_t fragment_threshold)
     {
+        // Store-only registries may repack, but publication still needs one writer.
+        std::unique_ptr<storage::registry_writer_lock> writer;
+        if (!_writer_lock)
+            writer = std::make_unique<storage::registry_writer_lock>(_data_dir);
         auto plan = _prepare_repack(mode, fragment_threshold);
         return _commit_repack(*plan);
     }
@@ -712,37 +1175,34 @@ namespace turbo {
     std::unique_ptr<chunk_registry::repack_plan_t> chunk_registry::_prepare_repack(const repack_mode_t mode,
         const size_t fragment_threshold) const
     {
-        if (_transaction) [[unlikely]]
+        if (_transaction || _journal) [[unlikely]]
             throw error("repack cannot run while a chunk_registry transaction is active!");
 
         auto plan = std::make_unique<repack_plan_t>();
-        plan->directory = _db_dir / "repack";
-        std::filesystem::remove_all(plan->directory);
-        for (const auto &entry: std::filesystem::directory_iterator { _db_dir })
-            if (entry.is_directory() && entry.path().filename().string().starts_with(".repack-"))
-                std::filesystem::remove_all(entry.path());
         plan->stats.chunks_analyzed = _chunks.size();
         plan->stats.compressed_size_before = num_compressed_bytes();
         plan->stats.compressed_size_after = plan->stats.compressed_size_before;
-        const auto open_chunk_id = _chunks.empty() ? 0 : make_slot(_chunks.rbegin()->second.last_slot).chunk_id();
+        const auto open_chunk_id = _chunks.empty() ? 0 : make_slot(_chunks.rbegin()->second.last_block.slot).chunk_id();
         const auto tip_height = _chunks.empty() ? 0 : _chunks.rbegin()->second.blocks.back().height;
         const auto recent_floor = tip_height > _cardano_cfg.shelley_security_param
             ? tip_height - _cardano_cfg.shelley_security_param : 0;
         size_t recent_fragments = 0;
         auto logical_end = _chunks.cbegin();
         bool recent = false;
+        size_t logical_fragments = 0;
         for (auto begin = _chunks.cbegin(); begin != _chunks.cend();) {
             const auto chunk_id = make_slot(begin->second.first_slot).chunk_id();
             if (begin == logical_end) {
                 logical_end = std::next(begin);
                 while (logical_end != _chunks.cend() && make_slot(logical_end->second.first_slot).chunk_id() == chunk_id)
                     ++logical_end;
+                logical_fragments = static_cast<size_t>(std::distance(begin, logical_end));
                 recent = std::prev(logical_end)->second.blocks.back().height >= recent_floor;
             }
             auto end = std::next(begin);
             auto size = begin->second.data_size;
-            while (end != logical_end && make_slot(std::prev(end)->second.last_slot).chunk_id() == chunk_id
-                    && make_slot(end->second.last_slot).chunk_id() == chunk_id
+            while (end != logical_end && make_slot(std::prev(end)->second.last_block.slot).chunk_id() == chunk_id
+                    && make_slot(end->second.last_block.slot).chunk_id() == chunk_id
                     && end->second.data_size <= zstd::max_zstd_buffer
                     && size <= zstd::max_zstd_buffer - end->second.data_size) {
                 size += end->second.data_size;
@@ -751,7 +1211,9 @@ namespace turbo {
             const bool merge = std::next(begin) != end;
             const bool selected = mode == repack_mode_t::merge_closed
                 ? merge && chunk_id < open_chunk_id
-                : merge || begin->second.compression_level < zstd::default_compression_level;
+                : mode == repack_mode_t::merge_fragmented
+                    ? merge && logical_fragments > fragment_threshold
+                    : merge || begin->second.compression_level < zstd::default_compression_level;
             if (selected) {
                 const auto key = std::prev(end)->first;
                 repack_plan_t::item_t item { .chunk=begin->second, .recent=recent };
@@ -760,7 +1222,6 @@ namespace turbo {
                     item.sources.emplace_back(it);
                 if (merge && recent)
                     recent_fragments += item.sources.size();
-                item.path = (plan->directory / fmt::format("{}.zstd", key)).string();
                 plan->items.emplace(key, std::move(item));
             }
             begin = end;
@@ -769,8 +1230,20 @@ namespace turbo {
             std::erase_if(plan->items, [](const auto &entry) { return entry.second.recent; });
         if (plan->items.empty())
             return plan;
+        // Live publication checks the threshold after every commit. Avoid creating
+        // and discarding a journal until there is actual repacking work.
+        plan->journal = std::make_unique<storage::commit_journal>(_data_dir);
+        plan->directory = plan->journal->stage("scratch");
+        for (auto &[key, item]: plan->items)
+            item.path = (plan->directory / fmt::format("{}.zstd", key)).string();
+        // Remove staging directories left by the pre-journal repacker.
+        std::filesystem::remove_all(_db_dir / "repack");
+        for (const auto &entry: std::filesystem::directory_iterator { _db_dir })
+            if (entry.is_directory() && entry.path().filename().string().starts_with(".repack-"))
+                std::filesystem::remove_all(entry.path());
         logger::info("repack started: mode {} output chunks {}",
-            mode == repack_mode_t::full ? "full" : "merge-closed", plan->items.size());
+            mode == repack_mode_t::full ? "full" : mode == repack_mode_t::merge_closed ? "merge-closed" : "merge-fragmented",
+            plan->items.size());
         std::filesystem::create_directories(plan->directory);
         std::atomic_size_t completed { 0 };
         const auto prepare = [&](repack_plan_t::item_t &item) {
@@ -787,23 +1260,33 @@ namespace turbo {
                 const auto compressed = file::read(full_path(source.rel_path()));
                 auto bytes = write_buffer { uncompressed.data() + (offset - item.chunk.offset), source.data_size };
                 zstd::decompress(bytes, compressed);
+                if (crypto::blake2b::digest<cardano::block_hash>(bytes) != source.data_hash)
+                    throw error(fmt::format("cannot repack chunk with incorrect data hash: {}", source.rel_path()));
                 offset += source.data_size;
                 if (source_it != item.sources.front())
                     item.chunk.blocks.insert(item.chunk.blocks.end(), source.blocks.begin(), source.blocks.end());
             }
             item.chunk.data_size = uncompressed.size();
             item.chunk.num_blocks = item.chunk.blocks.size();
-            item.chunk.last_slot = last.last_slot;
-            item.chunk.last_block_hash = last.last_block_hash;
+            item.chunk.last_block = last.last_block;
             crypto::blake2b::digest(item.chunk.data_hash, uncompressed);
-            const auto compressed = zstd::compress(uncompressed);
+            // Live fragments are merged frequently, so avoid maximum compression here.
+            const auto level = mode == repack_mode_t::merge_fragmented ? 3 : zstd::default_compression_level;
+            const auto compressed = zstd::compress(uncompressed, level);
             file::write(item.path, compressed);
+            const auto published = trusted_chunk_path(_db_dir, item.chunk);
+            item.pin = _file_remover.pin(published);
+            _file_remover.unmark(published);
+            // Recompression preserves content identity. Publish each finished file
+            // immediately so temporary disk use is bounded by active workers.
+            // Merged fragments keep their originals until the metadata commits.
+            std::filesystem::rename(item.path, published);
             item.chunk.compressed_size = compressed.size();
-            item.chunk.compression_level = zstd::default_compression_level;
+            item.chunk.compression_level = level;
             if (mode == repack_mode_t::full)
                 progress::get().update("repack", ++completed, plan->items.size());
         };
-        if (mode == repack_mode_t::merge_closed) {
+        if (mode != repack_mode_t::full) {
             for (auto &[key, item]: plan->items)
                 prepare(item);
         } else {
@@ -837,8 +1320,8 @@ namespace turbo {
                 if (old_path != path)
                     obsolete_paths.emplace(old_path);
             }
+
             replacements.emplace(key, std::move(item.chunk));
-            std::filesystem::rename(item.path, path);
             _file_remover.unmark(path);
         }
         chunk_map originals;
@@ -846,14 +1329,15 @@ namespace turbo {
             for (const auto source: item.sources)
                 originals.insert(_chunks.extract(source));
         scope_exit restore { [&] {
+            if (_journal && _journal->decided())
+                return; // Publication must be completed on reopen, never rolled back.
+            _journal.reset();
             for (const auto &[key, item]: plan.items)
                 _chunks.erase(key);
             _chunks.merge(originals);
         } };
         _chunks.merge(replacements);
-        const auto state_path = (plan.directory / "state.bin").string();
-        save_chunk_registry_state(state_path, _chunks);
-        std::filesystem::rename(state_path, _state_path);
+        _commit_state(std::move(plan.journal));
         restore.release();
         logger::run_log_errors([&] {
             logger::info(
@@ -1114,7 +1598,7 @@ namespace turbo {
     const chunk_registry::chunk_info &chunk_registry::find_last_block_hash(const buffer &last_block_hash) const
     {
         const auto it = std::find_if(_chunks.begin(), _chunks.end(),
-                                     [&](const auto &el) { return el.second.last_block_hash == last_block_hash; });
+                                     [&](const auto &el) { return el.second.last_block.hash == last_block_hash; });
         if (it == _chunks.end()) [[unlikely]]
             throw error(fmt::format("there is no chunk with its last block hash {}", last_block_hash));
         return it->second;
@@ -1143,7 +1627,7 @@ namespace turbo {
     uint64_t chunk_registry::max_slot() const
     {
         if (!_chunks.empty()) [[likely]]
-            return _chunks.rbegin()->second.last_slot;
+            return _chunks.rbegin()->second.last_block.slot;
         return 0;
     }
 
@@ -1185,9 +1669,32 @@ namespace turbo {
         return const_iterator::rel_path(_db_dir, full_path);
     }
 
+    std::string chunk_registry::stage_path(const std::filesystem::path &relative) const
+    {
+        if (!_journal)
+            throw error("staging requires an active transaction");
+        return _journal->stage(relative).string();
+    }
+
+    std::string chunk_registry::read_path(const std::filesystem::path &relative) const
+    {
+        return (_journal ? _journal->read(relative) : _data_dir / relative).make_preferred().string();
+    }
+
+    void chunk_registry::stage_output(const std::filesystem::path &relative)
+    {
+        if (!_journal)
+            throw error("publishing an output requires an active transaction");
+        _file_remover.unmark((_data_dir / relative).make_preferred().string());
+        _journal->add(relative);
+    }
+
     std::string chunk_registry::full_path(const std::filesystem::path &rel_path) const
     {
-        return const_iterator::full_path(_db_dir, rel_path);
+        if (rel_path.empty() || rel_path.has_root_path()
+                || std::ranges::any_of(rel_path, [](const auto &part) { return part == ".."; })) [[unlikely]]
+            throw error("chunk path '{}' must be relative to '{}' without '..' components", rel_path, _db_dir);
+        return read_path(std::filesystem::path { "compressed" } / rel_path);
     }
 
     uint64_t chunk_registry::read_holding_chunk(uint8_vector &chunk_data, const uint64_t offset) const
@@ -1222,30 +1729,46 @@ namespace turbo {
 
     void chunk_registry::import(const chunk_registry &src_cr)
     {
-        uint8_vector raw_data {}, compressed_data {};
-        _start_tx(tip(), src_cr.tip());
-        for (const auto &[last_byte_offset, src_chunk]: src_cr._chunks) {
-            const auto src_path  = src_cr.full_path(src_chunk.rel_path());
-            const auto local_path = full_path(chunk_info::rel_path_from_hash(src_chunk.data_hash));
-            std::filesystem::copy_file(src_path, local_path);
-            add_file(src_chunk.offset, local_path, src_chunk.compression_level);
-        }
-        _prepare_tx();
-        _commit_tx();
+        if (src_cr.empty())
+            return;
+        const auto target = src_cr.tip();
+        if (!target)
+            throw error("cannot import nonempty registry '{}' without a validated tip", src_cr.data_dir());
+        accept_anything_or_throw(tip(), *target, [&] {
+            for (const auto &[last_byte_offset, src_chunk]: src_cr._chunks) {
+                const auto src_path = src_cr.full_path(src_chunk.rel_path());
+                add_file(src_chunk.offset, src_path, src_chunk.compression_level);
+            }
+        });
     }
 
-    progress_point chunk_registry::add_buffer(const uint64_t offset, uint8_vector uncompressed,
-        std::optional<uint8_vector> compressed, int32_t compression_level)
+    progress_point chunk_registry::add_buffer(const uint64_t offset, uint8_vector uncompressed, const int32_t compression_level)
     {
+        const auto compressed = zstd::compress(uncompressed, compression_level);
+        return add_buffer_trusted(offset, uncompressed, compressed, compression_level);
+    }
+
+    progress_point chunk_registry::add_compressed(const uint64_t offset, uint8_vector compressed, const int32_t compression_level)
+    {
+        const auto uncompressed = zstd::decompress(compressed);
+        return add_buffer_trusted(offset, uncompressed, compressed, compression_level);
+    }
+
+    progress_point chunk_registry::add_buffer_trusted(const uint64_t offset, const buffer uncompressed,
+        const buffer compressed, const int32_t compression_level)
+    {
+        if (!_transaction) [[unlikely]] {
+            throw error("add can be executed only inside of a transaction!");
+        }
+        if (uncompressed.empty() || uncompressed.size() > zstd::max_zstd_buffer) [[unlikely]] {
+            throw error(fmt::format("invalid chunk size: {}", uncompressed.size()));
+        }
         const auto data_hash = crypto::blake2b::digest<cardano::block_hash>(uncompressed);
         const auto rel_path = fmt::format("chunk/{}.zstd.tmp", data_hash);
-        const auto local_path = full_path(rel_path);
-        if (!compressed) {
-            compressed.emplace(zstd::compress(uncompressed, 9));
-            compression_level = 9;
-        }
-        file::write(local_path, *compressed);
-        return _add(offset, local_path, std::move(uncompressed), compressed->size(), compression_level, data_hash);
+        const auto local_path = stage_path(std::filesystem::path { "compressed" } / rel_path);
+        // The journal owns both this output and any failed-write temporary file.
+        file::write(local_path, compressed);
+        return _add(offset, local_path, uncompressed, compressed.size(), compression_level, data_hash);
     }
 
     void chunk_registry::add_file(const uint64_t offset, const std::string &local_path, const int32_t compression_level)
@@ -1260,29 +1783,38 @@ namespace turbo {
         std::optional<cardano::block_hash> data_hash)
     {
         // TODO: add a fast path for data beyond earliest known invalid offset
-        if (!_transaction) [[unlikely]]
+        if (!_transaction) [[unlikely]] {
             throw error("add can be executed only inside of a transaction!");
+        }
+        if (uncompressed.empty() || uncompressed.size() > zstd::max_zstd_buffer) [[unlikely]] {
+            throw error(fmt::format("invalid chunk size: {}", uncompressed.size()));
+        }
         auto [parsed_chunk, ex_ptr] = _parse(offset, uncompressed, compressed_size, compression_level, data_hash);
-        const progress_point parsed_progress { parsed_chunk.last_slot, parsed_chunk.end_offset() };
-        const auto final_path = full_path(parsed_chunk.rel_path());
+        const progress_point parsed_progress { parsed_chunk.last_block.slot, parsed_chunk.end_offset() };
+        const auto final_path = stage_path(std::filesystem::path { "compressed" } / parsed_chunk.rel_path());
         if (!parsed_chunk.blocks.empty()) {
-            if (!ex_ptr) {
-                if (local_path != final_path)
+            const auto live_path = trusted_chunk_path(_db_dir, parsed_chunk);
+            if (!ex_ptr && local_path != final_path && std::filesystem::path { local_path } != std::filesystem::path { live_path }) {
+                // Move our own temporary output; preserve external import inputs.
+                if (std::filesystem::path { local_path }.parent_path() == std::filesystem::path { final_path }.parent_path())
                     std::filesystem::rename(local_path, final_path);
+                else
+                    std::filesystem::copy_file(local_path, final_path, std::filesystem::copy_options::overwrite_existing);
             }
             _add(std::move(parsed_chunk));
         }
-        if (ex_ptr)
+        if (ex_ptr) [[unlikely]] {
             std::rethrow_exception(ex_ptr);
+        }
         return parsed_progress;
     }
 
-    [[nodiscard]] std::exception_ptr chunk_registry::accept_progress(const cardano::optional_point &start, const std::optional<progress_point> &target, const std::function<void()> &action)
+    [[nodiscard]] std::exception_ptr chunk_registry::accept_progress(const cardano::optional_point &start, const progress_point &target, const std::function<void()> &action)
     {
         return _accept_progress(start, target, true, action);
     }
 
-    void chunk_registry::accept_anything_or_throw(const cardano::optional_point &start, const std::optional<progress_point> &target, const std::function<void()> &action)
+    void chunk_registry::accept_anything_or_throw(const cardano::optional_point &start, const progress_point &target, const std::function<void()> &action)
     {
         if (const auto ex_ptr = _accept_progress(start, target, false, action); ex_ptr)
             std::rethrow_exception(ex_ptr);
@@ -1363,7 +1895,7 @@ namespace turbo {
                 const auto chunk_id = make_slot(chunk.first_slot).chunk_id();
                 const auto chunk_path = full_path(chunk.rel_path());
                 const auto [it, created] = immutable_chunks.try_emplace(chunk_id, chunk.first_slot);
-                it->second.last_slot = chunk.last_slot;
+                it->second.last_slot = chunk.last_block.slot;
                 it->second.files.emplace_back(chunk_path);
                 for (const auto &block: chunk.blocks)
                     it->second.blocks.emplace_back(&block);
@@ -1488,9 +2020,9 @@ namespace turbo {
     void chunk_registry::_add(chunk_info &&chunk, const bool normal)
     {
         try {
-            if (normal && _transaction->target_slot() < chunk.last_slot) [[unlikely]]
+            if (normal && _transaction->target_slot() < chunk.last_block.slot) [[unlikely]]
                 throw error(fmt::format("chunk's slot range {}:{} exceeds the target slot: {}",
-                    chunk.first_slot, chunk.last_slot, _transaction->target_slot()));
+                    chunk.first_slot, chunk.last_block.slot, _transaction->target_slot()));
             if (chunk.data_size == 0 || chunk.num_blocks == 0 || chunk.blocks.empty()) [[unlikely]]
                 throw error(fmt::format("chunk at offset {} is empty!", chunk.offset));
             mutex::unique_lock update_lk { _update_mutex };
@@ -1505,17 +2037,12 @@ namespace turbo {
                     _cardano_cfg.shelley_start_epoch(_chunks.empty() ? 0 : first_block.slot / _cardano_cfg.byron_epoch_length);
                 }
                 if (_validator) {
-                    if (const auto future_slot = cardano::slot::from_future(_cardano_cfg); tested_chunk.last_slot >= future_slot) [[unlikely]]
-                        throw error(fmt::format("a chunk with its last block with a time slot from the future: {}!", tested_chunk.last_slot));
+                    if (const auto future_slot = cardano::slot::from_future(_cardano_cfg); tested_chunk.last_block.slot >= future_slot) [[unlikely]]
+                        throw error(fmt::format("a chunk with its last block with a time slot from the future: {}!", tested_chunk.last_block.slot));
                     if (!_chunks.empty()) {
                         const auto &last = _chunks.rbegin()->second;
-                        if (!valid_slot_successor(last.last_slot, last.blocks.back().era,
-                                tested_chunk.first_slot, tested_chunk.blocks.front().era)) [[unlikely]]
-                            throw error(fmt::format("chunk at offset {} has its first slot {} not after the last block's slot {}",
-                                tested_chunk.offset, tested_chunk.first_slot, last.last_slot));
-                        if (last.last_block_hash != tested_chunk.prev_block_hash) [[unlikely]]
-                            throw error(fmt::format("chunk at offset {}: prev_block_hash {} does not match the prev chunk's last_block_hash of the last block {}",
-                                tested_chunk.offset, tested_chunk.prev_block_hash, last.last_block_hash));
+                        require_block_successor(last.last_block, last.blocks.back().era,
+                            tested_chunk.prev_block_hash, tested_chunk.first_slot, tested_chunk.blocks.front().era);
                     } else {
                         if (tested_chunk.prev_block_hash != _cardano_cfg.byron_genesis_hash) [[unlikely]]
                             throw error(fmt::format("chunk at offset {}: prev_block_hash {} does not match the genesis hash {}",
@@ -1523,7 +2050,7 @@ namespace turbo {
                     }
                 }
                 const auto first_slot = make_slot(tested_chunk.first_slot);
-                const auto last_slot = make_slot(tested_chunk.last_slot);
+                const auto last_slot = make_slot(tested_chunk.last_block.slot);
                 if (first_slot.epoch() != last_slot.epoch()) [[unlikely]]
                     throw error(fmt::format("chunk at offset {} contains blocks from multiple epochs: first slot: {} last_slot: {}", tested_chunk.offset, first_slot, last_slot));
                 if (first_slot.chunk_id() != last_slot.chunk_id()) [[unlikely]]
@@ -1535,10 +2062,13 @@ namespace turbo {
             }
             if (normal) {
                 _notify_of_updates(update_lk);
-                logger::debug("chunk_registry::_add: first_slot: {} last_slot: {} -> SUCCESS", make_slot(chunk.first_slot), make_slot(chunk.last_slot));
+                logger::debug("chunk_registry::_add: first_slot: {} last_slot: {} -> SUCCESS", make_slot(chunk.first_slot), make_slot(chunk.last_block.slot));
             }
         } catch (...) {
-            logger::debug("chunk_registry::_add: first_slot: {} last_slot: {} -> FAILURE", make_slot(chunk.first_slot), make_slot(chunk.last_slot));
+            logger::debug("chunk_registry::_add: first_slot: {} last_slot: {} -> FAILURE", make_slot(chunk.first_slot), make_slot(chunk.last_block.slot));
+            if (normal || _mode != mode::validate) [[unlikely]] {
+                throw;
+            }
         }
     }
 
@@ -1547,29 +2077,27 @@ namespace turbo {
         const std::optional<cardano::block_hash> &data_hash) const
     {
         std::exception_ptr ex_ptr{};
-        std::optional<indexer::chunk_indexer_list> chunk_indexers{};
+        std::optional<indexer::chunk_indexer_list_t> chunk_indexers{};
         if (_indexer)
             chunk_indexers = _indexer->make_chunk_indexers(offset);
         chunk_info chunk {
+            .offset=offset,
             .data_size=raw_data.size(),
             .compressed_size=compressed_size,
-            .compression_level=compression_level,
-            .offset=offset
+            .compression_level=compression_level
         };
         size_t valid_data_size = 0;
-        uint64_t prev_slot = 0;
-        cbor::zero2::decoder dec{raw_data};
-        while (!dec.done()) {
+        storage::block_reader_t reader { raw_data, offset, _cardano_cfg };
+        while (!reader.done()) {
             try {
-                auto &block_tuple = dec.read();
-                const cardano::block_container blk_ptr{numeric_cast<uint64_t>(chunk.offset + block_tuple.data_begin() - raw_data.data()), block_tuple, _cardano_cfg};
+                const auto blk_ptr = reader.next();
                 {
                     const auto &blk = *blk_ptr;
                     const auto slot = blk.slot();
-                    if (!chunk.blocks.empty() && !valid_slot_successor(
-                            prev_slot, chunk.blocks.back().era, slot, blk.era())) [[unlikely]]
-                        throw error(fmt::format("chunk at {}: block slot {} is not after the previous block's slot {}!", offset, slot, prev_slot));
-                    prev_slot = slot;
+                    if (!chunk.blocks.empty()) {
+                        require_block_successor(chunk.last_block, chunk.blocks.back().era,
+                            blk.prev_hash(), slot, blk.era(), static_cast<bool>(_validator));
+                    }
                     static constexpr auto max_era = std::numeric_limits<uint8_t>::max();
                     if (blk.era() > max_era) [[unlikely]]
                         throw error(fmt::format("block at slot {} has era {} that is outside of the supported max limit of {}", slot, blk.era(), max_era));
@@ -1577,9 +2105,7 @@ namespace turbo {
                     if (blk_ptr.raw().size() > max_size) [[unlikely]]
                         throw error(fmt::format("block at slot {} has size {} that is outside of the supported max limit of {}", slot, blk_ptr.raw().size(), max_size));
                     if (!chunk.blocks.empty()) {
-                        if (_validator && blk.prev_hash() != chunk.last_block_hash) [[unlikely]]
-                            throw error(fmt::format("block at slot {} has an inconsistent prev_hash {}", blk.slot(), blk.prev_hash()));
-                        const auto prev_chunk_id = cardano::slot::chunk_id(chunk.last_slot, _cardano_cfg);
+                        const auto prev_chunk_id = cardano::slot::chunk_id(chunk.last_block.slot, _cardano_cfg);
                         const auto next_chunk_id = cardano::slot::chunk_id(slot, _cardano_cfg);
                         if (prev_chunk_id != next_chunk_id) [[unlikely]]
                             throw error(fmt::format("chunk at offset {} contains blocks from multiple chunks: {} and {}", offset, prev_chunk_id, next_chunk_id));
@@ -1591,19 +2117,9 @@ namespace turbo {
                         if (p->on_block_validate)
                             p->on_block_validate(blk);
                     }
-                    chunk.last_block_hash = blk.hash();
-                    chunk.last_slot = slot;
+                    chunk.last_block = { slot, blk.hash() };
                     if (chunk_indexers) {
-                        for (auto &idxr: *chunk_indexers)
-                            idxr->index(blk_ptr);
-                        blk.foreach_tx([&](const auto &tx) {
-                            for (auto &idxr: *chunk_indexers)
-                                idxr->index_tx(tx);
-                        });
-                        blk.foreach_invalid_tx([&](const auto &tx) {
-                            for (auto &idxr: *chunk_indexers)
-                                idxr->index_invalid_tx(tx);
-                        });
+                        chunk_indexers->index_block(blk_ptr);
                     }
                     chunk.blocks.emplace_back(storage::block_info::from_block(blk_ptr));
                     valid_data_size = numeric_cast<size_t>(blk_ptr.end_offset() - chunk.offset);
@@ -1624,10 +2140,12 @@ namespace turbo {
         chunk.num_blocks = chunk.blocks.size();
         if (valid_data.size() != raw_data.size()) {
             chunk.data_size = valid_data.size();
-            const auto compressed = zstd::compress(valid_data);
-            chunk.compressed_size = compressed.size();
-            chunk.compression_level = zstd::default_compression_level;
-            file::write(full_path(chunk.rel_path()), compressed);
+            if (!valid_data.empty()) {
+                const auto compressed = zstd::compress(valid_data);
+                chunk.compressed_size = compressed.size();
+                chunk.compression_level = zstd::default_compression_level;
+                file::write(stage_path(std::filesystem::path { "compressed" } / chunk.rel_path()), compressed);
+            }
         }
         for (const auto *p: _processors) {
             if (p->on_chunk_add)
@@ -1638,7 +2156,7 @@ namespace turbo {
         // chunks can be parsed out of order so in the end offset we report the number of parsed bytes
         // rather than the last parsed offset as this better reflects the progress made
         const auto num_parsed = _tx_progress_parse.fetch_add(chunk.data_size, std::memory_order_relaxed) + chunk.data_size;
-        report_progress("parse", { chunk.last_slot,  _transaction->start_offset() + num_parsed });
+        report_progress("parse", { chunk.last_block.slot,  _transaction->start_offset() + num_parsed });
         return std::make_pair(std::move(chunk), std::move(ex_ptr));
     }
 
@@ -1676,11 +2194,10 @@ namespace turbo {
                 chunk_data.resize(chunk.data_size);
                 crypto::blake2b::digest(chunk.data_hash, chunk_data);
                 const auto compressed = zstd::compress(chunk_data);
-                file::write(full_path(chunk.rel_path()), compressed);
+                file::write(stage_path(std::filesystem::path { "compressed" } / chunk.rel_path()), compressed);
                 chunk.compressed_size = compressed.size();
                 chunk.compression_level = zstd::default_compression_level;
-                chunk.last_slot = chunk.blocks.back().slot;
-                chunk.last_block_hash = chunk.blocks.back().hash;
+                chunk.last_block = { chunk.blocks.back().slot, chunk.blocks.back().hash };
                 node.key() = chunk.end_offset() - 1;
                 chunk_it = _chunks.insert(next_chunk_it, std::move(node));
                 ++chunk_it;
@@ -1734,10 +2251,11 @@ namespace turbo {
 
     void chunk_registry::_my_rollback_tx()
     {
-        for (auto chunk_it = _find_chunk_by_offset_no_throw(_transaction->start_offset()); chunk_it != _chunks.end(); ) {
-            _file_remover.mark(full_path(chunk_it->second.rel_path()));
-            chunk_it = _chunks.erase(chunk_it);
-        }
+        const auto restore_offset = _truncated_chunks.empty()
+            ? _transaction->start_offset()
+            : std::min(_transaction->start_offset(), _truncated_chunks.begin()->second.offset);
+        // New files belong to staging; reused live inputs remain available.
+        _chunks.erase(_chunks.lower_bound(restore_offset), _chunks.end());
         for (auto &&[last_offset, chunk]: _truncated_chunks) {
             const auto chunk_path = full_path(chunk.rel_path());
             _file_remover.unmark(chunk_path);
@@ -1751,34 +2269,45 @@ namespace turbo {
 
     void chunk_registry::_my_commit_tx()
     {
-        if (!std::filesystem::exists(_state_path_pre)) [[unlikely]]
-            throw error(fmt::format("the prepared chunk_registry state file is missing: {}!", _state_path_pre));
-        std::filesystem::rename(_state_path_pre, _state_path);
         for (const auto &[last_offset, chunk]: _truncated_chunks)
             _file_remover.mark(full_path(chunk.rel_path()));
         _truncated_chunks.clear();
-        for (const auto &[last_byte_offset, chunk]: _chunks)
-            _file_remover.unmark(full_path(chunk.rel_path()));
+        // Only the boundary chunk and its successors can have changed.
+        const auto boundary = _transaction->start_offset();
+        for (auto it = _chunks.lower_bound(boundary ? boundary - 1 : 0); it != _chunks.end(); ++it)
+            _file_remover.unmark(full_path(it->second.rel_path()));
     }
 
-    void chunk_registry::_require_better_candidate_chain()
+    void chunk_registry::_require_better_candidate_chain(const bool allow_existing_prefix)
     {
         const auto new_tip = tip();
-        if (!new_tip || !(_transaction->start < new_tip)) [[unlikely]]
-            throw error(fmt::format("candidate chain is not better: proposed tip: {} intersection: {}", new_tip, _transaction->start));
+        if (!new_tip || new_tip->end_offset <= _transaction->start_offset()) [[unlikely]] {
+            throw candidate_chain_rejected_t(fmt::format("candidate chain is not better: proposed tip: {} intersection: {}", new_tip, _transaction->start));
+        }
         if (!_truncated_chunks.empty()) {
+            // Revalidating an unchanged prefix is not selection of a competing chain.
+            if (allow_existing_prefix) {
+                const auto old_chunk = _truncated_chunks.lower_bound(new_tip->end_offset - 1);
+                if (old_chunk != _truncated_chunks.end()) {
+                    const auto &blocks = old_chunk->second.blocks;
+                    const auto old_block = std::lower_bound(blocks.begin(), blocks.end(), new_tip->end_offset,
+                        [](const auto &block, const auto end_offset) { return block.end_offset() < end_offset; });
+                    if (old_block != blocks.end() && old_block->point() == *new_tip) {
+                        return;
+                    }
+                }
+            }
             // slot window for the chain density calculation
             auto window_last_slot = cardano::density_default_window;
             ptrdiff_t fork_prev_height = 0;
 
             auto first_it = const_iterator::cbegin(*this, _truncated_chunks);
             const auto tr_cend = const_iterator::cend(*this, _truncated_chunks);
-            std::optional<storage::block_info> last_common_block {};
             if (_transaction->start_offset() > 0) {
-                last_common_block = find_block_by_offset(_transaction->start_offset() - 1);
-                window_last_slot += last_common_block->slot;
-                while (first_it != tr_cend && *first_it != *last_common_block)
+                window_last_slot += _transaction->start->slot;
+                while (first_it != tr_cend && first_it->offset < _transaction->start_offset()) {
                     ++first_it;
+                }
             }
             if (first_it != const_iterator::cend(*this, _truncated_chunks)) {
                 auto last_it = first_it;
@@ -1789,7 +2318,7 @@ namespace turbo {
             }
 
             // some candidate blocks may have not passed the delayed steps of the validation
-            const auto new_first_it = find_by_offset(new_tip->end_offset - 1);
+            const auto new_first_it = find_by_offset(_transaction->start_offset());
             const auto last_valid_slot = std::min(window_last_slot, new_tip->slot);
             auto new_last_it = new_first_it;
             const auto new_cend = cend();
@@ -1798,50 +2327,74 @@ namespace turbo {
             }
             const auto fork_new_height = const_iterator::block_distance(new_last_it, new_first_it).height();
 
-            if (fork_prev_height >= fork_new_height) [[unlikely]]
-                throw error(fmt::format("candidate chain at byte {} is not better than the original: candidate block count {} vs {}",
+            if (fork_prev_height >= fork_new_height) [[unlikely]] {
+                throw candidate_chain_rejected_t(fmt::format("candidate chain at byte {} is not better than the original: candidate block count {} vs {}",
                     _transaction->start_offset(), fork_new_height, fork_prev_height));
+            }
         }
     }
 
     // can commit progress while still returning the error that stopped the attempt
     [[nodiscard]] std::exception_ptr chunk_registry::_accept_progress(const cardano::optional_point &start, const std::optional<progress_point> &target,
             const bool aim_progress, const std::function<void()> &action) {
-        _start_tx(start, target);
+        if (_transaction || _journal)
+            throw error("an unfinished transaction requires reopening the registry");
+        bool started = false;
         const auto act_err = logger::run_log_errors([&] {
+            _start_tx(start, target);
+            started = true;
             action();
         });
-        bool commit_ok = false;
+        // Initialization can fail midway through processor truncation. Its
+        // rollback callbacks are not yet initialized; reload the committed state.
+        if (!started) {
+            if (_transaction)
+                throw error("transaction initialization interrupted; reopen the registry");
+            _journal.reset();
+            return act_err;
+        }
         std::exception_ptr commit_err = nullptr;
         if (!act_err || aim_progress) {
             commit_err = logger::run_log_errors([&]{
+                if (!aim_progress) {
+                    _sched.process(true);
+                    if (!_unmerged_chunks.empty()) [[unlikely]] {
+                        throw error("cannot commit an import with unmerged chunks");
+                    }
+                }
                 _prepare_tx();
-                if (aim_progress)
-                    _require_better_candidate_chain();
-                if (_before_commit)
+                if (_before_commit) {
                     _before_commit();
+                }
+                if (aim_progress || num_bytes() > _transaction->start_offset()) {
+                    _require_better_candidate_chain(!aim_progress);
+                }
                 _commit_tx();
             });
-            commit_ok = !commit_err;
+            if (!commit_err)
+                return act_err;
         }
-        if (!commit_ok) {
-            logger::debug("rollback triggers: action error: {} commit error: {}", !!act_err, !!commit_err);
-            logger::run_log_errors([&] { _sched.process(true); });
-            logger::run_log_errors([&] {
-                _rollback_tx();
-            });
-            // ensure there are no run-away tasks
-            logger::run_log_errors([&] {
-                _sched.process(true);
-            });
+        if (_journal && _journal->decided()) {
+            // The durable decision is to complete, never to roll back. Keep all
+            // transaction state and require a reopen before any further mutation.
+            throw error("commit interrupted; reopen the registry to complete the pending transaction");
         }
+        logger::debug("rollback triggers: action error: {} commit error: {}", !!act_err, !!commit_err);
+        logger::run_log_errors([&] { _sched.process(true); });
+        // Before the journal's decision, discard staging and restore in-memory
+        // state. Rollback failure propagates and prevents another transaction.
+        _rollback_tx();
+        logger::run_log_errors([&] { _sched.process(true); });
         return act_err ? act_err : commit_err;
     }
 
     void chunk_registry::_start_tx(cardano::optional_point start, const std::optional<progress_point> &target)
     {
+        if (_mode != mode::validate) [[unlikely]] {
+            throw error("chain changes require opening the registry in validation mode");
+        }
         timer t { "chunk_registry::start_tx", logger::level::debug };
-        if (_transaction) [[unlikely]]
+        if (_transaction || _journal) [[unlikely]]
             throw error("nested transactions are not allowed!");
         if (target < start) [[unlikely]]
             throw error(fmt::format("the target slot {} cannot be smaller than the start chain {}", target, start));
@@ -1853,8 +2406,15 @@ namespace turbo {
             start->end_offset = block.end_offset();
         }
         _checkpoint_requested.store(false, std::memory_order_release);
+        storage::commit_journal::recover(_data_dir, true);
+        _journal = std::make_unique<storage::commit_journal>(_data_dir);
         _transaction = active_transaction { start, target };
+        for (const auto &[name, index]: _indexer->indexers())
+            index->work_dir(stage_path("index"));
         _transaction->restore_ledger = _validator && valid_end_offset() == num_bytes();
+        for (const auto &snapshot: _validator->snapshots())
+            _transaction_pins.emplace_back(_file_remover.pin(read_path(
+                std::filesystem::path { "validate" } / fmt::format("ledger-{:013}.bin", snapshot.end_offset))));
         // must happen before a potential truncate below
         if (!_truncated_chunks.empty()) {
             logger::warn("truncated chunks weren't empty at the beginning of a tx - recovering from an error?");
@@ -1879,8 +2439,15 @@ namespace turbo {
                 p->prepare_tx();
         }
         _do_truncate(tip(), false);
-        _save_state(_state_path_pre);
-        _transaction->prepared = true;
+        for (const auto *p: _processors) {
+            if (p->stage_tx)
+                p->stage_tx();
+        }
+        const auto boundary = _transaction->start_offset();
+        for (auto it = _chunks.lower_bound(boundary ? boundary - 1 : 0); it != _chunks.end(); ++it)
+            stage_output(std::filesystem::path { "compressed" } / it->second.rel_path());
+        _stage_state(*_journal);
+        _journal->seal();
     }
 
     void chunk_registry::_rollback_tx()
@@ -1888,10 +2455,14 @@ namespace turbo {
         if (!_transaction) [[unlikely]]
             throw error("rollback_tx can be executed only inside of a transaction!");
         _my_rollback_tx();
+        for (const auto &[name, index]: _indexer->indexers())
+            index->work_dir({});
+        _journal.reset();
         for (const auto *p: _processors) {
             if (p->rollback_tx)
                 p->rollback_tx();
         }
+        _transaction_pins.clear();
         const bool restore_ledger = _transaction->restore_ledger;
         _transaction.reset();
         if (restore_ledger)
@@ -1903,24 +2474,47 @@ namespace turbo {
         timer t { "chunk_registry::commit_tx", logger::level::debug };
         if (!_transaction) [[unlikely]]
             throw error("commit_tx can be executed only inside of a transaction!");
-        if (!_transaction->prepared) [[unlikely]]
-            throw error("commit_tx can only be executed after a successful prepare_tx!");
+        // The journal enforces preparation and retains a failed commit for replay.
+        _journal->commit();
+        _state_needs_save = false;
+        _journal->cleanup();
+        for (const auto &[name, index]: _indexer->indexers())
+            index->work_dir({});
         _my_commit_tx();
         for (const auto *p: _processors) {
             if (p->commit_tx)
                 p->commit_tx();
         }
+        _transaction_pins.clear();
         const auto target = _transaction->target;
         const bool completed = target && target->final_checkpoint
             && (target->end_offset ? num_bytes() >= target->end_offset : max_slot() >= target->slot);
         _transaction.reset();
-        logger::run_log_errors([&] { checkpoint(completed); });
+        _journal.reset();
+        const auto failure = logger::run_log_errors([&] { checkpoint(completed); });
+        if (failure && _journal && _journal->decided())
+            std::rethrow_exception(failure);
     }
 
-    void chunk_registry::_save_state(const std::string &path)
+    void chunk_registry::_stage_state(storage::commit_journal &journal) const
     {
-        // the caller is responsible to hold a lock protecting access to the _chunks!
-        save_chunk_registry_state(path, _chunks);
+        _file_remover.unmark(_state_path);
+        save_chunk_registry_state(journal.stage("compressed/state.bin").string(), _chunks);
+        journal.add("compressed/state.bin");
+    }
+
+    void chunk_registry::_commit_state(std::unique_ptr<storage::commit_journal> journal)
+    {
+        _stage_state(*journal);
+        journal->seal();
+        _journal = std::move(journal);
+        scope_exit abort_preparation { [&] {
+            if (_journal && !_journal->decided())
+                _journal.reset();
+        } };
+        _journal->commit();
+        _state_needs_save = false;
+        _journal.reset();
     }
 
     void chunk_registry::_do_truncate(const cardano::optional_point &new_tip, const bool track_changes)
@@ -2002,7 +2596,7 @@ namespace turbo {
     chunk_registry::chunk_map::const_iterator chunk_registry::_find_chunk_by_slot(const uint64_t slot) const
     {
         const auto chunk_it = std::lower_bound(_chunks.begin(), _chunks.end(), slot,
-            [](const auto &c, const auto &slot) { return c.second.last_slot < slot; });
+            [](const auto &c, const auto &slot) { return c.second.last_block.slot < slot; });
         return chunk_it;
     }
 

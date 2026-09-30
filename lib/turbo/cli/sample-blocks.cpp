@@ -33,7 +33,7 @@ namespace turbo::cli::sample_blocks {
         void run(const arguments &args, const options &opts) const override
         {
             file::set_max_open_files();
-            const chunk_registry cr { args.at(0), chunk_registry::mode::store };
+            const chunk_registry cr { args.at(0), chunk_registry_settings_t { .mode=chunk_registry::mode::store } };
             const std::filesystem::path out_dir = std::filesystem::weakly_canonical(args.at(1));
             const uint32_t seed = std::stoul(*opts.at("seed"));
             const double ratio = std::stod(*opts.at("ratio"));
@@ -50,7 +50,7 @@ namespace turbo::cli::sample_blocks {
 
             storage::partition_map::storage_type batches {};
             for (const auto &[last_byte_off, chunk]: cr.chunks()) {
-                if (chunk.last_slot >= from->slot && chunk.first_slot <= to->slot) {
+                if (chunk.last_block.slot >= from->slot && chunk.first_slot <= to->slot) {
                     storage::partition::storage_type batch {};
                     batch.emplace_back(&chunk);
                     batches.emplace_back(std::move(batch));

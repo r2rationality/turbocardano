@@ -46,7 +46,7 @@ namespace turbo::storage {
         partition::storage_type chunks {};
         std::optional<uint64_t> part_epoch {};
         for (const auto &[chunk_last_byte, chunk]: cr.chunks()) {
-            const auto chunk_epoch = cr.make_slot(chunk.last_slot).epoch();
+            const auto chunk_epoch = cr.make_slot(chunk.last_block.slot).epoch();
             if (part_epoch && *part_epoch != chunk_epoch) {
                 parts.emplace_back(std::move(chunks));
                 chunks.clear();
@@ -77,7 +77,7 @@ namespace turbo::storage {
     {
         storage_type parts {};
         for (const auto &[last_byte, chunk]: cr.chunks()) {
-            if (from_slot && *from_slot >= chunk.last_slot)
+            if (from_slot && *from_slot >= chunk.last_block.slot)
                 continue;
             if (to_slot && *to_slot < chunk.first_slot)
                 continue;

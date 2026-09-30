@@ -27,7 +27,7 @@ namespace turbo::cli::txwit_stat {
         void run(const arguments &args) const override
         {
             const auto &data_dir = args.at(0);
-            const chunk_registry cr { data_dir, chunk_registry::mode::store };
+            const chunk_registry cr { data_dir, chunk_registry_settings_t { .mode=chunk_registry::mode::store } };
             mutex::unique_lock::mutex_type all_mutex alignas(mutex::alignment) {};
             part_info all {};
             storage::parse_parallel<part_info>(cr, 1024,

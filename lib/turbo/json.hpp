@@ -77,10 +77,10 @@ namespace turbo::json {
                 os << "{\n";
                 indent->append(indent_step, ' ');
                 const auto &obj = jv.get_object();
-                for (auto it = obj.begin(), last = std::prev(obj.end()); it != obj.end(); ++it) {
+                for (auto it = obj.begin(); it != obj.end(); ++it) {
                     os << *indent << json::serialize(it->key()) << ": ";
                     save_pretty(os, it->value(), indent);
-                    if (it != last)
+                    if (std::next(it) != obj.end())
                         os << ',';
                     os << '\n';
                 }
@@ -92,10 +92,10 @@ namespace turbo::json {
                 os << "[\n";
                 indent->append(indent_step, ' ');
                 const auto &arr = jv.get_array();
-                for (auto it = arr.begin(), last = std::prev(arr.end()); it != arr.end(); ++it) {
+                for (auto it = arr.begin(); it != arr.end(); ++it) {
                     os << *indent;
                     save_pretty(os, *it, indent);
-                    if (it != last)
+                    if (std::next(it) != arr.end())
                         os << ',';
                     os << '\n';
                 }

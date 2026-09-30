@@ -5,6 +5,7 @@
 
 #include <turbo/common/test.hpp>
 #include <turbo/storage/partition.hpp>
+#include <turbo/storage/test.hpp>
 
 using namespace turbo;
 using namespace turbo::storage;
@@ -12,8 +13,8 @@ using namespace turbo::storage;
 suite storage_partition_suite = [] {
     using boost::ext::ut::v2_1_0::nothrow;
     "storage::partition"_test = [] {
-        static std::string data_dir = install_path("./data/chunk-registry");
-        const chunk_registry cr { data_dir, chunk_registry::mode::store };
+        static std::string data_dir = turbo::storage::sample_registry_path();
+        const chunk_registry cr { data_dir, chunk_registry_settings_t { .mode=chunk_registry::mode::store } };
         "partition_map"_test = [&] {
             {
                 const partition_map pm { cr };

@@ -270,6 +270,12 @@ suite index_common_suite = [] {
                 expect(reader.size() > 0);
                 size1 = reader.size();
             }
+            const auto original = idxr.reader_path("update-0");
+            const auto original_bytes = file::read(original);
+            idxr.work_dir((std::filesystem::path { tmp_idx_dir.path() } / "staged").string());
+            idxr.schedule_truncate("update-0", "unchanged", raw_data.size() + 1024);
+            scheduler::get().process();
+            expect(std::filesystem::equivalent(original, idxr.reader_path("unchanged")));
             {
                 idxr.schedule_truncate("update-0", "update-0-half", raw_data.size() / 2);
                 scheduler::get().process();
@@ -284,6 +290,8 @@ suite index_common_suite = [] {
                 auto reader = idxr.make_reader("update-0-half");
                 expect(reader.size() > 0);
                 expect(reader.size() < size1);
+                expect_equal(file::read(original), original_bytes);
+                expect(!std::filesystem::equivalent(original, idxr.reader_path("update-0-half")));
             }
         };
     };

@@ -294,7 +294,7 @@ namespace turbo::cardano::network {
     server server::make_default(const address &addr, const std::string &data_dir, const asio::worker_ptr &iow,
             const cardano::config &ccfg, size_t max_connections, size_t cache_bytes)
     {
-        auto cr = std::make_shared<chunk_registry>(data_dir, chunk_registry::mode::store, ccfg);
+        auto cr = std::make_shared<chunk_registry>(data_dir, chunk_registry_settings_t { .mode=chunk_registry::mode::store, .ccfg=ccfg });
         return make_default(addr, std::make_shared<chain_source>(std::move(cr), cache_bytes), iow, ccfg, max_connections);
     }
 

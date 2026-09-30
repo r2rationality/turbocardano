@@ -34,7 +34,7 @@ namespace turbo::storage {
 
         uint64_t last_slot() const
         {
-            return _chunks.back()->last_slot;
+            return _chunks.back()->last_block.slot;
         }
 
         uint64_t offset() const

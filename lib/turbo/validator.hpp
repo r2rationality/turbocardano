@@ -55,6 +55,7 @@ namespace turbo::validator {
             std::optional<uint64_t> trusted_authority_epoch_, uint64_t certified_core_offset_,
             uint64_t format_version_);
         json::object to_json() const;
+        bool matches(const storage::chunk_map &chunks) const;
 
         bool operator==(const snapshot &o) const
         {
@@ -83,7 +84,7 @@ namespace turbo::validator {
     extern indexer::indexer_map default_indexers(const std::string &data_dir, scheduler &sched=scheduler::get());
 
     struct incremental {
-        explicit incremental(chunk_registry &cr, bool validate_vrf=true);
+        explicit incremental(chunk_registry &cr, const storage::chunk_map &chunks, bool validate_vrf=true);
         ~incremental();
         [[nodiscard]] cardano::amount unspent_reward(const cardano::stake_ident &id) const;
         [[nodiscard]] cardano::optional_point core_tip() const;

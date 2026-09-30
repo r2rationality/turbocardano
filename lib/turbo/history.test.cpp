@@ -6,21 +6,20 @@
 #include <turbo/cardano/common/types.hpp>
 #include <turbo/common/test.hpp>
 #include <turbo/history.hpp>
+#include <turbo/indexer/test.hpp>
+#include <turbo/storage/test.hpp>
 
 using namespace turbo;
 
 suite history_suite = [] {
     "history"_test = [] {
-        static const std::string src_dir { "./data/chunk-registry"s };
-        static const std::string data_dir { "./tmp" };
-        for (const auto &e: std::filesystem::directory_iterator { data_dir }) {
-            if (e.is_directory())
-                std::filesystem::remove_all(e.path());
-        }
-        "simple reconstruction"_test = [] {
-            chunk_registry src_cr { src_dir, chunk_registry::mode::store };
-            chunk_registry idxr { data_dir, chunk_registry::mode::index };
-            idxr.import(src_cr);
+        static const std::string src_dir { turbo::storage::sample_registry_path() };
+        const file::tmp_directory directory { "history-indexed-fixture" };
+        const auto &data_dir = directory.path();
+        "simple reconstruction"_test = [&] {
+            chunk_registry src_cr { src_dir, chunk_registry_settings_t { .mode=chunk_registry::mode::store } };
+            indexer::create_indexed_fixture(src_cr, data_dir);
+            chunk_registry idxr { data_dir, chunk_registry_settings_t { .mode=chunk_registry::mode::index } };
             
             reconstructor r { idxr };
             const auto &b1 = r.find_block(648087);

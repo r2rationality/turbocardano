@@ -35,10 +35,92 @@ suite sync_p2p_suite = [] {
         cardano_client_manager_mock ccm { good_chain.data };
         "success"_test = [&] {
             std::filesystem::remove_all(data_dir);
-            chunk_registry cr { data_dir, chunk_registry::mode::validate, ccfg };
+            chunk_registry cr { data_dir, chunk_registry_settings_t { .ccfg=ccfg } };
             p2p::syncer s { cr, ps, ccm };
             expect(s.sync(s.find_peer()));
             expect_equal(cr.num_blocks(), 9);
+        };
+        const auto check_compressed_sync = [&](const size_t announced_last, const size_t blocks_per_message,
+            const optional_slot max_slot, const size_t expected_blocks) {
+            const file::tmp_directory dir { "sync-p2p-compressed-boundary" };
+            scheduler sched { 4 };
+            file_remover remover;
+            chunk_registry cr { dir.path(), chunk_registry_settings_t {
+                .validate_vrf=false, .ccfg=ccfg, .fr=remover, .sched=sched } };
+            struct compressed_client: cardano_client_mock {
+                const mock_chain &chain;
+                const size_t blocks_per_message;
+                size_t requests = 0;
+                size_t interrupted = 0;
+                optional_point2 requested_tip;
+                std::function<void(scheduler &)> pending;
+
+                compressed_client(const mock_chain &c, const size_t batch)
+                    : cardano_client_mock { network::address { "mock", "0" }, c.data, 0.0 },
+                        chain { c }, blocks_per_message { batch } {}
+
+                void _fetch_blocks_impl(const point2 &from, const point2 &to, const block_handler &handler) override
+                {
+                    ++requests;
+                    requested_tip = to;
+                    pending = [this, from, to, handler](scheduler &sched) {
+                        auto it = std::ranges::find_if(chain.blocks, [&](const auto &b) { return b->blk->hash() == from.hash; });
+                        expect(it != chain.blocks.end()) << fatal;
+                        bool last = false;
+                        while (it != chain.blocks.end() && !last) {
+                            uint8_vector raw;
+                            for (size_t n = 0; n < blocks_per_message && it != chain.blocks.end() && !last; ++n, ++it) {
+                                raw << (*it)->blk.raw();
+                                last = (*it)->blk->hash() == to.hash;
+                            }
+                            const auto more = handler(msg_compressed_blocks_t {
+                                msg_compressed_blocks_t::encoding_zstd_fast, zstd::compress(raw, 3) });
+                            // Make early-stop regressions deterministic: parsing completes
+                            // before the next physical fragment in the same logical chunk.
+                            sched.process();
+                            if (!more) {
+                                ++interrupted;
+                                break;
+                            }
+                        }
+                    };
+                }
+
+                void _process_impl(scheduler *sched, asio::worker *) override
+                {
+                    if (auto deliver = std::exchange(pending, {})) {
+                        expect(sched != nullptr) << fatal;
+                        deliver(*sched);
+                    }
+                }
+            };
+            auto client = std::make_unique<compressed_client>(good_chain, blocks_per_message);
+            const auto *observed = client.get();
+            const auto &last = good_chain.blocks.at(announced_last)->blk;
+            const point3 announced_tip { point2 { last->slot(), last->hash() }, last->height() };
+            auto peer = std::make_shared<p2p::peer_info>(std::move(client), announced_tip);
+            p2p::syncer syncer { cr, ps, ccm };
+            expect(syncer.sync(peer, max_slot, validation_mode_t::none));
+            expect_equal(cr.num_blocks(), expected_blocks);
+            expect_equal(observed->requests, 1);
+            expect_equal(observed->requested_tip->hash, announced_tip.hash);
+            if (!max_slot) expect_equal(observed->interrupted, 0);
+            expect_equal(cr.tip()->hash, good_chain.blocks.at(expected_blocks - 1)->blk->hash());
+        };
+        "fragmented tails use one fetch to the original tip even when the header tip advances"_test = [&] {
+            check_compressed_sync(4, 1, {}, 5);
+        };
+        "compressed slot limits accept whole fragments and discard those beyond the limit"_test = [&] {
+            const auto limit = good_chain.blocks.at(4)->blk->slot();
+            const auto count = std::ranges::count_if(good_chain.blocks, [&](const auto &b) { return b->blk->slot() <= limit; });
+            check_compressed_sync(good_chain.blocks.size() - 1, 1, limit, count);
+        };
+        "a slot limit between blocks trims a compressed message without another fetch"_test = [&] {
+            const auto next = std::ranges::find_if(good_chain.blocks, [&](const auto &b) { return b->blk->slot() > 1; });
+            expect(next != good_chain.blocks.end()) << fatal;
+            const auto limit = (*next)->blk->slot() - 1;
+            check_compressed_sync(good_chain.blocks.size() - 1, good_chain.blocks.size(), limit,
+                static_cast<size_t>(next - good_chain.blocks.begin()));
         };
         "continuous imports reuse one connection and publish validated boundaries"_test = [&] {
             const file::tmp_directory dir { "sync-p2p-follow" };
@@ -77,8 +159,7 @@ suite sync_p2p_suite = [] {
                 }
             } manager { good_chain, stop };
             file_remover remover;
-            chunk_registry cr { dir.path(), chunk_registry::mode::validate, ccfg,
-                scheduler::get(), remover, true, true, true };
+            chunk_registry cr { dir.path(), chunk_registry_settings_t { .continuous=true, .ccfg=ccfg, .fr=remover } };
             p2p::syncer syncer { cr, ps, manager };
             size_t updates = 0;
             syncer.follow(stop.get_token(), [&](const auto &intersection) {
@@ -93,27 +174,28 @@ suite sync_p2p_suite = [] {
             expect(fatal(!cr.validator().snapshots().empty()));
             expect_equal(cr.validator().snapshots().rbegin()->end_offset, cr.num_bytes()); // orderly shutdown
         };
-        enum class fetch_interruption { shutdown, timeout, incomplete_response };
-        const auto check_fetch_recovery = [&](const bool continuous, const fetch_interruption interruption) {
+        enum class fetch_interruption { shutdown, timeout, incomplete_response, checkpoint };
+        const auto check_fetch_recovery = [&](const bool continuous, const fetch_interruption interruption,
+            const std::source_location &loc=std::source_location::current()) {
             const file::tmp_directory dir { "sync-p2p-fetch-recovery" };
             struct fetch_state {
                 const mock_chain &chain;
                 const fetch_interruption interruption;
+                const std::string context;
                 std::stop_source stop {};
                 std::vector<point2> requests {};
-            } state { good_chain, interruption };
+                chunk_registry *registry = nullptr;
+            } state { good_chain, interruption, fmt::format("check_fetch_recovery called from {}", loc) };
             struct recovering_client: cardano_client_mock {
                 fetch_state &state;
-                const size_t first_block;
                 std::function<void()> pending;
 
-                recovering_client(fetch_state &s, size_t first)
-                    : cardano_client_mock { network::address { "mock", "0" }, s.chain.data, 0.0 },
-                        state { s }, first_block { first } {}
+                explicit recovering_client(fetch_state &s)
+                    : cardano_client_mock { network::address { "mock", "0" }, s.chain.data, 0.0 }, state { s } {}
 
                 chain_update next_header_sync(std::stop_token, const std::function<void()> &) override
                 {
-                    const auto &first = state.chain.blocks.at(first_block)->blk;
+                    const auto &first = state.chain.blocks.at(state.registry->num_blocks())->blk;
                     const auto &last = state.chain.blocks.back()->blk;
                     // A distant tip selects the bulk import path.
                     return { false, point2 { first->slot(), first->hash() },
@@ -122,24 +204,31 @@ suite sync_p2p_suite = [] {
 
                 void _fetch_blocks_impl(const point2 &from, const point2 &to, const block_handler &handler) override
                 {
+                    if (state.interruption == fetch_interruption::checkpoint && state.requests.size() == 1) {
+                        expect_equal(state.registry->num_blocks(), 2, state.context);
+                        expect_equal(state.registry->valid_end_offset(), state.registry->num_bytes(), state.context);
+                    }
                     state.requests.emplace_back(from);
                     pending = [this, from, to, handler] {
                         const auto &chain = state.chain;
                         const auto first = std::ranges::find_if(chain.blocks, [&](const auto &b) {
                             return b->blk->hash() == from.hash;
                         });
-                        expect(fatal(first != chain.blocks.end()));
+                        expect(first != chain.blocks.end()) << state.context << fatal;
                         size_t sent = 0;
                         for (auto it = first; it != chain.blocks.end(); ++it) {
                             const auto &b = (*it)->blk;
-                            expect(fatal(handler(msg_block_t { uint8_vector { b->raw() } })));
+                            expect(handler(msg_block_t { uint8_vector { b.raw() } })) << state.context << fatal;
                             if (++sent == 2 && state.requests.size() == 1) {
                                 if (state.interruption == fetch_interruption::shutdown) {
                                     state.stop.request_stop();
-                                    expect(!handler(msg_block_t { uint8_vector { chain.blocks.at(2)->blk->raw() } }));
+                                    expect(!handler(msg_block_t { uint8_vector { chain.blocks.at(2)->blk.raw() } })) << state.context;
                                     handler(error_msg { "network operation stopped" });
                                 } else if (state.interruption == fetch_interruption::timeout) {
                                     handler(error_msg { "injected network timeout" });
+                                } else if (state.interruption == fetch_interruption::checkpoint) {
+                                    state.registry->request_checkpoint();
+                                    expect(!handler(msg_block_t { uint8_vector { chain.blocks.at(2)->blk.raw() } })) << state.context;
                                 }
                                 break;
                             }
@@ -166,48 +255,47 @@ suite sync_p2p_suite = [] {
                 {
                     if (++connections > 2) {
                         state.stop.request_stop();
-                        throw error("unexpected extra reconnect");
+                        throw error(fmt::format("unexpected extra reconnect: {}", state.context));
                     }
                     if (connections == 2) {
-                        expect(!state.stop.stop_requested());
-                        expect_equal(cr.num_blocks(), state.interruption == fetch_interruption::timeout ? 2 : 0);
-                        expect_equal(cr.valid_end_offset(), cr.num_bytes());
+                        expect(!state.stop.stop_requested()) << state.context;
+                        expect_equal(cr.num_blocks(), state.interruption == fetch_interruption::timeout ? 2 : 0, state.context);
+                        expect_equal(cr.valid_end_offset(), cr.num_bytes(), state.context);
                     }
-                    return std::make_unique<recovering_client>(state, cr.num_blocks());
+                    return std::make_unique<recovering_client>(state);
                 }
             };
             const auto expected_blocks = interruption == fetch_interruption::shutdown ? 2 : good_chain.blocks.size();
             const size_t expected_requests = interruption == fetch_interruption::shutdown ? 1 : 2;
             file_remover remover;
             {
-                chunk_registry cr { dir.path(), chunk_registry::mode::validate, ccfg,
-                    scheduler::get(), remover, true, true, continuous };
+                chunk_registry cr { dir.path(), chunk_registry_settings_t { .continuous=continuous, .ccfg=ccfg, .fr=remover } };
+                state.registry = &cr;
                 recovering_manager manager { state, cr };
                 p2p::syncer syncer { cr, ps, manager };
                 const network::address addr { "mock", "0" };
                 if (continuous) {
                     syncer.follow(state.stop.get_token(), [&](const auto &) {
-                        expect_equal(cr.valid_end_offset(), cr.num_bytes());
+                        expect_equal(cr.valid_end_offset(), cr.num_bytes(), state.context);
                         if (cr.num_blocks() == expected_blocks) state.stop.request_stop();
                     }, addr);
                 } else {
-                    expect(syncer.sync(syncer.find_peer(addr), {}, validation_mode_t::full));
+                    expect(syncer.sync(syncer.find_peer(addr), {}, validation_mode_t::full)) << state.context;
                 }
-                expect_equal(manager.connections, continuous ? expected_requests : 1);
-                expect_equal(cr.num_blocks(), expected_blocks);
-                expect_equal(cr.valid_end_offset(), cr.num_bytes());
-                expect(fatal(!cr.validator().snapshots().empty()));
-                expect_equal(cr.validator().snapshots().rbegin()->end_offset, cr.num_bytes());
-                expect(fatal(state.requests.size() == expected_requests));
-                expect_equal(state.requests.front().hash, good_chain.blocks.front()->blk->hash());
+                expect_equal(manager.connections, continuous && interruption != fetch_interruption::checkpoint ? expected_requests : 1, state.context);
+                expect_equal(cr.num_blocks(), expected_blocks, state.context);
+                expect_equal(cr.valid_end_offset(), cr.num_bytes(), state.context);
+                expect(!cr.validator().snapshots().empty()) << state.context << fatal;
+                expect_equal(cr.validator().snapshots().rbegin()->end_offset, cr.num_bytes(), state.context);
+                expect(state.requests.size() == expected_requests) << state.context << fatal;
+                expect_equal(state.requests.front().hash, good_chain.blocks.front()->blk->hash(), state.context);
                 if (expected_requests == 2)
                     expect_equal(state.requests.back().hash,
-                        good_chain.blocks.at(interruption == fetch_interruption::timeout ? 2 : 0)->blk->hash());
+                        good_chain.blocks.at(interruption == fetch_interruption::incomplete_response ? 0 : 2)->blk->hash(), state.context);
             }
-            chunk_registry restored { dir.path(), chunk_registry::mode::validate, ccfg,
-                scheduler::get(), remover, true, true, continuous };
-            expect_equal(restored.num_blocks(), expected_blocks);
-            expect_equal(restored.valid_end_offset(), restored.num_bytes());
+            chunk_registry restored { dir.path(), chunk_registry_settings_t { .continuous=continuous, .ccfg=ccfg, .fr=remover } };
+            expect_equal(restored.num_blocks(), expected_blocks, state.context);
+            expect_equal(restored.valid_end_offset(), restored.num_bytes(), state.context);
         };
         "stopping a bulk fetch commits accepted blocks and restores its checkpoint"_test = [&] {
             check_fetch_recovery(true, fetch_interruption::shutdown);
@@ -220,6 +308,12 @@ suite sync_p2p_suite = [] {
         };
         "continuous sync rejects an incomplete successful response"_test = [&] {
             check_fetch_recovery(true, fetch_interruption::incomplete_response);
+        };
+        "batch sync resumes from blocks committed at a checkpoint interruption"_test = [&] {
+            check_fetch_recovery(false, fetch_interruption::checkpoint);
+        };
+        "continuous bulk sync resumes from blocks committed at a checkpoint interruption"_test = [&] {
+            check_fetch_recovery(true, fetch_interruption::checkpoint);
         };
         "explicit peer is preserved through connection and follow failures"_test = [&] {
             const file::tmp_directory dir { "sync-p2p-fixed-follow-peer" };
@@ -248,8 +342,7 @@ suite sync_p2p_suite = [] {
             } manager { good_chain, stop };
             unexpected_peer_selection peers;
             file_remover remover;
-            chunk_registry cr { dir.path(), chunk_registry::mode::validate, ccfg,
-                scheduler::get(), remover, true, true, true };
+            chunk_registry cr { dir.path(), chunk_registry_settings_t { .continuous=true, .ccfg=ccfg, .fr=remover } };
             p2p::syncer syncer { cr, peers, manager };
             syncer.follow(stop.get_token(), [](const auto &) {}, addr);
             expect_equal(manager.addresses.size(), 3);
@@ -283,7 +376,7 @@ suite sync_p2p_suite = [] {
                 }
             } manager { good_chain, attempts };
             unexpected_peer_selection peers;
-            chunk_registry cr { dir.path(), chunk_registry::mode::store, ccfg };
+            chunk_registry cr { dir.path(), chunk_registry_settings_t { .ccfg=ccfg } };
             p2p::syncer syncer { cr, peers, manager };
             expect(!syncer.sync(syncer.find_peer(addr), {}, validation_mode_t::none));
             expect_equal(attempts, 3);
@@ -294,7 +387,7 @@ suite sync_p2p_suite = [] {
         };
         "no work"_test = [&] {
             std::filesystem::remove_all(data_dir);
-            chunk_registry cr { data_dir, chunk_registry::mode::validate, ccfg };
+            chunk_registry cr { data_dir, chunk_registry_settings_t { .ccfg=ccfg } };
             p2p::syncer s { cr, ps, ccm };
             expect(s.sync(s.find_peer()));
             expect_equal(cr.num_blocks(), 9);
@@ -303,7 +396,7 @@ suite sync_p2p_suite = [] {
         };
         "empty upstream has no batch work and preserves the local chain"_test = [&] {
             const file::tmp_directory dir { "sync-p2p-empty-upstream" };
-            chunk_registry cr { dir.path(), chunk_registry::mode::store, ccfg };
+            chunk_registry cr { dir.path(), chunk_registry_settings_t { .ccfg=ccfg } };
             cardano_client_manager_mock empty_manager { uint8_vector {} };
             p2p::syncer syncer { cr, ps, empty_manager };
             const network::address addr { "mock", "0" };
@@ -314,7 +407,7 @@ suite sync_p2p_suite = [] {
             expect(!peer->tip());
             expect(!syncer.sync(peer));
             expect(!cr.tip());
-            cr.accept_anything_or_throw({}, good_chain.tip, [&] {
+            cr.accept_anything_or_throw({}, *good_chain.tip, [&] {
                 cr.add_buffer(0, uint8_vector { good_chain.blocks.front()->blk.raw() });
             });
             const auto before = cr.tip();
@@ -327,7 +420,7 @@ suite sync_p2p_suite = [] {
             test_mock_cfg.failure_height = 7;
             const auto chain = gen_chain(test_mock_cfg);
             std::filesystem::remove_all(data_dir);
-            chunk_registry cr { data_dir, chunk_registry::mode::validate, ccfg };
+            chunk_registry cr { data_dir, chunk_registry_settings_t { .ccfg=ccfg } };
             cardano_client_manager_mock test_ccm { chain.data };
             p2p::syncer s { cr, ps, test_ccm};
             expect(s.sync(s.find_peer()));
@@ -348,7 +441,7 @@ suite sync_p2p_suite = [] {
             const auto expected_max_slot = (*std::prev(expected_end))->blk->slot();
 
             std::filesystem::remove_all(data_dir);
-            chunk_registry cr { data_dir, chunk_registry::mode::validate, ccfg };
+            chunk_registry cr { data_dir, chunk_registry_settings_t { .ccfg=ccfg } };
             p2p::syncer s { cr, ps, ccm };
             expect(s.sync(s.find_peer(), max_slot));
             expect_equal(cr.num_blocks(), expected_num_blocks);
@@ -356,21 +449,28 @@ suite sync_p2p_suite = [] {
         };
         "multi chunk"_test = [&] {
             std::filesystem::remove_all(data_dir);
-            chunk_registry cr { data_dir, chunk_registry::mode::store };
-            std::vector<std::string> paths {};
-            paths.emplace_back("./data/chunk-registry-new/0-0.chunk");
-            paths.emplace_back("./data/chunk-registry-new/0-1.chunk");
-            paths.emplace_back("./data/chunk-registry-new/1-0.chunk");
-            paths.emplace_back("./data/chunk-registry-new/1-1.chunk");
-            paths.emplace_back("./data/chunk-registry-new/2-0.chunk");
-            paths.emplace_back("./data/chunk-registry-new/2-1.chunk");
-            paths.emplace_back("./data/chunk-registry-new/3-0.chunk");
-            cardano_client_manager_mock ccm { paths };
+            const auto seed = crypto::blake2b::digest<crypto::ed25519::seed>(std::string_view { "1" });
+            block_producer block { crypto::ed25519::create_sk_from_seed(seed), seed, vrf03_create_sk_from_seed(seed) };
+            block.prev_hash = ccfg.byron_genesis_hash;
+            block.vrf_nonce = ccfg.shelley_genesis_hash;
+            uint8_vector data;
+            for (const uint64_t slot: { 0, 21'600, 50'000, 80'000 }) {
+                block.slot = slot;
+                parsed_block parsed { block.cbor(), ccfg };
+                data << *parsed.data;
+                block.prev_hash = parsed.blk->hash();
+                ++block.height;
+            }
+            chunk_registry cr { data_dir, chunk_registry_settings_t { .ccfg=ccfg } };
+            cardano_client_manager_mock ccm { data };
             sync::p2p::syncer s { cr, ps, ccm };
             s.sync(s.find_peer(), 50'000, validation_mode_t::none);
             expect(cr.max_slot() == 50'000_ull);
+            expect_equal(cr.chunks().size(), 3);
             s.sync(s.find_peer(), {}, validation_mode_t::none);
-            expect(cr.max_slot() == 79'999_ull);
+            expect(cr.max_slot() == 80'000_ull);
+            expect_equal(cr.chunks().size(), 4);
+            expect_equal(cr.num_blocks(), 4);
         };
         "find_peer"_test = [&] {
             std::filesystem::remove_all(data_dir);
@@ -382,14 +482,6 @@ suite sync_p2p_suite = [] {
             expect(peer.tip()->slot > 0);
             expect(peer.tip().height > 0);
             expect(!peer.intersection());
-        };
-        "random failures"_test = [&] {
-            cardano_client_manager_mock ccm_rf{good_chain.data, 0.20};
-            std::filesystem::remove_all(data_dir);
-            chunk_registry cr{data_dir, chunk_registry::mode::validate, ccfg};
-            p2p::syncer s{cr, ps, ccm_rf};
-            expect(s.sync(s.find_peer()));
-            expect_equal(cr.num_blocks(), 9);
         };
     };
 };

@@ -286,10 +286,11 @@ namespace turbo::txwit {
 
         void cache(const block_hash &hash, const buffer bytes)
         {
-            if (bytes.size() > direct_limit)
+            if (bytes.size() > witness_work_policy_t::direct_limit) {
                 return;
+            }
             mutex::scoped_lock lk { _cache_mutex };
-            if (_cache_bytes + bytes.size() <= cache_limit) {
+            if (_cache_bytes + bytes.size() <= witness_work_policy_t::cache_limit) {
                 const auto [it, inserted] = _cache.try_emplace(hash, bytes);
                 if (inserted)
                     _cache_bytes += it->second.size();
@@ -309,9 +310,10 @@ namespace turbo::txwit {
             for (const auto *chunk: chunks) {
                 if (chunk->end_offset() <= _cfg.replay_offset || (to && chunk->offset >= to->end_offset))
                     continue;
-                if (batches.empty() || batches.back().size() == 2
-                        || _cr.make_slot(batches.back().front()->first_slot).epoch() != _cr.make_slot(chunk->first_slot).epoch())
+                if (batches.empty() || batches.back().size() == witness_work_policy_t::chunks_per_batch
+                        || _cr.make_slot(batches.back().front()->first_slot).epoch() != _cr.make_slot(chunk->first_slot).epoch()) {
                     batches.emplace_back();
+                }
                 batches.back().push_back(chunk);
             }
             if (batches.empty())
@@ -322,7 +324,7 @@ namespace turbo::txwit {
                     size += chunk->data_size;
                 return size;
             };
-            if (batches.size() == 1 && batch_bytes(0) <= direct_limit) {
+            if (batches.size() == 1 && batch_bytes(0) <= witness_work_policy_t::direct_limit) {
                 if (!_direct)
                     _direct = std::make_unique<batch_info>();
                 _direct->reset();
@@ -346,8 +348,9 @@ namespace turbo::txwit {
             const auto replenish = [&] {
                 while (next < batches.size() && pending.size() < _cr.sched().num_workers()) {
                     const auto bytes = batch_bytes(next);
-                    if (!pending.empty() && pending_bytes + bytes > preparation_limit)
+                    if (!pending.empty() && pending_bytes + bytes > witness_work_policy_t::preparation_limit) {
                         break;
+                    }
                     const auto bi = next++;
                     auto task = std::make_shared<std::packaged_task<std::unique_ptr<batch_info>()>>([&, bi] {
                         auto part = std::make_unique<batch_info>();
@@ -836,9 +839,13 @@ namespace turbo::txwit {
 #include <turbo/cardano/ledger/rules/ledger/validate.ipp>
         };
 
-        static constexpr size_t direct_limit = 1U << 20;
-        static constexpr size_t cache_limit = 4U << 20;
-        static constexpr size_t preparation_limit = 256U << 20;
+        struct witness_work_policy_t {
+            static constexpr size_t direct_limit = 1U << 20;
+            static constexpr size_t cache_limit = 4U << 20;
+            // Raw input budget; decoded witness structures require additional memory.
+            static constexpr size_t preparation_limit = 256U << 20;
+            static constexpr size_t chunks_per_batch = 2;
+        };
         const chunk_registry &_cr;
         state &_st;
         validation_config_t _cfg;
@@ -921,7 +928,7 @@ namespace turbo::txwit {
             for (const auto *chunk_ptr: batch) {
                 const auto &chunk = *chunk_ptr;
                 const auto first_epoch = cr.make_slot(chunk.first_slot).epoch();
-                const auto last_epoch = cr.make_slot(chunk.last_slot).epoch();
+                const auto last_epoch = cr.make_slot(chunk.last_block.slot).epoch();
                 if (first_epoch != part.epoch || last_epoch != part.epoch) [[unlikely]]
                     throw error(fmt::format("batch: {} contains data from multiple epochs: {}, {}, {}", batch_no, part.epoch, first_epoch, last_epoch));
 

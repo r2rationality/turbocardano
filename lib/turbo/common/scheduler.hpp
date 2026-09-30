@@ -62,10 +62,7 @@ namespace turbo {
         static constexpr std::chrono::milliseconds default_wait_interval { 10 };
         static constexpr std::chrono::milliseconds default_update_interval { 5000 };
 
-        static size_t default_worker_count()
-        {
-            return std::thread::hardware_concurrency();
-        }
+        static size_t default_worker_count();
 
         static scheduler &get()
         {

@@ -61,17 +61,18 @@ namespace {
         {
         }
 
-        void sync_attempt(peer_info &peer, cardano::optional_slot) override
+        bool sync_attempt(peer_info &peer, cardano::optional_slot) override
         {
             if (peer.intersection()) {
                 if (_on_retry) _on_retry();
                 local_chain().add_buffer(local_chain().num_bytes(), std::move(_second_chunk));
-                return;
+                return false;
             }
             local_chain().add_buffer(0, std::move(_first_chunk));
             local_chain().remover().mark(_obsolete_path, std::chrono::seconds { -1 });
             if (_fail_after_progress)
                 throw error("recoverable failure after progress");
+            return false;
         }
     };
 }
@@ -86,8 +87,7 @@ suite turbo_sync_base_suite = [] {
                 const file::tmp_directory dir { "sync-final-checkpoint" };
                 const auto chain = gen_chain({ .height=3 });
                 file_remover remover;
-                chunk_registry cr { dir.path(), chunk_registry::mode::validate, chain.cardano_cfg,
-                    scheduler::get(), remover, true, false };
+                chunk_registry cr { dir.path(), chunk_registry_settings_t { .validate_vrf=false, .ccfg=chain.cardano_cfg, .fr=remover } };
                 const auto split = chain.blocks.front()->blk.raw().size();
                 uint8_vector first { static_cast<buffer>(chain.data).subbuf(0, split) };
                 uint8_vector second { static_cast<buffer>(chain.data).subbuf(split) };
@@ -110,7 +110,7 @@ suite turbo_sync_base_suite = [] {
             std::filesystem::remove_all(data_dir);
             const auto chain = gen_chain();
             file_remover remover {};
-            chunk_registry cr { data_dir, chunk_registry::mode::store, chain.cardano_cfg, scheduler::get(), remover };
+            chunk_registry cr { data_dir, chunk_registry_settings_t { .ccfg=chain.cardano_cfg, .fr=remover } };
             const auto obsolete_path = fmt::format("{}/obsolete-ledger.bin", data_dir);
             file::write(obsolete_path, std::string_view { "obsolete" });
             uint8_vector first_chunk {}, second_chunk {};

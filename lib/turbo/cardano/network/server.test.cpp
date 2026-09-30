@@ -10,11 +10,13 @@
 #include <boost/asio/executor_work_guard.hpp>
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/ip/tcp.hpp>
+#include <boost/asio/steady_timer.hpp>
 #include <boost/asio/write.hpp>
 #include <boost/stacktrace/stacktrace.hpp>
 #include <thread>
 #include <turbo/chunk-registry.hpp>
 #include <turbo/common/test.hpp>
+#include <turbo/storage/test.hpp>
 #include "miniprotocol/blockfetch/handler.hpp"
 #include "miniprotocol/chainsync/handler.hpp"
 #include "miniprotocol/handshake/handler.hpp"
@@ -26,11 +28,13 @@ namespace {
     using namespace turbo::cardano::network;
     using namespace turbo::cardano::network::miniprotocol;
 
-    void pump_until(boost::asio::io_context &ioc, const auto &ready)
+    void pump_until(boost::asio::io_context &ioc, const auto &ready,
+        const std::source_location &loc=std::source_location::current())
     {
         const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds { 5 };
         while (!ready()) {
-            expect(fatal(std::chrono::steady_clock::now() < deadline)) << "network operation did not complete";
+            expect(std::chrono::steady_clock::now() < deadline)
+                << fmt::format("network operation did not complete; called from {}", loc) << fatal;
             ioc.restart();
             ioc.run_for(std::chrono::milliseconds { 10 });
         }
@@ -142,7 +146,7 @@ namespace {
 suite cardano_network_server_suite = [] {
     "cardano::network::server"_test = [] {
         static constexpr size_t timeout_sec = 300;
-        const auto cr = std::make_shared<chunk_registry>(install_path("data/chunk-registry"), chunk_registry::mode::store);
+        const auto cr = std::make_shared<chunk_registry>(turbo::storage::sample_registry_path(), chunk_registry_settings_t { .mode=chunk_registry::mode::store });
         const network::address listen_addr { "127.0.0.1", "9876" };
         const auto chainsync_h = std::make_shared<chainsync::handler>(cr);
         const auto blockfetch_14_h = std::make_shared<blockfetch::handler>(cr);
@@ -173,24 +177,24 @@ suite cardano_network_server_suite = [] {
             }, iow, cr->config(), 1 };
             const tcp::endpoint endpoint { boost::asio::ip::make_address(listen_addr.host),
                 static_cast<uint16_t>(std::stoul(listen_addr.port)) };
-            const auto connect = [&] {
+            const auto connect = [&](const std::source_location &loc=std::source_location::current()) {
                 tcp::socket socket { ioc };
                 pump_until(ioc, [&] {
                     boost::system::error_code ec;
                     socket.close(ec);
                     socket.connect(endpoint, ec);
                     return !ec;
-                });
+                }, loc);
                 socket.non_blocking(true);
                 return socket;
             };
-            const auto await_close = [&](tcp::socket &socket) {
+            const auto await_close = [&](tcp::socket &socket, const std::source_location &loc=std::source_location::current()) {
                 pump_until(ioc, [&] {
                     uint8_t bytes[256];
                     boost::system::error_code ec;
                     socket.read_some(boost::asio::buffer(bytes), ec);
                     return ec == boost::asio::error::eof || ec == boost::asio::error::connection_reset;
-                });
+                }, loc);
             };
             const auto send = [](tcp::socket &socket, uint8_t request) {
                 const segment_info header { 1, channel_mode::initiator, mini_protocol::handshake, 1 };
@@ -301,6 +305,87 @@ suite cardano_network_server_suite = [] {
             expect(std::chrono::steady_clock::now() - started < std::chrono::seconds { 5 });
             srv.stop();
         };
+        const auto check_blockfetch_completion = [&](const bool compressed, const bool interrupt, const std::source_location &loc=std::source_location::current()) {
+            const auto context = fmt::format("check_blockfetch_completion called from {}", loc);
+            struct test_blockfetch: blockfetch::handler {
+                const bool compressed;
+                const bool finish;
+
+                test_blockfetch(std::shared_ptr<chunk_registry> registry, bool compressed_, bool finish_)
+                    : blockfetch::handler { std::move(registry) }, compressed { compressed_ }, finish { finish_ } {}
+
+                void data(buffer, const protocol_send_func &send) override
+                {
+                    send([](bool compressed, bool finish) -> data_generator_t {
+                        cbor::encoder enc;
+                        blockfetch::msg_start_batch_t {}.to_cbor(enc);
+                        if (compressed)
+                            blockfetch::msg_compressed_blocks_t {
+                                blockfetch::msg_compressed_blocks_t::encoding_raw, uint8_vector { 0x80 }
+                            }.to_cbor(enc);
+                        else
+                            blockfetch::msg_block_t { uint8_vector { 0x80 } }.to_cbor(enc);
+                        // An interrupted fetch must finish even if BatchDone never arrives.
+                        if (finish) blockfetch::msg_batch_done_t {}.to_cbor(enc);
+                        co_yield std::move(enc.cbor());
+                    }(compressed, finish));
+                }
+            };
+            const auto iow = std::make_shared<asio::worker_manual>();
+            auto &ioc = iow->io_context();
+            size_t connections = 0;
+            auto test_cfg = cfg;
+            test_cfg[mini_protocol::block_fetch] = [&](const auto &) {
+                return std::make_shared<test_blockfetch>(cr, compressed, ++connections > 1 || !interrupt);
+            };
+            server srv { listen_addr, std::move(test_cfg), iow, cr->config() };
+            ioc.run_for(std::chrono::milliseconds { 10 });
+            std::stop_source stop;
+            const auto c = client_manager_async::get().connect(listen_addr, compressed ? v14v15 : v14, cr->config(), iow);
+            c->set_stop_token(stop.get_token());
+            boost::asio::steady_timer deadline { ioc };
+            size_t messages = 0;
+            size_t errors = 0;
+            const auto fetch = [&](const bool stop_early, const std::source_location &fetch_loc=std::source_location::current()) {
+                const auto fetch_context = fmt::format("fetch called from {}; {}", fetch_loc, context);
+                deadline.expires_after(std::chrono::seconds { 5 });
+                deadline.async_wait([&](const auto &ec) { if (!ec) stop.request_stop(); });
+                c->fetch_blocks(point2 {}, point2 {}, [&](auto response) {
+                    if (std::holds_alternative<client::error_msg>(response)) {
+                        ++errors;
+                    } else {
+                        ++messages;
+                        expect_equal(std::holds_alternative<client::msg_compressed_blocks_t>(response), compressed, fetch_context);
+                    }
+                    return !stop_early;
+                });
+                c->process(nullptr, iow.get());
+                deadline.cancel();
+                ioc.poll();
+                expect(!stop.stop_requested())
+                    << fmt::format("BlockFetch waited for the missing BatchDone; {}", fetch_context) << fatal;
+                expect_equal(errors, 0, fetch_context);
+            };
+            fetch(interrupt);
+            expect_equal(messages, 1, context);
+            expect_equal(connections, 1, context);
+            fetch(false);
+            expect_equal(messages, 2, context);
+            expect_equal(connections, interrupt ? 2 : 1, context);
+            srv.stop();
+        };
+        "interrupted raw BlockFetch closes without BatchDone and reconnects"_test = [&] {
+            check_blockfetch_completion(false, true);
+        };
+        "interrupted compressed BlockFetch closes without BatchDone and reconnects"_test = [&] {
+            check_blockfetch_completion(true, true);
+        };
+        "completed raw BlockFetch reuses its connection"_test = [&] {
+            check_blockfetch_completion(false, false);
+        };
+        "completed compressed BlockFetch reuses its connection"_test = [&] {
+            check_blockfetch_completion(true, false);
+        };
         "idle callback failure cancels and drains a pending ChainSync request"_test = [&] {
             const auto iow = std::make_shared<asio::worker_manual>();
             auto &ioc = iow->io_context();
@@ -311,12 +396,13 @@ suite cardano_network_server_suite = [] {
             server srv { listen_addr, std::move(quiet_cfg), iow, cr->config() };
             ioc.run_for(std::chrono::milliseconds { 10 });
             const auto c = client_manager_async::get().connect(listen_addr, v14, cr->config(), iow);
-            const auto intersect = [&] {
+            const auto intersect = [&](const std::source_location &loc=std::source_location::current()) {
+                const auto context = fmt::format("intersect called from {}", loc);
                 client::find_response found;
                 c->find_intersection(optional_point2_list { *cr->tip() }, [&](auto &&r) { found = std::move(r); });
                 c->process(nullptr, iow.get());
-                expect(fatal(std::holds_alternative<intersection_info_t>(found.res)));
-                expect(fatal(std::get<intersection_info_t>(found.res).found));
+                expect(std::holds_alternative<intersection_info_t>(found.res)) << context << fatal;
+                expect(std::get<intersection_info_t>(found.res).found) << context << fatal;
             };
             intersect();
             const auto pump = [&] { ioc.run_for(std::chrono::milliseconds { 10 }); };

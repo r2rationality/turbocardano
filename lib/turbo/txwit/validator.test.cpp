@@ -3,8 +3,9 @@
  * Copyright (c) 2024-2026 R2 Rationality OÜ (info at r2rationality dot com)
  * License: https://github.com/r2rationality/turbocardano/blob/main/LICENSE */
 
-#include "validator.hpp"
 #include <turbo/common/test.hpp>
+#include <turbo/storage/test.hpp>
+#include "validator.hpp"
 #include "turbo/chunk-registry.hpp"
 
 namespace {
@@ -13,8 +14,8 @@ namespace {
 
 suite txwit_validator_suite = [] {
     "txwit::validator"_test = [] {
-        static const std::string src_dir { "./data/chunk-registry"s };
-        const chunk_registry cr { src_dir, chunk_registry::mode::store };
+        static const std::string src_dir { turbo::storage::sample_registry_path() };
+        const chunk_registry cr { src_dir, chunk_registry_settings_t { .mode=chunk_registry::mode::store } };
         const cardano::optional_point target { cr.find_block_by_slot(7167).point() };
         expect_equal(txwit::validate(cr, {}, target), target);
     };

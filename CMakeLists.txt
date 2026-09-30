@@ -220,9 +220,6 @@ endforeach()
 
 message("copying configs")
 file(COPY etc DESTINATION .)
-if (EXISTS ${CMAKE_SOURCE_DIR}/publisher)
-    file(COPY publisher DESTINATION .)
-endif()
 message("copying test data")
 file(COPY data DESTINATION .)
 set(PLUTUS_CONFORMANCE_SOURCE

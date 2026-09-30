@@ -6,6 +6,9 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <type_traits>
+#include <utility>
+#include <fmt/format.h>
 
 namespace turbo {
     struct base_error: std::exception {
@@ -23,6 +26,16 @@ namespace turbo {
     struct error: base_error {
         explicit error(std::string_view msg);
         explicit error(std::string_view msg, const std::exception &ex);
+
+        // All arguments after pattern are formatting values. To attach a cause,
+        // format the message explicitly and use error(message, cause).
+        // Exclude the two-argument cause overload from this template.
+        template<typename Arg, typename ...Args>
+            requires (sizeof...(Args) > 0 || !std::is_base_of_v<std::exception, std::remove_cvref_t<Arg>>)
+        explicit error(fmt::format_string<Arg, Args...> pattern, Arg &&arg, Args &&...args)
+            : error { fmt::format(pattern, std::forward<Arg>(arg), std::forward<Args>(args)...) }
+        {
+        }
     };
 
     struct error_sys: error {

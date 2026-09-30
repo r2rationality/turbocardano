@@ -23,7 +23,9 @@ namespace turbo::cli::sync_p2p {
             cmd.opts.try_emplace("peer-port", "a TCP port to use for connecting to a Cardano Network peer", "3001");
             cmd.opts.try_emplace("validation", "validation mode to use: none, turbo, full", "turbo");
             cmd.opts.emplace("no-vrf-validation", "trust block VRF proofs and leader eligibility without validating them");
-            cmd.opts.emplace("max-inflight-mib", "maximum estimated memory for queued and active sync chunks; defaults to 256 MiB per scheduler worker");
+            cmd.opts.emplace("max-inflight-mib", fmt::format(
+                "maximum estimated memory for queued and active sync chunks; defaults to {} MiB per scheduler worker",
+                storage::chunk_work_policy_t::bytes_per_worker >> 20));
             cmd.opts.emplace("version-min", "a minimum Cardano protocol version to request");
             cmd.opts.emplace("version-max", "a maximum Cardano protocol version to request");
         }
@@ -55,8 +57,7 @@ namespace turbo::cli::sync_p2p {
                 logger::info("max_slot: {}", slot{*max_slot, cardano::config::get()});
             if (addr)
                 logger::info("addr: {}", *addr);
-            chunk_registry cr { data_dir, chunk_registry::mode::validate, cardano::config::get(),
-                scheduler::get(), file_remover::get(), true, !opts.contains("no-vrf-validation") };
+            chunk_registry cr { data_dir, chunk_registry_settings_t { .validate_vrf=!opts.contains("no-vrf-validation") } };
             sync::p2p::syncer syncer{cr, max_inflight_bytes};
             const auto peer = syncer.find_peer(addr, versions);
             syncer.sync(peer, max_slot, sync::validation_mode_from_text(opts.at("validation").value()));

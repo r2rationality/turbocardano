@@ -176,14 +176,26 @@ namespace turbo::index {
             return _idx_dir;
         }
 
+        void work_dir(std::string directory)
+        {
+            _work_dir = std::move(directory);
+            if (!_work_dir.empty())
+                std::filesystem::create_directories(chunk_dir());
+        }
+
         const std::string chunk_dir() const
         {
-            return chunk_dir(_idx_dir, _idx_name);
+            return chunk_dir(_work_dir.empty() ? _idx_dir : _work_dir, _idx_name);
+        }
+
+        std::string write_path(const std::string &slice_id="") const
+        {
+            return reader_path(_work_dir.empty() ? _idx_dir : _work_dir, _idx_name, slice_id);
         }
 
         bool exists(const std::string &slice_id) const
         {
-            return std::filesystem::exists(reader_path(_idx_dir, _idx_name, slice_id));
+            return std::filesystem::exists(reader_path(slice_id));
         }
 
         virtual void finalize(const std::string &/*slice_id*/, const chunk_id_list &/*chunks*/)
@@ -196,16 +208,16 @@ namespace turbo::index {
             throw error("merge not implemented");
         }
 
+        static bool temporary_file(const std::filesystem::path &path)
+        {
+            return path.extension() != ".data" || !path.filename().string().starts_with("index-slice-");
+        }
+
         virtual void clean_up() const
         {
             for (const auto &entry: std::filesystem::directory_iterator(chunk_dir())) {
-                if (!entry.is_regular_file())
-                    continue;
-                if (entry.path().extension() != ".data") {
+                if (entry.is_regular_file() && temporary_file(entry.path())) {
                     logger::trace("removing a temporary file: {}", entry.path().string());
-                    std::filesystem::remove(entry.path());
-                } else if (!entry.path().filename().string().starts_with("index-slice-")) {
-                    logger::trace("removing an unmerged index chunk: {}", entry.path().string());
                     std::filesystem::remove(entry.path());
                 }
             }
@@ -213,7 +225,9 @@ namespace turbo::index {
 
         virtual std::string reader_path(const std::string &slice_id="") const
         {
-            return reader_path(_idx_dir, _idx_name, slice_id);
+            const auto staged = write_path(slice_id);
+            return !_work_dir.empty() && std::filesystem::exists(staged)
+                ? staged : reader_path(_idx_dir, _idx_name, slice_id);
         }
 
         virtual void remove(const std::string &slice_id="")
@@ -223,7 +237,7 @@ namespace turbo::index {
 
         virtual std::string chunk_path(const std::string &slice_id, uint64_t chunk_id) const
         {
-            return chunk_path(_idx_dir, _idx_name, slice_id, chunk_id);
+            return chunk_path(_work_dir.empty() ? _idx_dir : _work_dir, _idx_name, slice_id, chunk_id);
         }
 
         virtual bool mergeable() const
@@ -242,6 +256,7 @@ namespace turbo::index {
         scheduler &_sched;
         std::string _idx_dir;
         std::string _idx_name;
+        std::string _work_dir;
     };
 
     extern const size_t two_step_merge_num_files;
@@ -364,7 +379,7 @@ namespace turbo::index {
         void schedule_truncate(const std::string &slice_id, const std::string &new_slice_id, uint64_t new_end_offset) override
         {
             const auto src_path = indexer_no_offset<T, ChunkIndexer>::reader_path(slice_id);
-            const auto new_path = indexer_no_offset<T, ChunkIndexer>::reader_path(new_slice_id);
+            const auto new_path = indexer_no_offset<T, ChunkIndexer>::write_path(new_slice_id);
             const std::string task_name = fmt::format("truncate:{}", src_path);
             logger::debug("truncate {} to {} bytes", src_path, new_end_offset);
             if (!std::filesystem::exists(src_path))
@@ -374,10 +389,19 @@ namespace turbo::index {
                 const auto index_max_offset = reader->get_meta("max_offset").template to<uint64_t>();
                 const bool truncation_needed = index_max_offset >= new_end_offset;
                 logger::trace("truncate {} - current max offset: {} truncation needed: {}", src_path, index_max_offset, truncation_needed);
-                if (!truncation_needed)
+                if (!truncation_needed) {
+                    if (src_path != new_path && (!std::filesystem::exists(new_path)
+                            || !std::filesystem::equivalent(src_path, new_path))) {
+                        // Immutable sparse indexes can share their existing bytes.
+                        // Genuine truncation below rewrites partitions and the footer.
+                        const auto temporary = new_path + "-link.tmp";
+                        std::filesystem::create_hard_link(src_path, temporary);
+                        std::filesystem::rename(temporary, new_path);
+                    }
                     return;
+                }
                 size_t num_parts = reader->num_parts();
-                auto writer = std::make_shared<index::writer<T>>(src_path + "-new", num_parts);
+                auto writer = std::make_shared<index::writer<T>>(new_path + "-new", num_parts);
                 auto new_max_offset = std::make_shared<std::atomic<uint64_t>>(0);
                 auto done = std::make_shared<std::atomic_size_t>(0);
                 for (size_t pi = 0; pi < num_parts; ++pi) {

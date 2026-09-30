@@ -3,15 +3,16 @@
  * Copyright (c) 2024-2026 R2 Rationality OÜ (info at r2rationality dot com)
  * License: https://github.com/r2rationality/turbocardano/blob/main/LICENSE */
 
-#include "handler.hpp"
 #include <turbo/cardano/network/mock.hpp>
 #include <turbo/cbor/zero2.hpp>
 #include <turbo/chunk-registry.hpp>
 #include <turbo/common/test.hpp>
 #include <turbo/common/variant.hpp>
 #include <turbo/common/zstd.hpp>
-#include "messages.hpp"
 #include <turbo/sync/mocks.hpp>
+#include <turbo/storage/test.hpp>
+#include "handler.hpp"
+#include "messages.hpp"
 
 namespace {
     namespace dt = turbo;
@@ -38,7 +39,7 @@ namespace {
 
 suite cardano_network_miniprotocol_blockfetch_suite = [] {
     "cardano::network::miniprotocol::blockfetch"_test = [] {
-        const auto cr = std::make_shared<chunk_registry>(install_path("data/chunk-registry"), chunk_registry::mode::store);
+        const auto cr = std::make_shared<chunk_registry>(turbo::storage::sample_registry_path(), chunk_registry_settings_t { .mode=chunk_registry::mode::store });
 
         "compressed encoding metadata"_test = [] {
             using compressed_msg = msg_compressed_blocks_t;
@@ -79,9 +80,8 @@ suite cardano_network_miniprotocol_blockfetch_suite = [] {
             for (const bool compressed: { false, true }) {
                 const file::tmp_directory dir { "blockfetch-live" };
                 file_remover remover;
-                auto live = std::make_shared<chunk_registry>(dir.path(), chunk_registry::mode::store,
-                    cardano::config { chain.cfg }, scheduler::get(), remover);
-                live->accept_anything_or_throw({}, chain.tip, [&] { live->add_buffer(0, chain.data); });
+                auto live = std::make_shared<chunk_registry>(dir.path(), chunk_registry_settings_t { .ccfg=cardano::config { chain.cfg }, .fr=remover });
+                live->accept_anything_or_throw({}, *chain.tip, [&] { live->add_buffer(0, chain.data); });
                 const auto first = live->chunks().begin()->second.blocks.front().point2();
                 const auto last = static_cast<point2>(*live->tip());
                 const auto path = live->full_path(live->chunks().begin()->second.rel_path());
@@ -114,6 +114,42 @@ suite cardano_network_miniprotocol_blockfetch_suite = [] {
                 h.data(encode(msg_request_range_t { first, last }), std::ref(resp));
                 expect(std::holds_alternative<msg_no_blocks_t>(resp.at(0)));
             }
+        };
+
+        "live publication repacks the fourth fragment while preserving a retained view"_test = [] {
+            const auto chain = sync::gen_chain({ .height=4 });
+            const file::tmp_directory dir { "blockfetch-live-repack" };
+            file_remover remover;
+            auto live = std::make_shared<chunk_registry>(dir.path(), chunk_registry_settings_t {
+                .validate_vrf=false, .continuous=true, .ccfg=chain.cardano_cfg, .fr=remover });
+            auto source = std::make_shared<chain_source>(live);
+            for (size_t i = 0; i < 3; ++i) {
+                const auto &block = chain.blocks[i]->blk;
+                live->accept_anything_or_throw(live->tip(), progress_point { block->slot() }, [&] {
+                    live->add_buffer(live->num_bytes(), uint8_vector { block.raw() }, 3);
+                });
+                source->publish({});
+            }
+            expect_equal(source->current()->chunks.size(), 3);
+            auto retained = source->current();
+            const auto old_path = retained->chunks.front()->path;
+            const auto &fourth = chain.blocks.back()->blk;
+            live->accept_anything_or_throw(live->tip(), progress_point { fourth->slot() }, [&] {
+                live->add_buffer(live->num_bytes(), uint8_vector { fourth.raw() }, 3);
+            });
+            source->publish(retained->tip);
+            expect_equal(source->current()->chunks.size(), 1);
+            expect_equal(source->current()->chunks.front()->info.num_blocks, 4);
+            remover.remove();
+            expect(std::filesystem::exists(old_path));
+            uint8_vector received;
+            for (const auto &chunk: retained->chunks)
+                received << zstd::read(chunk->path);
+            const buffer expected = static_cast<buffer>(chain.data).subbuf(0, retained->tip->end_offset);
+            expect_equal(static_cast<buffer>(received), expected);
+            retained.reset();
+            remover.remove();
+            expect(!std::filesystem::exists(old_path));
         };
 
         "client done"_test = [&] {
