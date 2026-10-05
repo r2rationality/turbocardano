@@ -49,16 +49,19 @@ namespace turbo {
     {
         const auto num = it.read().uint();
         const auto denom = it.read().uint();
-        rational_u64 res { num, denom };
+        if (denom == 0) [[unlikely]]
+            throw error{"rational values cannot have 0 as the denominator!"};
+        rational_u64 res{num, denom};
         res.normalize();
         return res;
     }
 
     rational_u64 rational_u64::from_cbor(cbor::zero2::value &v)
     {
-        if (v.type() == cbor::major_type::tag)
-            return from_cbor(v.tag().read().array());
-        return from_cbor(v.array());
+        auto &t = v.tag();
+        if (t.id() != 30U) [[unlikely]]
+            throw error{"rationals must be encoded as CBOR tag #30 only!"};
+        return from_cbor(t.read().array());
     }
 
     rational_u64 rational_u64::from_json(const json::value &v)

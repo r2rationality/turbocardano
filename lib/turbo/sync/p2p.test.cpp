@@ -174,7 +174,7 @@ suite sync_p2p_suite = [] {
             expect(fatal(!cr.validator().snapshots().empty()));
             expect_equal(cr.validator().snapshots().rbegin()->end_offset, cr.num_bytes()); // orderly shutdown
         };
-        enum class fetch_interruption { shutdown, timeout, incomplete_response, checkpoint };
+        enum class fetch_interruption { shutdown, timeout, incomplete_response, commit };
         const auto check_fetch_recovery = [&](const bool continuous, const fetch_interruption interruption,
             const std::source_location &loc=std::source_location::current()) {
             const file::tmp_directory dir { "sync-p2p-fetch-recovery" };
@@ -204,7 +204,7 @@ suite sync_p2p_suite = [] {
 
                 void _fetch_blocks_impl(const point2 &from, const point2 &to, const block_handler &handler) override
                 {
-                    if (state.interruption == fetch_interruption::checkpoint && state.requests.size() == 1) {
+                    if (state.interruption == fetch_interruption::commit && state.requests.size() == 1) {
                         expect_equal(state.registry->num_blocks(), 2, state.context);
                         expect_equal(state.registry->valid_end_offset(), state.registry->num_bytes(), state.context);
                     }
@@ -226,8 +226,8 @@ suite sync_p2p_suite = [] {
                                     handler(error_msg { "network operation stopped" });
                                 } else if (state.interruption == fetch_interruption::timeout) {
                                     handler(error_msg { "injected network timeout" });
-                                } else if (state.interruption == fetch_interruption::checkpoint) {
-                                    state.registry->request_checkpoint();
+                                } else if (state.interruption == fetch_interruption::commit) {
+                                    state.registry->request_commit();
                                     expect(!handler(msg_block_t { uint8_vector { chain.blocks.at(2)->blk.raw() } })) << state.context;
                                 }
                                 break;
@@ -282,7 +282,7 @@ suite sync_p2p_suite = [] {
                 } else {
                     expect(syncer.sync(syncer.find_peer(addr), {}, validation_mode_t::full)) << state.context;
                 }
-                expect_equal(manager.connections, continuous && interruption != fetch_interruption::checkpoint ? expected_requests : 1, state.context);
+                expect_equal(manager.connections, continuous && interruption != fetch_interruption::commit ? expected_requests : 1, state.context);
                 expect_equal(cr.num_blocks(), expected_blocks, state.context);
                 expect_equal(cr.valid_end_offset(), cr.num_bytes(), state.context);
                 expect(!cr.validator().snapshots().empty()) << state.context << fatal;
@@ -297,7 +297,7 @@ suite sync_p2p_suite = [] {
             expect_equal(restored.num_blocks(), expected_blocks, state.context);
             expect_equal(restored.valid_end_offset(), restored.num_bytes(), state.context);
         };
-        "stopping a bulk fetch commits accepted blocks and restores its checkpoint"_test = [&] {
+        "stopping a bulk fetch commits accepted blocks and restores its snapshot"_test = [&] {
             check_fetch_recovery(true, fetch_interruption::shutdown);
         };
         "batch sync retains progress after a network error"_test = [&] {
@@ -309,11 +309,11 @@ suite sync_p2p_suite = [] {
         "continuous sync rejects an incomplete successful response"_test = [&] {
             check_fetch_recovery(true, fetch_interruption::incomplete_response);
         };
-        "batch sync resumes from blocks committed at a checkpoint interruption"_test = [&] {
-            check_fetch_recovery(false, fetch_interruption::checkpoint);
+        "batch sync resumes from blocks persisted after a commit request"_test = [&] {
+            check_fetch_recovery(false, fetch_interruption::commit);
         };
-        "continuous bulk sync resumes from blocks committed at a checkpoint interruption"_test = [&] {
-            check_fetch_recovery(true, fetch_interruption::checkpoint);
+        "continuous bulk sync resumes from blocks committed at a commit interruption"_test = [&] {
+            check_fetch_recovery(true, fetch_interruption::commit);
         };
         "explicit peer is preserved through connection and follow failures"_test = [&] {
             const file::tmp_directory dir { "sync-p2p-fixed-follow-peer" };

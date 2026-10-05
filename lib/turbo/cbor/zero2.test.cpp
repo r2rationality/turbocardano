@@ -249,6 +249,28 @@ suite cbor_zero2_test = [] {
                 expect(throws([&] { v.special(); }));
             }
         };
+        "float16 raw access"_test = [] {
+            const auto data = uint8_vector::from_hex("F93C00");
+            auto pv = parse(data);
+            auto &v = pv.get();
+            expect_equal(v.type(), major_type::simple);
+            expect_equal(v.special(), special_val::two_bytes);
+            expect(throws([&] { v.float32(); }));
+            expect_equal(v.data_raw(), data);
+        };
+        "float16 implicit consume"_test = [] {
+            const auto data = uint8_vector::from_hex("F93C0001");
+            decoder dec{data};
+            static_cast<void>(dec.read());
+            expect_equal(dec.read().uint(), 1ULL);
+            expect(dec.done());
+        };
+        "truncated float16"_test = [] {
+            for (const auto hex: { "F9", "F93C" }) {
+                const auto data = uint8_vector::from_hex(hex);
+                expect(throws([&] { parse(data); })) << hex;
+            }
+        };
         "float32"_test = [] {
             {
                 const auto data = uint8_vector::from_hex("FA21B62E17");

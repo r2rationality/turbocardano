@@ -8,11 +8,20 @@
 #include <turbo/cardano/network/chain-source.hpp>
 #include <turbo/chunk-registry.hpp>
 #include <turbo/common/test.hpp>
+#include <turbo/index/tx.hpp>
 #include <turbo/sync/mocks.hpp>
 
 namespace {
     using namespace turbo;
     using namespace turbo::sync;
+
+    std::vector<cardano::point> snapshot_points(const chunk_registry &cr)
+    {
+        std::vector<cardano::point> points;
+        for (const auto &snap: cr.validator().snapshots() | std::views::reverse)
+            points.emplace_back(cr.find_block_by_offset(snap.end_offset - 1).point());
+        return points;
+    }
 }
 
 suite validator_suite = [] {
@@ -46,7 +55,7 @@ suite validator_suite = [] {
                     cr.add_buffer(offset, uint8_vector { bytes });
                 });
                 offset += bytes.size();
-                cr.checkpoint();
+                cr.save_state();
                 cardano::ledger::state saved { cr.config() };
                 expect(fatal(!cr.validator().snapshots().empty()));
                 expect_equal(cr.validator().snapshots().rbegin()->last_slot, chain.blocks.at(i)->blk->slot());
@@ -74,7 +83,7 @@ suite validator_suite = [] {
                     cr.accept_anything_or_throw({}, *chain.tip, [&] {
                         cr.add_buffer(0, uint8_vector { chain.blocks.front()->blk.raw() });
                     });
-                    cr.checkpoint();
+                    cr.save_state();
                 }
                 cr.validation(mode);
                 const auto start_offset = cr.num_bytes();
@@ -89,7 +98,7 @@ suite validator_suite = [] {
                 });
                 expect_equal(cr.tip(), baseline.tip());
                 if (mode == validator::validation_mode::turbo) {
-                    baseline.checkpoint();
+                    baseline.save_state();
                     cardano::ledger::state expected { chain.cardano_cfg, scheduler::get(), cardano::ledger::state::init_mode::empty };
                     baseline.validator().load_snapshot(expected, *baseline.validator().snapshots().rbegin());
                     expect(cr.validator().state() == expected);
@@ -126,23 +135,23 @@ suite validator_suite = [] {
             cr.accept_anything_or_throw({}, *chain.tip, [&] { cr.add_buffer(0, uint8_vector { chain.data }); });
             expect_equal(cr.valid_end_offset(), chain.data.size());
         };
-        "checkpoints recover a newer stored tail in either mode"_test = [] {
+        "snapshots recover a newer stored tail in either mode"_test = [] {
             for (const bool continuous: { false, true }) {
                 const file::tmp_directory dir { "validator-live-recovery" };
                 const auto chain = gen_chain({ .height=3 });
                 const cardano::config cfg { chain.cfg };
                 file_remover remover;
-                cardano::optional_point checkpoint_tip, rollback_tip, final_tip;
+                cardano::optional_point snapshot_tip, rollback_tip, final_tip;
                 const auto split = chain.blocks.front()->blk.raw().size();
                 {
                     chunk_registry cr { dir.path(), chunk_registry_settings_t { .continuous=continuous, .ccfg=cfg, .fr=remover } };
                     cr.accept_anything_or_throw({}, *chain.tip, [&] {
                         cr.add_buffer(0, uint8_vector { static_cast<buffer>(chain.data).subbuf(0, split) });
                     });
-                    checkpoint_tip = cr.tip();
+                    snapshot_tip = cr.tip();
                     expect(cr.validator().snapshots().empty());
-                    cr.checkpoint();
-                    cr.accept_anything_or_throw(checkpoint_tip, *chain.tip, [&] {
+                    cr.save_state();
+                    cr.accept_anything_or_throw(snapshot_tip, *chain.tip, [&] {
                         cr.add_buffer(split, uint8_vector { static_cast<buffer>(chain.data).subbuf(split) });
                     });
                     cr.before_commit({});
@@ -152,15 +161,13 @@ suite validator_suite = [] {
                     // Snapshot boundaries need not remain chunk boundaries.
                     cr.repack();
                 }
-                // Emulate independently persisted derived metadata ahead of/behind the
-                // coordinated checkpoint, and an interrupted checkpoint generation.
+                // Recover from an index behind the ledger.
                 json::save_pretty(dir.path() + "/index/state.json", json::array {});
-                std::filesystem::create_directories(dir.path() + "/checkpoints/interrupted");
                 {
                     chunk_registry cr { dir.path(), chunk_registry_settings_t { .continuous=continuous, .ccfg=cfg, .fr=remover } };
                     expect_equal(cr.tip(), final_tip);
                     expect_equal(cr.indexer().slices().back().end_offset(), final_tip->end_offset);
-                    cr.checkpoint();
+                    cr.save_state();
                     cr.truncate(rollback_tip);
                     expect_equal(cr.tip(), rollback_tip);
                 }
@@ -183,8 +190,8 @@ suite validator_suite = [] {
                 }
             }
         };
-        "checkpoints merge closed chunks and preserve pinned views"_test = [] {
-            const file::tmp_directory dir { "validator-checkpoint-repack" };
+        "state saves merge closed chunks and preserve pinned views"_test = [] {
+            const file::tmp_directory dir { "validator-save-repack" };
             const auto chain = gen_chain({ .height=1 });
             const auto seed = crypto::blake2b::digest<crypto::ed25519::seed>(std::string_view { "1" });
             block_producer block { crypto::ed25519::create_sk_from_seed(seed), seed, vrf03_create_sk_from_seed(seed) };
@@ -208,7 +215,7 @@ suite validator_suite = [] {
             expect_equal(cr->repack(chunk_registry::repack_mode_t::merge_closed, 2).chunks_repacked, 0);
             expect(throws([&] { cr->repack(chunk_registry::repack_mode_t::merge_closed, 1); }));
             expect_equal(cr->chunks().size(), 3);
-            expect_equal(cr->checkpoint().partial_groups_merged, 0);
+            expect_equal(cr->save_state().partial_groups_merged, 0);
             expect_equal(cr->validator().snapshots().rbegin()->end_offset, cr->num_bytes());
             expect_equal(cr->chunks().size(), 3);
             std::filesystem::rename(path + ".missing", path);
@@ -218,7 +225,7 @@ suite validator_suite = [] {
             {
                 cardano::network::chain_source source { cr };
                 auto old = source.current();
-                expect_equal(cr->checkpoint().partial_groups_merged, 1);
+                expect_equal(cr->save_state().partial_groups_merged, 1);
                 source.publish(cr->tip());
                 const auto current = source.current();
                 expect_equal(current->tip, old->tip);
@@ -236,7 +243,7 @@ suite validator_suite = [] {
                 old.reset();
                 remover.remove();
                 expect(!std::filesystem::exists(path));
-                expect_equal(cr->checkpoint().partial_groups_merged, 0);
+                expect_equal(cr->save_state().partial_groups_merged, 0);
                 expect_equal(cr->repack(chunk_registry::repack_mode_t::merge_closed).chunks_repacked, 0);
             }
 
@@ -250,11 +257,11 @@ suite validator_suite = [] {
             reloaded.truncate(reloaded.chunks().begin()->second.blocks.front().point());
             expect_equal(reloaded.num_blocks(), 1);
         };
-        "checkpoint repack commits resume after publication failure"_test = [] {
+        "state-save repack commits resume after publication failure"_test = [] {
             const auto chain = gen_chain({ .height=1 });
             const auto seed = crypto::blake2b::digest<crypto::ed25519::seed>(std::string_view { "1" });
             for (const bool automatic: { false, true }) {
-                const file::tmp_directory dir { "validator-checkpoint-pending" };
+                const file::tmp_directory dir { "validator-save-pending" };
                 const std::filesystem::path root { dir.path() };
                 const auto state = root / "compressed/state.bin";
                 const auto saved = root / "saved-state.bin";
@@ -264,10 +271,10 @@ suite validator_suite = [] {
                 block_producer block { crypto::ed25519::create_sk_from_seed(seed), seed, vrf03_create_sk_from_seed(seed) };
                 block.prev_hash = chain.cardano_cfg.byron_genesis_hash;
                 block.vrf_nonce = chain.cardano_cfg.shelley_genesis_hash;
-                const auto append = [&](const uint64_t slot, const bool final_checkpoint=false) {
+                const auto append = [&](const uint64_t slot, const bool final_snapshot=false) {
                     block.slot = slot;
                     progress_point target { slot };
-                    target.final_checkpoint = final_checkpoint;
+                    target.final_snapshot = final_snapshot;
                     cr->accept_anything_or_throw(cr->tip(), target, [&] {
                         cr->add_buffer(cr->num_bytes(), block.cbor());
                     });
@@ -283,14 +290,14 @@ suite validator_suite = [] {
                 };
                 if (automatic) {
                     // Let the chain commit succeed, then fail the repack commit
-                    // performed by its automatic final checkpoint.
+                    // performed by its automatic final save.
                     const chunk_processor processor { .commit_tx=obstruct };
                     cr->register_processor(processor);
                     expect(throws([&] { append(2 * span, true); }));
                     cr->remove_processor(processor);
                 } else {
                     obstruct();
-                    expect(throws([&] { cr->checkpoint(); }));
+                    expect(throws([&] { cr->save_state(); }));
                 }
                 const auto expected_tip = cr->tip();
                 const auto expected_chunks = cr->num_blocks() - 1;
@@ -383,17 +390,15 @@ suite validator_suite = [] {
                 expect(!cr.accept_progress({}, *chain.tip, [&] { cr.add_file(0, chunk_path); }));
                 core_offset = cr.chunks().begin()->second.blocks.front().end_offset();
                 expect(cr.validator().snapshots().empty());
-                cr.checkpoint();
+                cr.save_state();
             }
-            const auto checkpoint = std::filesystem::directory_iterator(dir + "/checkpoints");
-            expect(fatal(checkpoint != std::filesystem::directory_iterator {}));
-            const auto checkpoint_state_path = (checkpoint->path() / "validate/state.json").string();
-            auto snapshots = json::load(checkpoint_state_path);
+            const auto snapshot_state_path = dir + "/validate/state.json";
+            auto snapshots = json::load(snapshot_state_path);
             expect(fatal(snapshots.as_array().size() == 1));
             auto &latest = snapshots.as_array().back().as_object();
             latest.insert_or_assign("trustedAuthorityEpoch", json::value(nullptr));
             latest.insert_or_assign("certifiedCoreOffset", core_offset);
-            json::save_pretty(checkpoint_state_path, snapshots);
+            json::save_pretty(snapshot_state_path, snapshots);
 
             chunk_registry restored { dir, chunk_registry_settings_t { .ccfg=cardano::config { chain.cfg } } };
             expect_equal(chain.data.size(), restored.valid_end_offset());
@@ -426,7 +431,7 @@ suite validator_suite = [] {
             expect(!policy::due(102, 102, 97, 2, 20min, true));
             expect(policy::due(100, 103, 90, 2, 10min, true));
         };
-        "two forward checkpoints preserve a rollback anchor"_test = [] {
+        "two forward snapshots preserve a rollback anchor"_test = [] {
             const auto initial = gen_chain({ .height=0 });
             auto genesis = initial.cfg.at("shelley-genesis").json();
             genesis["securityParam"] = 2;
@@ -454,26 +459,22 @@ suite validator_suite = [] {
                         tips.emplace_back(*cr.tip());
                         block.prev_hash = cr.tip()->hash;
                         if (height == 0)
-                            cr.checkpoint();
-                        const auto points = cr.checkpoint_points();
+                            cr.save_state();
+                        const auto points = snapshot_points(cr);
                         expect(fatal(!points.empty()));
                         const auto latest = height / 3 * 3;
                         expect_equal(points.front(), tips.at(latest));
                         expect_equal(points.size(), latest ? 2 : 1);
                         if (latest)
                             expect_equal(points.back(), tips.at(latest - 3));
-                        size_t generations = 0;
-                        for (const auto &entry: std::filesystem::directory_iterator(dir.path() + "/checkpoints"))
-                            if (entry.is_directory()) ++generations;
-                        expect_equal(generations, points.size());
                     }
-                    cr.checkpoint();
-                    const auto points = cr.checkpoint_points();
+                    cr.save_state();
+                    const auto points = snapshot_points(cr);
                     expect(fatal(points.size() == 2));
                     expect_equal(points.front(), tips.at(8));
                     expect_equal(points.back(), tips.at(3));
-                    cr.checkpoint();
-                    expect_equal(cr.checkpoint_points(), points);
+                    cr.save_state();
+                    expect_equal(snapshot_points(cr), points);
                     size_t files = 0;
                     for (const auto &entry: std::filesystem::directory_iterator(dir.path() + "/validate"))
                         if (entry.path().filename().string().starts_with("ledger-") && entry.path().extension() == ".bin")
@@ -485,8 +486,8 @@ suite validator_suite = [] {
                 }
                 chunk_registry restored { dir.path(), chunk_registry_settings_t { .validate_vrf=false, .continuous=continuous, .ccfg=cfg, .fr=remover } };
                 expect_equal(restored.tip(), cardano::optional_point { tips.at(7) });
-                restored.checkpoint();
-                const auto points = restored.checkpoint_points();
+                restored.save_state();
+                const auto points = snapshot_points(restored);
                 expect(fatal(points.size() == 2));
                 expect_equal(points.front(), tips.at(7));
                 expect_equal(points.back(), tips.at(3));
@@ -508,12 +509,11 @@ suite validator_suite = [] {
             const file::tmp_directory dir { "validator-window-entry" };
             chunk_registry cr { dir.path(), chunk_registry_settings_t { .validate_vrf=false, .ccfg=chain.cardano_cfg } };
             progress_point target { *chain.tip };
-            target.final_checkpoint = true;
+            target.final_snapshot = true;
             cr.before_commit([&] {
-                const auto points = cr.checkpoint_points();
+                const auto points = snapshot_points(cr);
                 expect(fatal(points.size() == 1));
                 expect_equal(points.front().height, chain.tip->height - cr.config().shelley_security_param - 1);
-                expect(!std::filesystem::exists(dir.path() + "/checkpoints"));
             });
             cr.accept_anything_or_throw({}, target, [&] {
                 size_t offset = 0;
@@ -524,16 +524,17 @@ suite validator_suite = [] {
                 }
             });
             cr.before_commit({});
-            const auto points = cr.checkpoint_points();
+            const auto points = snapshot_points(cr);
             expect(fatal(points.size() == 2));
             expect_equal(points.front(), *cr.tip());
             expect_equal(points.back().height, cr.tip()->height - cr.config().shelley_security_param - 1);
-            std::map<std::filesystem::path, std::filesystem::file_time_type> generations;
-            for (const auto &entry: std::filesystem::directory_iterator(dir.path() + "/checkpoints"))
-                generations.emplace(entry.path(), entry.last_write_time());
-            expect_equal(generations.size(), 2);
-            cr.checkpoint();
-            for (const auto &[path, modified]: generations)
+            std::map<std::filesystem::path, std::filesystem::file_time_type> snapshots;
+            for (const auto &entry: std::filesystem::directory_iterator(dir.path() + "/validate"))
+                if (entry.path().extension() == ".bin")
+                    snapshots.emplace(entry.path(), entry.last_write_time());
+            expect_equal(snapshots.size(), 2);
+            cr.save_state();
+            for (const auto &[path, modified]: snapshots)
                 expect(std::filesystem::exists(path) && std::filesystem::last_write_time(path) == modified);
         };
         "revalidation commits recoverable prefixes without losing unread chunks"_test = [] {
@@ -584,7 +585,7 @@ suite validator_suite = [] {
                         revalidate();
                         expect_equal(commits, 3);
                         expect_equal(cr.tip(), target);
-                        expect_equal(cr.checkpoint_points().size(), 2);
+                        expect_equal(snapshot_points(cr).size(), 2);
                         expect(!std::filesystem::exists(source));
                     }
                     cr.before_commit({});
@@ -622,7 +623,7 @@ suite validator_suite = [] {
             expect(cr.empty());
             expect_equal(cr.valid_end_offset(), 0);
         };
-        "a final checkpoint does not manufacture historical states"_test = [] {
+        "a final snapshot does not manufacture historical states"_test = [] {
             const auto initial = gen_chain({ .height=0 });
             auto genesis = initial.cfg.at("shelley-genesis").json();
             genesis["securityParam"] = 2;
@@ -636,60 +637,150 @@ suite validator_suite = [] {
             cr.accept_anything_or_throw({}, target, [&] { cr.add_buffer(0, uint8_vector { chain.data }); });
             expect(cr.validator().snapshots().empty());
             const auto tip = cr.tip();
-            cr.checkpoint();
+            cr.save_state();
             expect_equal(cr.validator().snapshots().size(), 1);
-            expect_equal(cr.checkpoint_points().front(), *tip);
+            expect_equal(snapshot_points(cr).front(), *tip);
             expect_equal(cr.tip(), tip);
             const auto first = cr.chunks().begin()->second.blocks.front().point();
             cr.truncate(first);
             expect_equal(cr.tip(), cardano::optional_point { first });
             expect_equal(cr.validator().state().end_offset(), first.end_offset);
         };
-        "checkpoint reuse rejects inconsistent metadata"_test = [] {
-            const file::tmp_directory dir { "validator-checkpoint-metadata" };
+        "startup reconciles snapshots and indexes"_test = [] {
             const auto chain = gen_chain({ .height=3 });
-            chunk_registry cr { dir.path(), chunk_registry_settings_t { .continuous=true, .ccfg=chain.cardano_cfg } };
-            cr.accept_anything_or_throw({}, *chain.tip, [&] { cr.add_buffer(0, uint8_vector { chain.data }); });
-            cr.checkpoint();
-            const auto newest = cr.tip();
-            const auto checkpoint_directory = [&] {
-                return std::filesystem::directory_iterator(dir.path() + "/checkpoints")->path();
-            };
-            const auto original_directory = checkpoint_directory();
-            cr.checkpoint();
-            expect_equal(checkpoint_directory().string(), original_directory.string());
-            for (const std::string_view corruption: { "missing metadata", "ledger boundary", "index boundary", "index gap" }) {
-                const auto invalid_directory = checkpoint_directory();
-                if (corruption == "missing metadata") {
-                    const auto path = (invalid_directory / "manifest.json").string();
-                    auto manifest = json::load(path);
-                    json::array files;
-                    for (const auto &file: manifest.at("files").as_array())
-                        if (file.as_string() != "validate/state.json")
-                            files.emplace_back(file);
-                    manifest.as_object()["files"] = std::move(files);
-                    json::save_pretty(path, manifest);
-                } else if (corruption == "index boundary" || corruption == "index gap") {
-                    const auto path = (invalid_directory / "index/state.json").string();
-                    auto state = json::load(path);
-                    if (corruption == "index boundary")
-                        state.as_array().clear();
-                    else
-                        state.as_array().front().as_object()["offset"] = 1;
-                    json::save_pretty(path, state);
-                } else {
-                    const auto path = (invalid_directory / "validate/state.json").string();
-                    auto state = json::load(path);
-                    state.as_array().front().as_object()["endOffset"] = 0;
-                    json::save_pretty(path, state);
-                }
-                cr.checkpoint();
-                expect_equal(cr.tip(), newest);
-                expect(!std::filesystem::exists(invalid_directory));
-                const auto state = json::load((checkpoint_directory() / "validate/state.json").string());
-                expect_equal(state.as_array().size(), 1);
-                expect_equal(json::value_to<uint64_t>(state.as_array().front().at("endOffset")), newest->end_offset);
+            const file::tmp_directory baseline_dir { "validator-recovery-baseline" };
+            cardano::ledger::state expected_ledger { chain.cardano_cfg, scheduler::get(), cardano::ledger::state::init_mode::empty };
+            {
+                chunk_registry baseline { baseline_dir.path(), chunk_registry_settings_t { .ccfg=chain.cardano_cfg } };
+                baseline.accept_anything_or_throw({}, *chain.tip, [&] { baseline.add_buffer(0, chain.data); });
+                baseline.save_state();
+                baseline.validator().load_snapshot(expected_ledger, *baseline.validator().snapshots().rbegin());
             }
+            for (const std::string_view damage: { "index ahead", "index behind", "missing index metadata",
+                    "malformed index metadata", "invalid index entry", "missing ledger metadata",
+                    "malformed ledger metadata", "invalid ledger entry", "missing latest snapshot",
+                    "corrupt latest snapshot", "wrong snapshot branch", "legacy snapshot metadata" }) {
+                const file::tmp_directory dir { "validator-independent-recovery" };
+                file_remover remover;
+                const chunk_registry_settings_t settings { .ccfg=chain.cardano_cfg, .fr=remover };
+                const auto index_path = dir.path() + "/index/state.json";
+                const auto ledger_path = dir.path() + "/validate/state.json";
+                std::vector<std::string> expected_transactions;
+                const auto transactions = [](const chunk_registry &cr) {
+                    std::vector<std::string> result;
+                    index::reader_multi<index::tx::item> reader { cr.indexer().reader_paths("tx") };
+                    index::tx::item item;
+                    while (reader.read(item))
+                        result.emplace_back(fmt::format("{}:{}:{}:{}", item.hash,
+                            static_cast<uint64_t>(item.offset), static_cast<uint64_t>(item.wit_rel_offset), static_cast<uint64_t>(item.invalid)));
+                    return result;
+                };
+                {
+                    chunk_registry cr { dir.path(), settings };
+                    const auto first = chain.blocks.front()->blk.raw();
+                    cr.accept_anything_or_throw({}, *chain.tip, [&] {
+                        cr.add_buffer(0, uint8_vector { first });
+                    });
+                    cr.save_state();
+                    cr.accept_anything_or_throw(cr.tip(), *chain.tip, [&] {
+                        cr.add_buffer(first.size(), uint8_vector { static_cast<buffer>(chain.data).subbuf(first.size()) });
+                    });
+                    if (damage != "index ahead")
+                        cr.save_state();
+                    expected_transactions = transactions(cr);
+                }
+                auto index_state = json::load(index_path).as_array();
+                auto ledger_state = json::load(ledger_path).as_array();
+                if (damage == "index behind") {
+                    index_state.pop_back();
+                    json::save_pretty(index_path, index_state);
+                } else if (damage == "missing index metadata") {
+                    std::filesystem::remove(index_path);
+                } else if (damage == "malformed index metadata") {
+                    file::write(index_path, std::string_view { "{" });
+                } else if (damage == "invalid index entry") {
+                    index_state.back() = json::object {};
+                    json::save_pretty(index_path, index_state);
+                } else if (damage == "missing ledger metadata") {
+                    std::filesystem::remove(ledger_path);
+                } else if (damage == "malformed ledger metadata") {
+                    file::write(ledger_path, std::string_view { "[" });
+                } else if (damage == "invalid ledger entry") {
+                    ledger_state.back() = json::object {};
+                    json::save_pretty(ledger_path, ledger_state);
+                } else if (damage == "missing latest snapshot" || damage == "corrupt latest snapshot") {
+                    const auto offset = json::value_to<uint64_t>(ledger_state.back().at("endOffset"));
+                    const auto path = dir.path() + fmt::format("/validate/ledger-{:013}.bin", offset);
+                    if (damage == "missing latest snapshot")
+                        std::filesystem::remove(path);
+                    else
+                        std::filesystem::resize_file(path, 0);
+                } else if (damage == "wrong snapshot branch") {
+                    ledger_state.back().as_object()["blockHash"] = fmt::format("{}", cardano::block_hash {});
+                    json::save_pretty(ledger_path, ledger_state);
+                } else if (damage == "legacy snapshot metadata") {
+                    for (auto &snap: ledger_state)
+                        snap.as_object().erase("blockHash");
+                    json::save_pretty(ledger_path, ledger_state);
+                }
+                {
+                    chunk_registry recovered { dir.path(), settings };
+                    expect_equal(recovered.tip(), chain.tip, damage);
+                    expect_equal(recovered.valid_end_offset(), chain.data.size(), damage);
+                    // gen_chain emits Babbage blocks without protocol upgrades. Snapshot loading
+                    // selects the era-specific state class, so compare two loaded snapshots.
+                    cardano::ledger::state saved { chain.cardano_cfg, scheduler::get(), cardano::ledger::state::init_mode::empty };
+                    expect(fatal(!recovered.validator().snapshots().empty()));
+                    recovered.validator().load_snapshot(saved, *recovered.validator().snapshots().rbegin());
+                    expect(saved == expected_ledger) << damage;
+                    expect(transactions(recovered) == expected_transactions) << damage;
+                    if (damage == "wrong snapshot branch") {
+                        const auto &latest = *recovered.validator().snapshots().rbegin();
+                        expect(latest.block_hash == std::optional<cardano::block_hash> { chain.tip->hash });
+                    }
+                }
+                chunk_registry reopened { dir.path(), settings };
+                expect_equal(reopened.tip(), chain.tip, damage);
+                expect(reopened.validator().state() == expected_ledger) << damage;
+                expect(transactions(reopened) == expected_transactions) << damage;
+            }
+        };
+        "failed snapshot metadata publication preserves the previous snapshots"_test = [] {
+            const auto chain = gen_chain({ .height=3 });
+            const file::tmp_directory dir { "validator-snapshot-publication" };
+            file_remover remover;
+            const chunk_registry_settings_t settings { .ccfg=chain.cardano_cfg, .fr=remover };
+            {
+                chunk_registry cr { dir.path(), settings };
+                for (size_t i = 0; i < chain.blocks.size(); ++i) {
+                    cr.accept_anything_or_throw(cr.tip(), *chain.tip, [&] {
+                        cr.add_buffer(cr.num_bytes(), uint8_vector { chain.blocks.at(i)->blk.raw() });
+                    });
+                    if (i < 2)
+                        cr.save_state();
+                }
+                const auto previous = cr.validator().snapshots();
+                expect_equal(previous.size(), 2);
+                const auto metadata = dir.path() + "/validate/state.json";
+                const auto original = file::read(metadata);
+                // The snapshot binary can publish, but its metadata write must fail.
+                std::filesystem::create_directory(metadata + ".tmp");
+                expect(throws([&] { cr.save_state(); }));
+                expect(cr.validator().snapshots() == previous);
+                expect(file::read(metadata) == original);
+                remover.remove();
+                for (const auto &snap: previous) {
+                    cardano::ledger::state saved { chain.cardano_cfg, scheduler::get(), cardano::ledger::state::init_mode::empty };
+                    cr.validator().load_snapshot(saved, snap);
+                    expect_equal(saved.end_offset(), snap.end_offset);
+                }
+                std::filesystem::remove(metadata + ".tmp");
+                cr.save_state();
+                expect_equal(cr.validator().snapshots().rbegin()->end_offset, cr.num_bytes());
+            }
+            chunk_registry reopened { dir.path(), settings };
+            expect_equal(reopened.tip(), chain.tip);
+            expect_equal(reopened.valid_end_offset(), chain.data.size());
         };
         "export selects the newest immutable supported snapshot"_test = [] {
             const auto make_snapshot = [](const uint64_t epoch, const uint64_t offset) {
@@ -740,6 +831,16 @@ suite validator_suite = [] {
             auto legacy = original.to_json();
             legacy["role"] = "epoch-end";
             expect_equal(original, validator::snapshot::from_json(legacy));
+            auto identified = original;
+            identified.block_hash = cardano::block_hash::from_hex(
+                "1111111111111111111111111111111111111111111111111111111111111111");
+            expect_equal(identified, validator::snapshot::from_json(identified.to_json()));
+            auto without_hash = identified.to_json();
+            without_hash.erase("blockHash");
+            expect_equal(original, validator::snapshot::from_json(without_hash));
+            validator::snapshot zero { 0, 0, 0, false };
+            zero.block_hash = *identified.block_hash;
+            expect(!zero.matches({}));
         };
     };
 };

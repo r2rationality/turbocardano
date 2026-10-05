@@ -18,7 +18,7 @@ namespace turbo::cardano {
 
 namespace turbo::storage {
     struct chunk_work_policy_t {
-        static constexpr size_t bytes_per_worker = size_t { 128 } << 20;
+        static constexpr size_t bytes_per_worker = size_t { 64 } << 20;
         // Estimate for block metadata, indexers, and other task-local allocations.
         // This is an admission budget, not a bound on total process memory.
         static constexpr uint64_t fixed_task_overhead = uint64_t { 32 } << 20;

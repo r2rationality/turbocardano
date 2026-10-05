@@ -177,8 +177,7 @@ namespace turbo::cbor {
     protected:
         void _encode_data(const buffer buf)
         {
-            for (const uint8_t *it = buf.data(), *end = buf.data() + buf.size(); it != end; ++it)
-                _buf.emplace_back(*it);
+            _buf.insert(_buf.end(), buf.begin(), buf.end());
         }
     private:
         uint8_vector _buf {};

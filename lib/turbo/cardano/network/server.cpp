@@ -325,15 +325,15 @@ namespace turbo::cardano::network {
                 return std::make_shared<miniprotocol::handshake::handler>(
                     miniprotocol::handshake::version_map {
                         { 14, miniprotocol::handshake::node_to_node_version_data_t { pm, false, false, false } },
-                        { 15, miniprotocol::handshake::node_to_node_version_data_t { pm, false, false, false } }
+                        { 999, miniprotocol::handshake::node_to_node_version_data_t { pm, false, false, false } }
                     },
-                    15
+                    999
                 );
             } },
             { mini_protocol::keep_alive, [](const auto &) { return std::make_shared<keepalive_handler>(); } },
             { mini_protocol::chain_sync, [cr](const auto &) { return std::make_shared<miniprotocol::chainsync::handler>(cr); } },
             { mini_protocol::block_fetch, [cr](const auto &res) {
-                return std::make_shared<miniprotocol::blockfetch::handler>(cr, miniprotocol::blockfetch::config_t { .block_compression=res.version>=15 });
+                return std::make_shared<miniprotocol::blockfetch::handler>(cr, miniprotocol::blockfetch::config_t { .block_compression=res.version==999 });
             } }
         };
         return { addr, std::move(cfg), iow, ccfg, max_connections };

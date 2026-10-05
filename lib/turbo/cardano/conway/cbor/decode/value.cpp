@@ -13,7 +13,11 @@ namespace turbo::cardano::conway {
         if (v.type() != cbor::major_type::array) [[unlikely]]
             throw error(fmt::format("unsupported output value type: {}", v.type()));
 
-        auto &it = v.array();
+        return from_cbor(v.array_sized());
+    }
+
+    value_t value_t::from_cbor(cbor::zero2::array_reader &it)
+    {
         const auto coin = it.read().uint();
         auto &assets_v = it.read();
         multi_asset_map assets {};

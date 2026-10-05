@@ -8,6 +8,8 @@
 namespace turbo::cardano::conway {
     transaction_t transaction_t::from_cbor(cbor::zero2::value &v)
     {
+        if (v.indefinite()) [[unlikely]]
+            throw error{"conway::transaction_t rejects indefinite array encoding!"};
         auto &it = v.array();
         transaction_t res {
             transaction_body_t::from_cbor(it.read()),

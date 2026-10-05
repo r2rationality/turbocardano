@@ -10,12 +10,9 @@ namespace turbo::cardano::shelley {
     {
         std::visit([&](const auto &item) {
             using T = std::decay_t<decltype(item)>;
-            if constexpr (std::is_same_v<T, int64_t>) {
-                if (item >= 0)
-                    enc.uint(numeric_cast<uint64_t>(item));
-                else
-                    enc.nint(numeric_cast<uint64_t>(-(item + 1)));
-            } else if constexpr (std::is_same_v<T, nint64_t>) {
+            if constexpr (std::is_same_v<T, nint64_t>) {
+                enc.nint(item.raw);
+            } else if constexpr (std::is_same_v<T, uint64_t>) {
                 enc.uint(item);
             } else if constexpr (std::is_same_v<T, uint8_vector>) {
                 enc.bytes(item);

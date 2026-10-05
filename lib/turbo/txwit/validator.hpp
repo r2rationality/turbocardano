@@ -19,8 +19,10 @@ namespace turbo::txwit {
         uint64_t end_offset() const;
         void reset();
         void cache(const cardano::block_hash &, buffer);
+        // Run before_apply once, after starting preparation (if any); false skips application.
         void apply(storage::chunk_cptr_list, const cardano::optional_point &from={},
-            const cardano::optional_point &to={}, witness_type type=witness_type::all);
+            const cardano::optional_point &to={}, witness_type type=witness_type::all,
+            const std::function<bool()> &before_apply={});
     private:
         struct impl;
         std::unique_ptr<impl> _impl;

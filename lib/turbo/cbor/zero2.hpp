@@ -467,7 +467,7 @@ namespace turbo::cbor::zero2 {
             }
         }
 
-        bool done() noexcept
+        bool done()
         {
             return done(_val_at(0));
         }
@@ -931,7 +931,12 @@ namespace turbo::cbor::zero2 {
             case 0xF8:
                 throw error(fmt::format("throw: one-byte simple values are not supported!"));
             case 0xF9:
-                throw error(fmt::format("throw: two-byte simple values are not supported!"));
+                // Preserve the float16 payload for raw access and normalization.
+                if (_dec.end() - _data_begin < 3) [[unlikely]]
+                    throw incomplete_error();
+                new (&_reader_base()) special_reader {};
+                _dec.step(3);
+                break;
             case 0xFA:
                 new (&_reader_base()) float32_reader {};
                 _dec.step(5);
@@ -1043,15 +1048,7 @@ namespace turbo::cbor::zero2 {
 
     inline std::string_view chunked_text_reader::read()
     {
-        auto *first_chunk = next_chunk(_dec_level);
-        if (!first_chunk) [[unlikely]]
-            return {};
-        if (first_chunk->type() != major_type::text || first_chunk->indefinite()) [[unlikely]]
-            throw error("CBOR chunked text strings require definite text-string chunks");
-        const auto data = first_chunk->text();
-        if (const auto *second_chunk = next_chunk(_dec_level); second_chunk) [[unlikely]]
-            throw error("A conversion from a CBOR chunked string into a single string_view is unavailable for multi-chunk strings!");
-        return data;
+        throw error{"conversion of a chunked string requires a dedicated buffer"};
     }
 
     inline void chunked_text_reader::read(std::pmr::string &s)
@@ -1130,15 +1127,7 @@ namespace turbo::cbor::zero2 {
 
     inline buffer chunked_bytes_reader::read()
     {
-        auto *first_chunk = next_chunk(_dec_level);
-        if (!first_chunk) [[unlikely]]
-            return {};
-        if (first_chunk->type() != major_type::bytes || first_chunk->indefinite()) [[unlikely]]
-            throw error("CBOR chunked byte strings require definite byte-string chunks");
-        const auto data = first_chunk->bytes();
-        if (const auto *second_chunk = next_chunk(_dec_level); second_chunk) [[unlikely]]
-            throw error("A conversion of a CBOR chunked value into a single buffer is unavailable for multi-chunk values!");
-        return data;
+        throw error{"conversion of a chunked byte string requires a dedicated buffer"};
     }
 
     inline void chunked_bytes_reader::read(std::pmr::vector<uint8_t> &b)

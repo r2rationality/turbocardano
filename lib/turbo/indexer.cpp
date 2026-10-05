@@ -39,9 +39,26 @@ namespace turbo::indexer {
             const auto path = dir / "state.json";
             if (std::filesystem::exists(path)) {
                 uint64_t end_offset = 0;
-                const auto metadata = json::load(path.string());
-                for (const auto &value: metadata.as_array()) {
-                    auto slice = merger::slice::from_json(value.as_object());
+                json::array metadata;
+                try {
+                    metadata = json::load(path.string()).as_array();
+                } catch (const std::exception &ex) {
+                    if (strict)
+                        throw;
+                    logger::warn("cannot load index metadata; rebuilding from stored blocks: {}", ex.what());
+                    state.repaired = true;
+                }
+                for (const auto &value: metadata) {
+                    merger::slice slice;
+                    try {
+                        slice = merger::slice::from_json(value.as_object());
+                    } catch (const std::exception &ex) {
+                        if (strict)
+                            throw;
+                        logger::warn("ignoring invalid index metadata and its successors: {}", ex.what());
+                        state.repaired = true;
+                        break;
+                    }
                     std::vector<std::string> files;
                     for (const auto &name: names) {
                         files.emplace_back(index::indexer_base::reader_path(dir.string(), name, slice.slice_id));

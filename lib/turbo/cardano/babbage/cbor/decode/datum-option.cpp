@@ -18,7 +18,10 @@ namespace turbo::cardano {
                 if (tag.id() != 24) [[unlikely]]
                     throw error(fmt::format("expected a tag with id 24 but got: {}", tag.id()));
                 uint8_vector data {};
-                tag.read().to_bytes(data);
+                auto &data_v = tag.read();
+                if (data_v.indefinite()) [[unlikely]]
+                    throw error{"datum_option_t rejects tags with indefinite byte values in pre-dijkstra eras!"};
+                data_v.to_bytes(data);
                 cbor::zero2::decoder data_dec { data };
                 plutus::data::validate_cbor(data_dec.read());
                 if (!data_dec.done()) [[unlikely]]

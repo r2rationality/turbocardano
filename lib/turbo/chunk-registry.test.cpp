@@ -137,6 +137,26 @@ suite chunk_registry_suite = [] {
             }
         };
 
+        "owned compressed buffers are released before block validation"_test = [] {
+            const auto chain = sync::gen_chain({ .height=2 });
+            const file::tmp_directory dir { "chunk-registry-compressed-release" };
+            auto compressed = zstd::compress(chain.data);
+            size_t validated_blocks = 0;
+            const chunk_processor observer {
+                .on_block_validate=[&](const auto &) {
+                    expect_equal(compressed.capacity(), 0);
+                    ++validated_blocks;
+                }
+            };
+            chunk_registry cr { dir.path(), chunk_registry_settings_t { .ccfg=chain.cardano_cfg } };
+            cr.register_processor(observer);
+            cr.accept_anything_or_throw({}, *chain.tip, [&] {
+                cr.add_buffer_trusted(0, chain.data, std::move(compressed));
+            });
+            expect_equal(validated_blocks, chain.blocks.size());
+            expect_equal(cr.tip(), chain.tip);
+        };
+
         "empty imports leave the destination unchanged"_test = [] {
             const auto chain = sync::gen_chain({ .height=1 });
             const file::tmp_directory source_dir { "chunk-registry-empty-import-source" };
@@ -259,7 +279,7 @@ suite chunk_registry_suite = [] {
                 cr.accept_anything_or_throw({}, *chain.tip, [&] {
                     cr.add_buffer(0, uint8_vector { chain.blocks.front()->blk.raw() });
                 });
-                cr.checkpoint();
+                cr.save_state();
             }
             for (size_t i = 1; i < chain.blocks.size(); ++i) {
                 write_unregistered_chunk(dir.path(), chain.blocks[i]->blk.raw());
@@ -406,7 +426,7 @@ suite chunk_registry_suite = [] {
             {
                 chunk_registry cr { dir.path(), settings };
                 cr.accept_anything_or_throw({}, *chain.tip, [&] { cr.add_buffer(0, chain.data); });
-                cr.checkpoint();
+                cr.save_state();
                 chunk_path = cr.full_path(cr.chunks().begin()->second.rel_path());
             }
             const auto state_path = std::filesystem::canonical(dir.path() + "/compressed/state.bin").string();
@@ -470,13 +490,12 @@ suite chunk_registry_suite = [] {
                     {
                         chunk_registry cr { dir.path(), writer };
                         cr.accept_anything_or_throw({}, *chain.tip, [&] { cr.add_buffer(0, chain.data); });
-                        cr.checkpoint();
+                        cr.save_state();
                         chunk_path = cr.full_path(cr.chunks().begin()->second.rel_path());
                         index_path = cr.indexer().reader_paths("tx").front();
                         snapshot_path = (std::filesystem::canonical(dir.path() + "/validate")
                             / fmt::format("ledger-{:013}.bin", cr.validator().snapshots().rbegin()->end_offset)).string();
                     }
-                    std::filesystem::remove_all(dir.path() + "/checkpoints");
                     const auto state_path = dir.path() + "/compressed/state.bin";
                     switch (damage) {
                         case damage_t::temporary:
@@ -590,11 +609,8 @@ suite chunk_registry_suite = [] {
                 cr.accept_anything_or_throw({}, progress_point { chain.blocks.front()->blk->slot(), first.size() }, [&] {
                     cr.add_buffer(0, uint8_vector { first });
                 });
-                const auto checkpoints = cr.data_dir() / "checkpoints";
-                expect(!std::filesystem::exists(checkpoints));
-                cr.checkpoint();
-                expect(std::filesystem::is_directory(checkpoints));
-                expect(!std::filesystem::is_empty(checkpoints));
+                cr.save_state();
+                expect(std::filesystem::is_regular_file(cr.data_dir() / "validate/state.json"));
                 cr.accept_anything_or_throw(cr.tip(), *chain.tip, [&] {
                     cr.add_buffer(first.size(), uint8_vector { chain.blocks.back()->blk.raw() });
                 });
@@ -713,7 +729,7 @@ suite chunk_registry_suite = [] {
                 if (existing_prefix) {
                     chunk_registry cr { dir.path(), settings };
                     cr.accept_anything_or_throw({}, *chain.tip, [&] { cr.add_buffer(0, uint8_vector { first }); });
-                    cr.checkpoint();
+                    cr.save_state();
                     saved_tip = cr.tip();
                 } else {
                     write_unregistered_chunk(dir.path(), first);
@@ -740,7 +756,7 @@ suite chunk_registry_suite = [] {
                 cr.accept_anything_or_throw({}, *chain.tip, [&] {
                     cr.add_buffer(0, uint8_vector { static_cast<buffer>(chain.data).subbuf(0, prefix_size) });
                 });
-                cr.checkpoint();
+                cr.save_state();
                 saved_tip = cr.tip();
             }
             const auto path = write_unregistered_chunk(dir.path(),

@@ -15,7 +15,7 @@ namespace turbo::cardano::network {
 
     struct version_config_t {
         uint64_t min=14;
-        uint64_t max=15;
+        uint64_t max=999;
     };
 
     enum class protocol_t: uint8_t {

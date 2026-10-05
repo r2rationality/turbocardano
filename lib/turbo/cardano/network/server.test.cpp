@@ -150,22 +150,22 @@ suite cardano_network_server_suite = [] {
         const network::address listen_addr { "127.0.0.1", "9876" };
         const auto chainsync_h = std::make_shared<chainsync::handler>(cr);
         const auto blockfetch_14_h = std::make_shared<blockfetch::handler>(cr);
-        const auto blockfetch_15_h = std::make_shared<blockfetch::handler>(cr, blockfetch::config_t { .block_compression=true });
+        const auto blockfetch_999_h = std::make_shared<blockfetch::handler>(cr, blockfetch::config_t { .block_compression=true });
         const version_config_t v14 { 14, 14 };
-        const version_config_t v14v15 { 14, 15 };
+        const version_config_t v14v999 { 14, 999 };
 
         const multiplexer_config_t cfg {
             { mini_protocol::handshake, [&](const auto &) {
                 return std::make_shared<handshake::handler>(
                     handshake::version_map {
                         { 14, handshake::node_to_node_version_data_t { cr->config().byron_protocol_magic, false, false, false } },
-                        { 15, handshake::node_to_node_version_data_t { cr->config().byron_protocol_magic, false, false, false } }
+                        { 999, handshake::node_to_node_version_data_t { cr->config().byron_protocol_magic, false, false, false } }
                     },
-                    15
+                    999
                 );
             } },
             { mini_protocol::chain_sync, [&](const auto &) { return chainsync_h; } },
-            { mini_protocol::block_fetch, [&](const auto &res) { return res.version == 15 ? blockfetch_15_h : blockfetch_14_h; } }
+            { mini_protocol::block_fetch, [&](const auto &res) { return res.version == 999 ? blockfetch_999_h : blockfetch_14_h; } }
         };
         "connection limits, response failures, and shutdown release clients"_test = [&] {
             using tcp = boost::asio::ip::tcp;
@@ -341,7 +341,7 @@ suite cardano_network_server_suite = [] {
             server srv { listen_addr, std::move(test_cfg), iow, cr->config() };
             ioc.run_for(std::chrono::milliseconds { 10 });
             std::stop_source stop;
-            const auto c = client_manager_async::get().connect(listen_addr, compressed ? v14v15 : v14, cr->config(), iow);
+            const auto c = client_manager_async::get().connect(listen_addr, compressed ? v14v999 : v14, cr->config(), iow);
             c->set_stop_token(stop.get_token());
             boost::asio::steady_timer deadline { ioc };
             size_t messages = 0;
@@ -672,7 +672,7 @@ suite cardano_network_server_suite = [] {
                 {
                     auto work_guard = boost::asio::make_work_guard(iow->io_context());
                     server s { listen_addr, multiplexer_config_t { cfg }, iow, cr->config() };
-                    auto client = client_manager_async::get().connect(listen_addr, v14v15, cr->config(), iow);
+                    auto client = client_manager_async::get().connect(listen_addr, v14v999, cr->config(), iow);
                     const point2 from { 74044592, block_hash::from_hex("9903904F8A09D48FDAF19646D0907403536AFD6BE85C9BD7038A58BF0267A1AA") };
                     const point2 to { 74044785, block_hash::from_hex("43D6618AC1DC787EBCFEB99032109EBDA7A478723AA764A205773AE21C3EF743") };
                     client->fetch_blocks(from, to, [&, to](auto &&resp) {

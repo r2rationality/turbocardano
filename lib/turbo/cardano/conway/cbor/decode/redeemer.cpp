@@ -45,6 +45,8 @@ namespace turbo::cardano::conway {
         if (!key_it.done()) [[unlikely]]
             throw error("unexpected trailing Conway redeemer key elements");
         auto &value = it.read_val(std::move(key));
+        if (value.indefinite()) [[unlikely]]
+            throw error{"conway::redeemer_t::value_t rejects indefinite array encoding!"};
         auto &value_it = value.array();
         auto &data_value = value_it.read();
         plutus::data::validate_cbor(data_value);

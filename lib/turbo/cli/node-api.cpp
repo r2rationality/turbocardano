@@ -21,7 +21,7 @@
 namespace turbo::cli::node_api {
     using namespace turbo::cardano::network;
 
-    // Signals must remain responsive while the main thread waits for a checkpoint.
+    // Signals must remain responsive while the main thread waits for a snapshot.
     struct shutdown_signals {
         shutdown_signals()
         {
@@ -49,7 +49,7 @@ namespace turbo::cli::node_api {
             _signals.async_wait([this](const auto &ec, const int signal) {
                 if (ec) return;
                 if (_received) {
-                    logger::warn("second shutdown signal received; forcing exit without waiting for the checkpoint");
+                    logger::warn("second shutdown signal received; forcing exit without waiting for the snapshot");
                     std::_Exit(128 + signal);
                 }
                 _received = true;
@@ -75,7 +75,7 @@ namespace turbo::cli::node_api {
             cmd.opts.emplace("no-sync", "serve the stored chain without connecting to an upstream peer");
             cmd.opts.emplace("peer-host", "follow this peer instead of a random topology peer");
             cmd.opts.try_emplace("peer-port", "upstream peer TCP port", "3001");
-            cmd.opts.try_emplace("snapshot-interval", "minimum seconds between live checkpoints", "600");
+            cmd.opts.try_emplace("snapshot-interval", "minimum seconds between live snapshots", "600");
         }
 
         void run(const arguments &args, const options &opts) const override

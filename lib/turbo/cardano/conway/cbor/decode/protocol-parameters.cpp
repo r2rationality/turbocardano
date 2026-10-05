@@ -23,7 +23,7 @@ namespace turbo::cardano {
                 case 5: upd.key_deposit.emplace(u.uint()); break;
                 case 6: upd.pool_deposit.emplace(u.uint()); break;
                 case 7: upd.e_max.emplace(numeric_cast<uint32_t>(u.uint())); break;
-                case 8: upd.n_opt.emplace(u.uint()); break;
+                case 8: upd.n_opt.emplace(numeric_cast<uint16_t>(u.uint())); break;
                 case 9: upd.pool_pledge_influence = decltype(upd.pool_pledge_influence)::value_type::from_cbor(u); break;
                 case 10: upd.expansion_rate = decltype(upd.expansion_rate)::value_type::from_cbor(u); break;
                 case 11: upd.treasury_growth_rate = decltype(upd.treasury_growth_rate)::value_type::from_cbor(u); break;
@@ -33,9 +33,9 @@ namespace turbo::cardano {
                 case 19: upd.ex_unit_prices = decltype(upd.ex_unit_prices)::value_type::from_cbor(u); break;
                 case 20: upd.max_tx_ex_units = decltype(upd.max_tx_ex_units)::value_type::from_cbor(u); break;
                 case 21: upd.max_block_ex_units = decltype(upd.max_block_ex_units)::value_type::from_cbor(u); break;
-                case 22: upd.max_value_size.emplace(u.uint()); break;
-                case 23: upd.max_collateral_pct.emplace(u.uint()); break;
-                case 24: upd.max_collateral_inputs.emplace(u.uint()); break;
+                case 22: upd.max_value_size.emplace(numeric_cast<uint32_t>(u.uint())); break;
+                case 23: upd.max_collateral_pct.emplace(numeric_cast<uint16_t>(u.uint())); break;
+                case 24: upd.max_collateral_inputs.emplace(numeric_cast<uint16_t>(u.uint())); break;
                 case 25: upd.pool_voting_thresholds = decltype(upd.pool_voting_thresholds)::value_type::from_cbor(u); break;
                 case 26: upd.drep_voting_thresholds = decltype(upd.drep_voting_thresholds)::value_type::from_cbor(u); break;
                 case 27: upd.committee_min_size.emplace(numeric_cast<uint16_t>(u.uint())); break;

@@ -78,7 +78,7 @@ namespace turbo::sync::p2p {
         void follow(std::stop_token, const std::function<void(const cardano::optional_point &)> &on_update,
             std::optional<cardano::network::address> addr={},
             const cardano::network::version_config_t &versions={},
-            std::chrono::seconds checkpoint_interval=std::chrono::seconds { 600 });
+            std::chrono::seconds snapshot_interval=std::chrono::seconds { 600 });
     private:
         struct impl;
         std::unique_ptr<impl> _impl;

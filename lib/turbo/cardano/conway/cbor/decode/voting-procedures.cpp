@@ -6,12 +6,6 @@
 #include <turbo/cardano/conway/transaction.hpp>
 
 namespace turbo::cardano {
-    gov_action_id_t gov_action_id_t::from_cbor(cbor::zero2::value &v)
-    {
-        auto &it = v.array();
-        return { it.read().bytes(), numeric_cast<uint16_t>(it.read().uint()) };
-    }
-
     voter_t::type_t voter_type_from_cbor(cbor::zero2::value &v)
     {
         switch (const auto typ = v.uint(); typ) {
@@ -42,6 +36,8 @@ namespace turbo::cardano {
 
     voting_procedure_t voting_procedure_t::from_cbor(cbor::zero2::value &v)
     {
+        if (v.indefinite()) [[unlikely]]
+            throw error{"voting_procedure_t rejects indefinite array encoding in pre-dijkstra eras!"};
         auto &it = v.array();
         return { vote_from_cbor(it.read()), decltype(anchor)::from_cbor(it.read()) };
     }

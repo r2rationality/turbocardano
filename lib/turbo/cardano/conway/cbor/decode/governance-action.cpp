@@ -5,15 +5,40 @@
 
 #include <turbo/cardano/common/cert.hpp>
 
+namespace turbo::cardano::conway {
+    protocol_version_t protocol_version_t::from_cbor(cbor::zero2::value &v)
+    {
+        protocol_version_t res { cardano::protocol_version::from_cbor(v) };
+        if (res.major > 12) [[unlikely]]
+            throw error{"unsupported Conway protocol major version: {}", res.major};
+        return res;
+    }
+}
+
 namespace turbo::cardano {
+    gov_action_id_t gov_action_id_t::from_cbor(cbor::zero2::value &v)
+    {
+        if (v.indefinite()) [[unlikely]]
+            throw error{"gov_action_id_t rejects indefinite array encoding in pre-dijkstra eras!"};
+        auto &it = v.array();
+        return { it.read().bytes(), numeric_cast<uint16_t>(it.read().uint()) };
+    }
+
     anchor_t anchor_t::from_cbor(cbor::zero2::value &v)
     {
+        if (v.indefinite()) [[unlikely]]
+            throw error{"anchor_t rejects indefinite array encoding in pre-dijkstra eras!"};
         auto &it = v.array();
-        return { std::string { it.read().text() }, it.read().bytes() };
+        const auto url = it.read().text();
+        if (url.size() > 128U) [[unlikely]]
+            throw error{"anhor_t::url must be <= 128 bytes but got: {}", url.size()};
+        return {std::string{url}, it.read().bytes()};
     }
 
     constitution_t constitution_t::from_cbor(cbor::zero2::value &v)
     {
+        if (v.indefinite()) [[unlikely]]
+            throw error{"constitution_t rejects indefinite array encoding in pre-dijkstra eras!"};
         auto &it = v.array();
         return { decltype(anchor)::from_cbor(it.read()), decltype(policy_id)::from_cbor(it.read()) };
     }
@@ -30,8 +55,8 @@ namespace turbo::cardano {
     gov_action_t::hard_fork_init_t gov_action_t::hard_fork_init_t::from_cbor(cbor::zero2::array_reader &it)
     {
         return {
-            optional_gov_action_id_t::from_cbor(it.read()),
-            protocol_version::from_cbor(it.read())
+            decltype(prev_action_id)::from_cbor(it.read()),
+            decltype(protocol_ver)::from_cbor(it.read())
         };
     }
 

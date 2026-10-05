@@ -48,12 +48,19 @@ namespace turbo::cardano {
 
     relay_host relay_host::from_cbor(cbor::zero2::array_reader &it)
     {
-        return { decltype(port)::from_cbor(it.read()), std::string { it.read().text() } };
+        const auto port = decltype(relay_host::port)::from_cbor(it.read());
+        const auto host = it.read().text();
+        if (host.size() > 128U) [[unlikely]]
+            throw error{"conway::relay_host must not be larger than 128 characters but got {}!", host.size()};
+        return {std::move(port), std::string{host}};
     }
 
     relay_dns relay_dns::from_cbor(cbor::zero2::array_reader &it)
     {
-        return { std::string { it.read().text() } };
+        const auto name = it.read().text();
+        if (name.size() > 128U) [[unlikely]]
+            throw error{"conway::relay_dns name must not be larger than 128 characters but got {}!", name.size()};
+        return {std::string{name}};
     }
 
     relay_info relay_info::from_cbor(cbor::zero2::value &v)

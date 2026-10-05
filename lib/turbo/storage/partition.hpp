@@ -69,8 +69,19 @@ namespace turbo::storage {
         using storage_type = std::vector<partition>;
         using const_iterator = storage_type::const_iterator;
 
+        struct config_t {
+            std::optional<uint64_t> first_epoch {};
+            std::optional<uint64_t> last_epoch {};
+            size_t num_parts;
+        };
+
         explicit partition_map(const chunk_registry &cr, const size_t num_parts=256):
-            partition_map { _chunk_partitions(cr, num_parts) }
+            partition_map { cr, config_t { .num_parts=num_parts } }
+        {
+        }
+
+        partition_map(const chunk_registry &cr, const config_t &cfg):
+            partition_map { _chunk_partitions(cr, cfg) }
         {
         }
 
@@ -116,7 +127,7 @@ namespace turbo::storage {
     private:
         const storage_type _parts;
 
-        static storage_type _chunk_partitions(const chunk_registry &cr, size_t num_parts);
+        static storage_type _chunk_partitions(const chunk_registry &cr, const config_t &cfg);
 
         const_iterator _find_it(const uint64_t offset) const
         {

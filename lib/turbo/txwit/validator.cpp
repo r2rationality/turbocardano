@@ -298,13 +298,19 @@ namespace turbo::txwit {
         }
 
         void apply(storage::chunk_cptr_list chunks, const optional_point &from,
-            const optional_point &to, const witness_type type)
+            const optional_point &to, const witness_type type, const std::function<bool()> &before_apply)
         {
             _cfg.intersection = from;
             _cfg.to = to;
             _cfg.typ = type;
             _cfg.replay_offset = _st.end_offset();
-            _processor.refresh();
+            const auto ready_to_apply = [&] {
+                if (before_apply && !before_apply())
+                    return false;
+                // Epoch setup may have changed the protocol parameters during preparation.
+                _processor.refresh();
+                return true;
+            };
             std::ranges::sort(chunks, {}, &storage::chunk_info::offset);
             std::vector<storage::chunk_cptr_list> batches;
             for (const auto *chunk: chunks) {
@@ -316,8 +322,10 @@ namespace turbo::txwit {
                 }
                 batches.back().push_back(chunk);
             }
-            if (batches.empty())
+            if (batches.empty()) {
+                ready_to_apply();
                 return;
+            }
             const auto batch_bytes = [&](const size_t i) {
                 size_t size = 0;
                 for (const auto *chunk: batches[i])
@@ -329,7 +337,8 @@ namespace turbo::txwit {
                     _direct = std::make_unique<batch_info>();
                 _direct->reset();
                 _prepare(batches.front(), 0, true, false, *_direct);
-                _apply(*_direct);
+                if (ready_to_apply())
+                    _apply(*_direct);
                 return;
             }
             _direct.reset();
@@ -344,11 +353,12 @@ namespace turbo::txwit {
                     if (entry.value.valid())
                         entry.value.wait();
             }};
+            const auto preparation_limit = witness_work_policy_t::preparation_limit(_cr.sched().num_workers());
             size_t next = 0, pending_bytes = 0;
             const auto replenish = [&] {
                 while (next < batches.size() && pending.size() < _cr.sched().num_workers()) {
                     const auto bytes = batch_bytes(next);
-                    if (!pending.empty() && pending_bytes + bytes > witness_work_policy_t::preparation_limit) {
+                    if (!pending.empty() && pending_bytes + bytes > preparation_limit) {
                         break;
                     }
                     const auto bi = next++;
@@ -361,10 +371,17 @@ namespace turbo::txwit {
                     });
                     pending.push_back({ task->get_future(), bytes });
                     pending_bytes += bytes;
-                    _cr.sched().submit("txwit-prepare", -static_cast<int64_t>(bi), [task] { (*task)(); });
+                    // Feed the ledger updater (400) ahead of parsing (100-199).
+                    // Prefer earlier batches; cap before converting so even a
+                    // fragmented epoch or long standalone run stays in 200-399.
+                    const auto priority = 399 - static_cast<int64_t>(std::min<size_t>(bi, 199));
+                    _cr.sched().submit("txwit-prepare", priority, [task] { (*task)(); });
                 }
             };
+            // Fill the preparation window before epoch setup, within the worker and memory limits.
             replenish();
+            if (!ready_to_apply())
+                return;
             while (!pending.empty()) {
                 auto part = pending.front().value.get();
                 _apply(*part);
@@ -843,8 +860,18 @@ namespace turbo::txwit {
             static constexpr size_t direct_limit = 1U << 20;
             static constexpr size_t cache_limit = 4U << 20;
             // Raw input budget; decoded witness structures require additional memory.
-            static constexpr size_t preparation_limit = 256U << 20;
-            static constexpr size_t chunks_per_batch = 2;
+            static constexpr size_t preparation_bytes_per_worker = size_t { 64 } << 20;
+            static constexpr size_t chunks_per_batch = 1;
+
+            static size_t preparation_limit(const size_t workers)
+            {
+                const auto count = std::max<size_t>(1, workers);
+                if (count > std::numeric_limits<size_t>::max() / preparation_bytes_per_worker) [[unlikely]] {
+                    throw error("witness preparation budget overflow: requested workers: {} bytes_per_buffer: {}",
+                        workers, preparation_bytes_per_worker);
+                }
+                return count * preparation_bytes_per_worker;
+            }
         };
         const chunk_registry &_cr;
         state &_st;
@@ -1037,9 +1064,9 @@ namespace turbo::txwit {
     void processor::cache(const block_hash &hash, const buffer bytes) { _impl->cache(hash, bytes); }
 
     void processor::apply(storage::chunk_cptr_list chunks, const optional_point &from,
-        const optional_point &to, const witness_type type)
+        const optional_point &to, const witness_type type, const std::function<bool()> &before_apply)
     {
-        _impl->apply(std::move(chunks), from, to, type);
+        _impl->apply(std::move(chunks), from, to, type, before_apply);
     }
 
     optional_point validate(const chunk_registry &cr, const optional_point &intersection, const optional_point &to,

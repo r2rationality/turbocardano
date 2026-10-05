@@ -6,6 +6,13 @@
 
 #include <turbo/cardano/common/types.hpp>
 
+namespace turbo::cardano::conway {
+    struct protocol_version_t: cardano::protocol_version {
+        static protocol_version_t from_cbor(cbor::zero2::value &);
+        bool operator==(const protocol_version_t &) const =default;
+    };
+}
+
 namespace turbo::cardano {
     struct stake_reg_cert {
         stake_ident stake_id {};
@@ -304,7 +311,7 @@ namespace turbo::cardano {
 
         struct hard_fork_init_t {
             optional_gov_action_id_t prev_action_id {};
-            protocol_version protocol_ver {};
+            conway::protocol_version_t protocol_ver {};
 
             static constexpr auto serialize(auto &archive, auto &self)
             {
@@ -673,6 +680,9 @@ namespace turbo::cardano {
 }
 
 namespace fmt {
+    template<>
+    struct formatter<turbo::cardano::conway::protocol_version_t>: formatter<turbo::cardano::protocol_version> {};
+
     template<>
     struct formatter<turbo::cardano::reward_source>: formatter<uint64_t> {
         template<typename FormatContext>

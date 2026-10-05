@@ -13,15 +13,7 @@ namespace turbo::cardano::babbage::detail {
         auto &tag = v.tag();
         if (tag.id() != 24) [[unlikely]]
             throw error(fmt::format("expected a tag with id 24 but got: {}", tag.id()));
-        auto &script_bytes = tag.read();
-        uint8_vector storage {};
-        buffer script_data {};
-        if (script_bytes.indefinite()) {
-            script_bytes.to_bytes(storage);
-            script_data = storage;
-        } else {
-            script_data = script_bytes.bytes();
-        }
+        const auto script_data = tag.read().bytes();
         cbor::zero2::decoder dec { script_data };
         auto script = decode_script(dec.read());
         if (!dec.done()) [[unlikely]]

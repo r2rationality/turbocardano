@@ -33,6 +33,8 @@ namespace turbo::cardano {
 
     ex_unit_prices ex_unit_prices::from_cbor(cbor::zero2::value &v)
     {
+        if (v.indefinite()) [[unlikely]]
+            throw error{"ex_unit_prices rejects indefinite array encoding in pre-dijkstra eras!"};
         auto &it = v.array();
         ex_unit_prices res { decltype(mem)::from_cbor(it.read()), decltype(steps)::from_cbor(it.read()) };
         if (!it.done()) [[unlikely]]
@@ -42,13 +44,14 @@ namespace turbo::cardano {
 
     ex_units ex_units::from_cbor(cbor::zero2::value &v)
     {
+        if (v.indefinite()) [[unlikely]]
+            throw error{"ex_units rejects indefinite array encoding in pre-dijkstra eras!"};
         auto &it = v.array();
         ex_units res {
             it.read().uint(),
             it.read().uint()
         };
-        if (res.mem > std::numeric_limits<int64_t>::max()
-                || res.steps > std::numeric_limits<int64_t>::max()) [[unlikely]]
+        if (res.mem > std::numeric_limits<int64_t>::max() || res.steps > std::numeric_limits<int64_t>::max()) [[unlikely]]
             throw error("execution units exceed max_int64");
         if (!it.done()) [[unlikely]]
             throw error("unexpected trailing ex_units elements");

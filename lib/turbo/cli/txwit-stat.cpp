@@ -22,15 +22,20 @@ namespace turbo::cli::txwit_stat {
             cmd.name = "txwit-stat";
             cmd.desc = "Print statistics tx witnesses";
             cmd.args.expect({ "<data-dir>" });
+            cmd.opts.try_emplace("epoch", "count witnesses only in the given epoch");
         }
 
-        void run(const arguments &args) const override
+        void run(const arguments &args, const options &opts) const override
         {
             const auto &data_dir = args.at(0);
             const chunk_registry cr { data_dir, chunk_registry_settings_t { .mode=chunk_registry::mode::store } };
+            std::optional<uint64_t> epoch {};
+            if (const auto it = opts.find("epoch"); it != opts.end() && it->second)
+                epoch.emplace(std::stoull(*it->second));
+            const storage::partition_map partitions{cr, {.first_epoch=epoch, .last_epoch=epoch, .num_parts=1024}};
             mutex::unique_lock::mutex_type all_mutex alignas(mutex::alignment) {};
             part_info all {};
-            storage::parse_parallel<part_info>(cr, 1024,
+            storage::parse_parallel<part_info>(cr, partitions,
                 [&](auto &part, const auto &blk) {
                     ++part.num_blocks;
                     blk->foreach_tx([&](const auto &tx) {

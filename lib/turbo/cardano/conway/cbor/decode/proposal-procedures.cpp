@@ -8,6 +8,8 @@
 namespace turbo::cardano {
     proposal_procedure_t proposal_procedure_t::from_cbor(cbor::zero2::value &v)
     {
+        if (v.indefinite()) [[unlikely]]
+            throw error{"proposal_procedure_t rejects indefinite array encoding in pre-dijkstra eras!"};
         auto &it = v.array();
         const auto deposit = it.read().uint();
         const reward_id_t return_addr { it.read().bytes() };

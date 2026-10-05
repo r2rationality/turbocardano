@@ -84,7 +84,7 @@ suite turbo_sync_base_suite = [] {
         expect_equal(false, optional_point{point{{}, 0U}} < target);
         "partial sync saves only at completion"_test = [] {
             for (const bool fail_after_progress: { false, true }) {
-                const file::tmp_directory dir { "sync-final-checkpoint" };
+                const file::tmp_directory dir { "sync-final-snapshot" };
                 const auto chain = gen_chain({ .height=3 });
                 file_remover remover;
                 chunk_registry cr { dir.path(), chunk_registry_settings_t { .validate_vrf=false, .ccfg=chain.cardano_cfg, .fr=remover } };

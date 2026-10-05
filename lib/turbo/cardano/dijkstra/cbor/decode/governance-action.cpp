@@ -6,14 +6,12 @@
 
 namespace turbo::cardano::dijkstra {
     namespace {
-        protocol_version protocol_version_from_cbor(cbor::zero2::value &v)
+        auto protocol_version_from_cbor(cbor::zero2::value &v)
         {
-            auto &it = v.array();
-            protocol_version res { it.read().uint(), numeric_cast<uint32_t>(it.read().uint()) };
+            decltype(gov_action_t::hard_fork_init_t::protocol_ver) res { cardano::protocol_version::from_cbor(v) };
+            res.minor = numeric_cast<uint32_t>(res.minor);
             if (res.major > 13) [[unlikely]]
                 throw error(fmt::format("unsupported Dijkstra protocol major version: {}", res.major));
-            if (!it.done()) [[unlikely]]
-                throw error("unexpected trailing Dijkstra protocol version elements");
             return res;
         }
     }

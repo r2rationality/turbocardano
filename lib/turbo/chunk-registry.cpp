@@ -271,152 +271,10 @@ namespace turbo {
             out(chunks, compression_levels).or_throw();
             file::write(path, state_data);
         }
-    }
-
-    namespace {
-        void link_checkpoint_file(const std::filesystem::path &from, const std::filesystem::path &to)
-        {
-            std::filesystem::create_directories(to.parent_path());
-            if (std::filesystem::exists(to) && std::filesystem::equivalent(from, to))
-                return;
-            const auto tmp = to.string() + ".restore";
-            std::error_code ec;
-            std::filesystem::remove(tmp, ec);
-            std::filesystem::create_hard_link(from, tmp);
-            std::filesystem::rename(tmp, to);
-        }
 
         std::filesystem::path snapshot_relative_path(const uint64_t offset)
         {
             return std::filesystem::path { "validate" } / fmt::format("ledger-{:013}.bin", offset);
-        }
-
-        struct checkpoint_manifest_t {
-            static constexpr uint64_t current_version = 2;
-
-            std::filesystem::path directory;
-            uint64_t version;
-            uint64_t offset;
-            uint64_t height;
-            std::string hash;
-            std::vector<std::filesystem::path> files;
-            validator::snapshot_set snapshots;
-
-            explicit checkpoint_manifest_t(const std::filesystem::path &dir): directory { dir }
-            {
-                const auto manifest = json::load((dir / "manifest.json").string());
-                version = json::value_to<uint64_t>(manifest.at("version"));
-                if (version != 1 && version != current_version)
-                    throw error("unsupported checkpoint version");
-                offset = json::value_to<uint64_t>(manifest.at("offset"));
-                height = json::value_to<uint64_t>(manifest.at("height"));
-                hash = json::value_to<std::string>(manifest.at("hash"));
-                for (const auto &file: manifest.at("files").as_array()) {
-                    files.emplace_back(json::value_to<std::string>(file));
-                    if (!std::filesystem::exists(dir / files.back()))
-                        throw error("checkpoint file is missing");
-                }
-                for (const auto &required: { "index/state.json", "validate/state.json" })
-                    if (std::ranges::find(files, std::filesystem::path { required }) == files.end())
-                        throw error("checkpoint metadata is missing from the manifest");
-                uint64_t indexed_offset = 0;
-                const auto index_state = json::load((dir / "index/state.json").string());
-                for (const auto &value: index_state.as_array()) {
-                    const auto slice = indexer::merger::slice::from_json(value.as_object());
-                    if (slice.offset != indexed_offset || slice.offset > offset || slice.size > offset - slice.offset)
-                        throw error("checkpoint index slices do not form a continuous prefix");
-                    indexed_offset = slice.end_offset();
-                }
-                if (indexed_offset != offset)
-                    throw error("checkpoint index boundary does not match its manifest");
-                const auto state = json::load((dir / "validate/state.json").string());
-                if (version == current_version && state.as_array().size() != 1)
-                    throw error("checkpoint must contain exactly one ledger snapshot");
-                for (const auto &value: state.as_array()) {
-                    auto snap = validator::snapshot::from_json(value);
-                    if (snap.end_offset > offset || (version == current_version && snap.end_offset != offset))
-                        throw error("checkpoint ledger boundary does not match its manifest");
-                    if (std::ranges::find(files, snapshot_relative_path(snap.end_offset)) == files.end())
-                        throw error("ledger snapshot is missing from the manifest");
-                    snapshots.emplace(std::move(snap));
-                }
-            }
-
-            bool matches(const cardano::point &point) const
-            {
-                return offset == point.end_offset && height == point.height && hash == fmt::format("{}", point.hash);
-            }
-
-            bool belongs_to(const storage::chunk_map &chunks) const
-            {
-                if (!offset)
-                    return true;
-                const auto chunk = chunks.lower_bound(offset - 1);
-                if (chunk == chunks.end())
-                    return false;
-                const auto &blocks = chunk->second.blocks;
-                const auto block = std::ranges::lower_bound(blocks, offset, {}, &storage::block_info::end_offset);
-                return block != blocks.end() && matches(block->point());
-            }
-        };
-
-        std::vector<checkpoint_manifest_t> read_checkpoints(const std::filesystem::path &root)
-        {
-            std::vector<checkpoint_manifest_t> checkpoints;
-            if (std::filesystem::exists(root)) {
-                for (const auto &entry: std::filesystem::directory_iterator(root)) {
-                    if (!std::filesystem::exists(entry.path() / "manifest.json"))
-                        continue;
-                    try {
-                        checkpoints.emplace_back(entry.path());
-                    } catch (const std::exception &ex) {
-                        logger::warn("ignoring incomplete checkpoint {}: {}", entry.path().string(), ex.what());
-                    }
-                }
-            }
-            std::ranges::sort(checkpoints, [](const auto &a, const auto &b) {
-                return std::tie(a.offset, a.directory) < std::tie(b.offset, b.directory);
-            });
-            return checkpoints;
-        }
-
-        void restore_checkpoint(const std::filesystem::path &data_dir, const storage::chunk_map &chunks)
-        {
-            const auto root = data_dir / "checkpoints";
-            if (!std::filesystem::exists(root))
-                return; // legacy database: recover its independent processor positions
-            auto candidates = read_checkpoints(root);
-            std::erase_if(candidates, [&](const auto &checkpoint) { return !checkpoint.belongs_to(chunks); });
-            if (!candidates.empty()) {
-                const auto &newest = candidates.back();
-                for (const auto &file: newest.files)
-                    link_checkpoint_file(newest.directory / file, data_dir / file);
-                validator::snapshot_set snapshots;
-                for (const auto &candidate: candidates | std::views::reverse) {
-                    if (snapshots.size() == 2)
-                        break;
-                    for (const auto &snap: candidate.snapshots | std::views::reverse) {
-                        if (snapshots.size() == 2)
-                            break;
-                        if (snapshots.emplace(snap).second) {
-                            const auto file = snapshot_relative_path(snap.end_offset);
-                            link_checkpoint_file(candidate.directory / file, data_dir / file);
-                        }
-                    }
-                }
-                json::array state;
-                for (const auto &snap: snapshots)
-                    state.emplace_back(snap.to_json());
-                json::save_pretty((data_dir / "validate/state.json").string(), state);
-                logger::info("restored coordinated checkpoint at offset {}", newest.offset);
-            } else {
-                // No checkpoint belongs to the stored branch. Derived state is
-                // disposable; retain blocks and rebuild from genesis.
-                std::filesystem::create_directories(data_dir / "index");
-                std::filesystem::create_directories(data_dir / "validate");
-                json::save_pretty((data_dir / "index/state.json").string(), json::array {});
-                json::save_pretty((data_dir / "validate/state.json").string(), json::array {});
-            }
         }
     }
 
@@ -454,7 +312,6 @@ namespace turbo {
         std::optional<indexer::slice_list> index_slices;
         file_remover::remove_point_map marked;
         if (settings.mode == mode::validate) {
-            restore_checkpoint(_data_dir, chunks);
             std::filesystem::create_directories(_db_dir / "chunk");
         } else {
             _require_clean_storage(scan, chunks);
@@ -619,7 +476,7 @@ namespace turbo {
     }
 
     void chunk_registry::revalidate(cardano::optional_point target,
-        const std::chrono::steady_clock::duration checkpoint_interval)
+        const std::chrono::steady_clock::duration snapshot_interval)
     {
         if (_transaction || _journal || !_validator || !_indexer) [[unlikely]] {
             throw error("revalidation requires an idle validating registry");
@@ -654,7 +511,7 @@ namespace turbo {
                 }
             }
         }};
-        _replay(chunks, {}, target, checkpoint_interval, replay_mode::revalidation);
+        _replay(chunks, {}, target, snapshot_interval, replay_mode::revalidation);
     }
 
     chunk_registry::maintenance_scan_t chunk_registry::_scan_storage() const
@@ -828,11 +685,11 @@ namespace turbo {
     }
 
     void chunk_registry::_replay(const chunk_list &chunks, const cardano::optional_point &start,
-        optional_progress_point target, const std::chrono::steady_clock::duration checkpoint_interval,
+        optional_progress_point target, const std::chrono::steady_clock::duration snapshot_interval,
         const replay_mode mode)
     {
         // Transactions can truncate or supersede these files before later
-        // batches consume them. Keep the originals available across checkpoints.
+        // batches consume them. Keep the originals available across commits.
         std::vector<std::string> paths;
         std::vector<std::shared_ptr<void>> pins;
         paths.reserve(chunks.size());
@@ -850,9 +707,9 @@ namespace turbo {
             }
         }};
         const auto start_offset = start ? start->end_offset : 0;
-        auto last_checkpoint = std::chrono::steady_clock::now();
+        auto last_snapshot = std::chrono::steady_clock::now();
         if (target) {
-            target->final_checkpoint = true;
+            target->final_snapshot = true;
         }
         size_t next = 0;
         bool external_check_failed = false;
@@ -909,10 +766,10 @@ namespace turbo {
                     batch.drain();
                     _my_prepare_tx();
                     _validator->flush();
-                    if (std::chrono::steady_clock::now() - last_checkpoint >= checkpoint_interval && next < chunks.size()) {
-                        _validator->request_checkpoint();
+                    if (std::chrono::steady_clock::now() - last_snapshot >= snapshot_interval && next < chunks.size()) {
+                        _validator->request_commit();
                     }
-                    if (checkpoint_requested()) {
+                    if (commit_requested()) {
                         break;
                     }
                 }
@@ -932,8 +789,8 @@ namespace turbo {
                 logger::warn("discarding unregistered candidate after replay failure; restored tip: {}", committed_tip);
                 return;
             }
-            checkpoint(next == chunks.size());
-            last_checkpoint = std::chrono::steady_clock::now();
+            save_state(next == chunks.size());
+            last_snapshot = std::chrono::steady_clock::now();
         } while (next < chunks.size());
         complete = true;
     }
@@ -954,142 +811,35 @@ namespace turbo {
         std::unique_ptr<storage::commit_journal> journal;
     };
 
-    std::vector<cardano::point> chunk_registry::checkpoint_points() const
-    {
-        std::vector<cardano::point> points;
-        if (_validator)
-            for (const auto &snap: _validator->snapshots() | std::views::reverse)
-                points.emplace_back(find_block_by_offset(snap.end_offset - 1).point());
-        return points;
-    }
-
-    chunk_registry::repack_stats_t chunk_registry::checkpoint(const bool force)
+    chunk_registry::repack_stats_t chunk_registry::save_state(const bool force)
     {
         if (_transaction || _journal)
-            throw error("checkpoint requires an idle registry");
+            throw error("saving state requires an idle registry");
         if (!_validator || !_indexer)
             return {};
         if (valid_end_offset() != max_end_offset())
-            throw error("checkpoint requires matching chain, index, and ledger boundaries");
-        const auto p = tip();
-        if (!p)
+            throw error("saving state requires matching chain, index, and ledger boundaries");
+        if (!tip())
             return {};
-        const auto root = _data_dir / "checkpoints";
-        _validator->checkpoint(force);
-        const auto points = checkpoint_points();
-        if (points.empty() || (!force && points.front().end_offset == _coordinated_checkpoint_offset))
+        _validator->save_snapshot(force);
+        _commit_requested.store(false, std::memory_order_release);
+        const auto &snapshots = _validator->snapshots();
+        if (snapshots.empty())
             return {};
-        std::map<uint64_t, std::filesystem::path> retained;
-        for (const auto &checkpoint: read_checkpoints(root)) {
-            if (checkpoint.version != checkpoint_manifest_t::current_version
-                    || std::ranges::none_of(points, [&](const auto &point) { return checkpoint.matches(point); }))
-                continue;
-            const auto &snapshot = *checkpoint.snapshots.begin();
-            const auto *current = _validator->snapshots().at_offset(checkpoint.offset);
-            const auto rel = snapshot_relative_path(checkpoint.offset);
-            if (current && snapshot == *current && std::filesystem::equivalent(_data_dir / rel, checkpoint.directory / rel))
-                retained.try_emplace(checkpoint.offset, checkpoint.directory);
-        }
-        std::future<std::unique_ptr<repack_plan_t>> repacking;
-        if (retained.size() != points.size()) {
-            logger::run_log_errors([&] {
-                repacking = std::async(std::launch::async, [this] {
-                    std::unique_ptr<repack_plan_t> plan;
-                    logger::run_log_errors([&] { plan = _prepare_repack(repack_mode_t::merge_closed); });
-                    return plan;
-                });
-            });
-            const auto live_slices = _indexer->slices();
-            for (const auto &point: points | std::views::reverse)
-                if (!retained.contains(point.end_offset))
-                    retained.emplace(point.end_offset, _save_checkpoint(point, live_slices));
-            logger::info("saved coordinated checkpoint at {}", points.front());
-        }
-        for (const auto &entry: std::filesystem::directory_iterator(root))
-            if (entry.is_directory() && std::ranges::none_of(retained, [&](const auto &r) { return r.second == entry.path(); }))
-                std::filesystem::remove_all(entry.path());
+        const auto snapshot_offset = snapshots.rbegin()->end_offset;
+        if (!force && snapshot_offset == _last_repack_snapshot_offset)
+            return {};
         _file_remover.remove();
         repack_stats_t repacked;
-        if (repacking.valid()) {
-            auto plan = repacking.get();
-            if (plan) {
-                const auto failure = logger::run_log_errors([&] { repacked = _commit_repack(*plan); });
-                // Optional repacking may fail before publication. A pending
-                // commit instead requires recovery before the registry is used.
-                if (failure && _journal && _journal->decided())
-                    std::rethrow_exception(failure);
-            }
-        }
-        _coordinated_checkpoint_offset = points.front().end_offset;
-        _checkpoint_requested.store(false, std::memory_order_release);
-        return repacked;
-    }
-
-    std::filesystem::path chunk_registry::_save_checkpoint(const cardano::point &point, const indexer::slice_list &live_slices)
-    {
-        const auto *snapshot = _validator->snapshots().at_offset(point.end_offset);
-        if (!snapshot)
-            throw error("checkpoint ledger snapshot is missing");
-        storage::commit_journal staging { _data_dir };
-        const auto directory = staging.stage("checkpoint");
-        const auto published = _data_dir / "checkpoints" / fmt::format("{}-{}", point.end_offset, staging.id());
-        scope_exit reset_index_paths { [&] {
-            logger::run_log_errors([&] { _sched.process(true); });
-            for (const auto &[name, index]: _indexer->indexers())
-                index->work_dir({});
-        } };
-        for (const auto &[name, index]: _indexer->indexers())
-            index->work_dir((directory / "index").string());
-        std::filesystem::create_directories(directory / "index");
-        std::filesystem::create_directories(directory / "validate");
-        indexer::slice_list slices;
-        for (const auto &slice: live_slices) {
-            if (slice.offset >= point.end_offset)
-                break;
-            if (slice.end_offset() <= point.end_offset) {
-                slices.emplace_back(slice);
-                continue;
-            }
-            indexer::merger::slice tail { slice.offset, point.end_offset - slice.offset, point.slot, "checkpoint" };
-            for (const auto &[name, index]: _indexer->indexers()) {
-                if (!index->mergeable())
-                    continue;
-                index->schedule_truncate(slice.slice_id, tail.slice_id, point.end_offset);
-            }
-            _sched.process(true);
-            slices.emplace_back(std::move(tail));
-            break;
-        }
-        json::array files;
-        const auto link_file = [&](const std::filesystem::path &relative_path) {
-            if (!std::filesystem::exists(directory / relative_path))
-                link_checkpoint_file(_data_dir / relative_path, directory / relative_path);
-            files.emplace_back(relative_path.generic_string());
-        };
-        json::array index_state;
-        for (const auto &slice: slices)
-            index_state.emplace_back(slice.to_json());
-        json::save_pretty((directory / "index/state.json").string(), index_state);
-        files.emplace_back("index/state.json");
-        for (const auto &[name, index]: _indexer->indexers()) {
-            if (!index->mergeable())
-                continue;
-            for (const auto &slice: slices) {
-                const auto filename = std::filesystem::path { index->reader_path(slice.slice_id) }.filename();
-                link_file(std::filesystem::path { "index" } / name / filename);
-            }
-        }
-        json::save_pretty((directory / "validate/state.json").string(), json::array { snapshot->to_json() });
-        files.emplace_back("validate/state.json");
-        link_file(snapshot_relative_path(snapshot->end_offset));
-        json::save_pretty((directory / "manifest.json").string(), json::object {
-            { "version", checkpoint_manifest_t::current_version }, { "offset", point.end_offset }, { "height", point.height },
-            { "hash", fmt::format("{}", point.hash) }, { "files", std::move(files) }
+        // Keep compaction tied to snapshot cadence, rather than every imported block.
+        const auto failure = logger::run_log_errors([&] {
+            repacked = repack(repack_mode_t::merge_closed);
         });
-        // A checkpoint is independent of live state and publishes with one rename.
-        std::filesystem::create_directories(published.parent_path());
-        std::filesystem::rename(directory, published);
-        return published;
+        // A decided repack must finish recovery before the registry can be used again.
+        if (failure && _journal && _journal->decided())
+            std::rethrow_exception(failure);
+        _last_repack_snapshot_offset = snapshot_offset;
+        return repacked;
     }
 
     void chunk_registry::maintenance(const bool recover_orphans)
@@ -1744,18 +1494,35 @@ namespace turbo {
 
     progress_point chunk_registry::add_buffer(const uint64_t offset, uint8_vector uncompressed, const int32_t compression_level)
     {
-        const auto compressed = zstd::compress(uncompressed, compression_level);
-        return add_buffer_trusted(offset, uncompressed, compressed, compression_level);
+        auto compressed = zstd::compress(uncompressed, compression_level);
+        return add_buffer_trusted(offset, uncompressed, std::move(compressed), compression_level);
     }
 
     progress_point chunk_registry::add_compressed(const uint64_t offset, uint8_vector compressed, const int32_t compression_level)
     {
         const auto uncompressed = zstd::decompress(compressed);
-        return add_buffer_trusted(offset, uncompressed, compressed, compression_level);
+        return add_buffer_trusted(offset, uncompressed, std::move(compressed), compression_level);
     }
 
     progress_point chunk_registry::add_buffer_trusted(const uint64_t offset, const buffer uncompressed,
         const buffer compressed, const int32_t compression_level)
+    {
+        const auto [local_path, data_hash] = _stage_compressed(uncompressed, compressed);
+        return _add(offset, local_path, uncompressed, compressed.size(), compression_level, data_hash);
+    }
+
+    progress_point chunk_registry::add_buffer_trusted(const uint64_t offset, const buffer uncompressed,
+        uint8_vector &&compressed, const int32_t compression_level)
+    {
+        const auto compressed_size = compressed.size();
+        const auto [local_path, data_hash] = _stage_compressed(uncompressed, compressed);
+        // clear() retains capacity; release the allocation before building indexes.
+        uint8_vector {}.swap(compressed);
+        return _add(offset, local_path, uncompressed, compressed_size, compression_level, data_hash);
+    }
+
+    std::pair<std::string, cardano::block_hash> chunk_registry::_stage_compressed(
+        const buffer uncompressed, const buffer compressed) const
     {
         if (!_transaction) [[unlikely]] {
             throw error("add can be executed only inside of a transaction!");
@@ -1768,14 +1535,16 @@ namespace turbo {
         const auto local_path = stage_path(std::filesystem::path { "compressed" } / rel_path);
         // The journal owns both this output and any failed-write temporary file.
         file::write(local_path, compressed);
-        return _add(offset, local_path, uncompressed, compressed.size(), compression_level, data_hash);
+        return { local_path, data_hash };
     }
 
     void chunk_registry::add_file(const uint64_t offset, const std::string &local_path, const int32_t compression_level)
     {
-        const auto compressed = file::read(local_path);
+        auto compressed = file::read(local_path);
         const auto uncompressed = zstd::decompress(compressed);
-        _add(offset, local_path, uncompressed, compressed.size(), compression_level);
+        const auto compressed_size = compressed.size();
+        uint8_vector {}.swap(compressed);
+        _add(offset, local_path, uncompressed, compressed_size, compression_level);
     }
 
     progress_point chunk_registry::_add(const uint64_t offset, const std::string &local_path,
@@ -2405,7 +2174,7 @@ namespace turbo {
             start->height = block.height;
             start->end_offset = block.end_offset();
         }
-        _checkpoint_requested.store(false, std::memory_order_release);
+        _commit_requested.store(false, std::memory_order_release);
         storage::commit_journal::recover(_data_dir, true);
         _journal = std::make_unique<storage::commit_journal>(_data_dir);
         _transaction = active_transaction { start, target };
@@ -2487,11 +2256,11 @@ namespace turbo {
         }
         _transaction_pins.clear();
         const auto target = _transaction->target;
-        const bool completed = target && target->final_checkpoint
+        const bool completed = target && target->final_snapshot
             && (target->end_offset ? num_bytes() >= target->end_offset : max_slot() >= target->slot);
         _transaction.reset();
         _journal.reset();
-        const auto failure = logger::run_log_errors([&] { checkpoint(completed); });
+        const auto failure = logger::run_log_errors([&] { save_state(completed); });
         if (failure && _journal && _journal->decided())
             std::rethrow_exception(failure);
     }

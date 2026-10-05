@@ -12,7 +12,10 @@ namespace turbo::cardano {
     protocol_version protocol_version::from_cbor(cbor::zero2::value &v)
     {
         auto &it = v.array();
-        return { it.read().uint(), it.read().uint() };
+        protocol_version res { it.read().uint(), it.read().uint() };
+        if (!it.done()) [[unlikely]]
+            throw error{"unexpected trailing protocol version elements"};
+        return res;
     }
 
     vrf_cert vrf_cert::from_cbor(cbor::zero2::value &v)

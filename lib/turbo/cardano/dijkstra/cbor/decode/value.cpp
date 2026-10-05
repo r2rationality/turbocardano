@@ -8,7 +8,9 @@ namespace turbo::cardano::dijkstra {
     value_t value_t::from_cbor(cbor::zero2::value &v)
     {
         const bool has_multiasset = v.type() == cbor::major_type::array;
-        auto decoded = conway::value_t::from_cbor(v);
+        auto decoded = has_multiasset
+            ? conway::value_t::from_cbor(v.array())
+            : conway::value_t::from_cbor(v);
         if (has_multiasset && decoded.value.assets.empty()) [[unlikely]]
             throw error("a Dijkstra multiasset value must contain at least one policy");
         return { std::move(decoded.value) };

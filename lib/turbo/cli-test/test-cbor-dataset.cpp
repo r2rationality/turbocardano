@@ -16,6 +16,7 @@
 #include <turbo/cardano/conway/block.hpp>
 #include <turbo/cardano/dijkstra/block.hpp>
 #include <turbo/cbor/encoder.hpp>
+#include <turbo/cbor/normalize.hpp>
 #include <turbo/cli/common.hpp>
 #include <turbo/json.hpp>
 #include <turbo/plutus/types-core.hpp>
@@ -26,23 +27,27 @@ namespace turbo::cli::test_cbor_dataset {
     using codec_func = std::string (*)(buffer, bool, const std::optional<uint8_vector> &);
     using codec_map = std::unordered_map<std::string, codec_func>;
 
-    template<typename T>
+    template<cardano::era_t ERA, typename T>
     struct cbor_codec {
         static buffer prepare(buffer source) { return source; }
         static buffer extract(buffer encoded) { return encoded; }
         static T decode(cbor::zero2::value &value) { return T::from_cbor(value); }
-        static void encode(cardano::era_encoder &enc, const T &value) { value.to_cbor(enc); }
+        static uint8_vector encode(const T &value) {
+            cardano::era_encoder enc{ERA};
+            value.to_cbor(enc);
+            return std::move(enc.cbor());
+        }
     };
 
     template<cardano::era_t ERA, typename T>
-    struct block_codec: cbor_codec<T> {
+    struct block_codec: cbor_codec<ERA, T> {
         static T decode(cbor::zero2::value &value) {
             return T { static_cast<uint64_t>(ERA) + 1, 0, 0, value, cardano::config::get() };
         }
     };
 
     template<cardano::era_t ERA, typename T>
-    struct header_codec: cbor_codec<T> {
+    struct header_codec: cbor_codec<ERA, T> {
         static T decode(cbor::zero2::value &value) {
             return T { static_cast<uint64_t>(ERA) + 1, value, cardano::config::get() };
         }
@@ -61,7 +66,8 @@ namespace turbo::cli::test_cbor_dataset {
         }
     };
 
-    struct plutus_data_codec: cbor_codec<plutus::data> {
+    template<cardano::era_t ERA>
+    struct plutus_data_codec: cbor_codec<ERA, plutus::data> {
         plutus::allocator alloc {};
 
         plutus::data decode(cbor::zero2::value &value) {
@@ -69,13 +75,16 @@ namespace turbo::cli::test_cbor_dataset {
         }
     };
 
-    struct datum_option_codec: cbor_codec<cardano::datum_option_t> {
-        static void encode(cardano::era_encoder &enc, const cardano::datum_option_t &value) {
+    template<cardano::era_t ERA>
+    struct datum_option_codec: cbor_codec<ERA, cardano::datum_option_t> {
+        static uint8_vector encode(const cardano::datum_option_t &value) {
+            cardano::era_encoder enc{ERA};
             cardano::babbage::detail::datum_option_to_cbor_semantic(enc, value);
+            return std::move(enc.cbor());
         }
     };
 
-    struct dijkstra_proposal_codec: cbor_codec<cardano::dijkstra::proposal_procedures_t> {
+    struct dijkstra_proposal_codec: cbor_codec<cardano::era_t::dijkstra, cardano::dijkstra::proposal_procedures_t> {
         static uint8_vector prepare(buffer source) {
             cbor::encoder enc {};
             enc.tag(258).array(1).raw_cbor(source);
@@ -88,7 +97,7 @@ namespace turbo::cli::test_cbor_dataset {
     };
 
     template<uint64_t FIELD>
-    struct dijkstra_body_field_codec: cbor_codec<cardano::dijkstra::transaction_body_t> {
+    struct dijkstra_body_field_codec: cbor_codec<cardano::era_t::dijkstra, cardano::dijkstra::transaction_body_t> {
         static uint8_vector prepare(buffer source) {
             cbor::encoder enc {};
             enc.map(4)
@@ -154,100 +163,101 @@ namespace turbo::cli::test_cbor_dataset {
         }
     };
 
-    template<cardano::era_t ERA, typename Codec>
+    template<typename CODEC>
     std::string check_sample(buffer source, bool decode_only, const std::optional<uint8_vector> &expected) {
         try {
-            // Keep wrapper bytes and any allocator alive through encoding.
-            Codec codec {};
+            CODEC codec{};
             const auto prepared = codec.prepare(source);
-            cbor::zero2::decoder dec { prepared };
+            cbor::zero2::decoder dec{prepared};
             const auto value = codec.decode(dec.read());
             if (!dec.done()) [[unlikely]]
-                throw error("the sample contains more than one top-level CBOR value");
+                throw error("decode: the sample contains more than one top-level CBOR value");
             if (!expected)
-                return "succeeded when expected to fail";
+                return "decode: succeeded when expected to fail";
             if (!decode_only) {
-                cardano::era_encoder enc { ERA };
-                codec.encode(enc, value);
-                if (codec.extract(enc.cbor()) != buffer { *expected }) [[unlikely]]
-                    return "reserialization differs from the expected output";
+                try {
+                    const auto encoded = codec.encode(value);
+                    const auto normalized = cbor::normalize(codec.extract(encoded));
+                    if (normalized != static_cast<buffer>(*expected)) [[unlikely]]
+                        return "encode: reserialization differs from the expected output";
+                } catch (const std::exception &ex) {
+                    return fmt::format("encode: {}", ex.what());
+                }
             }
         } catch (const std::exception &ex) {
             if (expected)
-                return ex.what();
+                return fmt::format("decode: {}", ex.what());
         }
         return {};
     }
 
     const codec_map &codecs_for(const fs::path &sample_dir) {
         static const codec_map conway_codecs = {
-            {"auxiliary_data", check_sample<cardano::era_t::conway, cbor_codec<cardano::conway::auxiliary_data_t>>},
-            {"block", check_sample<cardano::era_t::conway, block_codec<cardano::era_t::conway, cardano::conway::block>>},
-            {"certificate", check_sample<cardano::era_t::conway, cbor_codec<cardano::conway::certificate_t>>},
-            {"cost_models", check_sample<cardano::era_t::conway, cbor_codec<cardano::conway::cost_models_t>>},
-            {"credential", check_sample<cardano::era_t::conway, cbor_codec<cardano::credential_t>>},
-            {"datum_option", check_sample<cardano::era_t::conway, datum_option_codec>},
-            {"drep", check_sample<cardano::era_t::conway, cbor_codec<cardano::drep_t>>},
-            {"gov_action", check_sample<cardano::era_t::conway, cbor_codec<cardano::gov_action_t>>},
-            {"header", check_sample<cardano::era_t::conway, header_codec<cardano::era_t::conway, cardano::conway::block_header>>},
-            {"header_body", check_sample<cardano::era_t::conway, header_body_codec<cardano::era_t::conway, cardano::conway::block_header>>},
-            {"mint", check_sample<cardano::era_t::conway, cbor_codec<cardano::conway::mint_t>>},
-            {"native_script", check_sample<cardano::era_t::conway, cbor_codec<cardano::allegra::native_script_t>>},
-            {"plutus_data", check_sample<cardano::era_t::conway, plutus_data_codec>},
-            {"proposal_procedure", check_sample<cardano::era_t::conway, cbor_codec<cardano::proposal_procedure_t>>},
-            {"protocol_param_update", check_sample<cardano::era_t::conway, cbor_codec<cardano::param_update_t>>},
-            {"redeemer", check_sample<cardano::era_t::conway, cbor_codec<cardano::conway::redeemer_t>>},
-            {"redeemers", check_sample<cardano::era_t::conway, cbor_codec<cardano::conway::redeemers_t>>},
-            {"relay", check_sample<cardano::era_t::conway, cbor_codec<cardano::relay_info>>},
-            {"script", check_sample<cardano::era_t::conway, cbor_codec<cardano::conway::script_t>>},
-            {"transaction", check_sample<cardano::era_t::conway, cbor_codec<cardano::conway::transaction_t>>},
-            {"transaction_body", check_sample<cardano::era_t::conway, cbor_codec<cardano::conway::transaction_body_t>>},
-            {"transaction_input", check_sample<cardano::era_t::conway, cbor_codec<cardano::shelley::transaction_input_t>>},
-            {"transaction_output", check_sample<cardano::era_t::conway, cbor_codec<cardano::conway::transaction_output_t>>},
-            {"transaction_witness_set", check_sample<cardano::era_t::conway, cbor_codec<cardano::conway::transaction_witness_set_t>>},
-            {"value", check_sample<cardano::era_t::conway, cbor_codec<cardano::conway::value_t>>},
-            {"voting_procedure", check_sample<cardano::era_t::conway, cbor_codec<cardano::voting_procedure_t>>}
+            {"auxiliary_data", check_sample<cbor_codec<cardano::era_t::conway, cardano::conway::auxiliary_data_t>>},
+            {"block", check_sample<block_codec<cardano::era_t::conway, cardano::conway::block>>},
+            {"certificate", check_sample<cbor_codec<cardano::era_t::conway, cardano::conway::certificate_t>>},
+            {"cost_models", check_sample<cbor_codec<cardano::era_t::conway, cardano::conway::cost_models_t>>},
+            {"credential", check_sample<cbor_codec<cardano::era_t::conway, cardano::credential_t>>},
+            {"datum_option", check_sample<datum_option_codec<cardano::era_t::conway>>},
+            {"drep", check_sample<cbor_codec<cardano::era_t::conway, cardano::drep_t>>},
+            {"gov_action", check_sample<cbor_codec<cardano::era_t::conway, cardano::gov_action_t>>},
+            {"header", check_sample<header_codec<cardano::era_t::conway, cardano::conway::block_header>>},
+            {"header_body", check_sample<header_body_codec<cardano::era_t::conway, cardano::conway::block_header>>},
+            {"mint", check_sample<cbor_codec<cardano::era_t::conway, cardano::conway::mint_t>>},
+            {"native_script", check_sample<cbor_codec<cardano::era_t::conway, cardano::allegra::native_script_t>>},
+            {"plutus_data", check_sample<plutus_data_codec<cardano::era_t::conway>>},
+            {"proposal_procedure", check_sample<cbor_codec<cardano::era_t::conway, cardano::proposal_procedure_t>>},
+            {"protocol_param_update", check_sample<cbor_codec<cardano::era_t::conway, cardano::param_update_t>>},
+            {"redeemer", check_sample<cbor_codec<cardano::era_t::conway, cardano::conway::redeemer_t>>},
+            {"redeemers", check_sample<cbor_codec<cardano::era_t::conway, cardano::conway::redeemers_t>>},
+            {"relay", check_sample<cbor_codec<cardano::era_t::conway, cardano::relay_info>>},
+            {"script", check_sample<cbor_codec<cardano::era_t::conway, cardano::conway::script_t>>},
+            {"transaction", check_sample<cbor_codec<cardano::era_t::conway, cardano::conway::transaction_t>>},
+            {"transaction_body", check_sample<cbor_codec<cardano::era_t::conway, cardano::conway::transaction_body_t>>},
+            {"transaction_input", check_sample<cbor_codec<cardano::era_t::conway, cardano::shelley::transaction_input_t>>},
+            {"transaction_output", check_sample<cbor_codec<cardano::era_t::conway, cardano::conway::transaction_output_t>>},
+            {"transaction_witness_set", check_sample<cbor_codec<cardano::era_t::conway, cardano::conway::transaction_witness_set_t>>},
+            {"value", check_sample<cbor_codec<cardano::era_t::conway, cardano::conway::value_t>>},
+            {"voting_procedure", check_sample<cbor_codec<cardano::era_t::conway, cardano::voting_procedure_t>>}
         };
         static const codec_map dijkstra_codecs = {
-            {"account_balance_interval", check_sample<cardano::era_t::dijkstra, cbor_codec<cardano::dijkstra::account_balance_interval_t>>},
-            {"account_balance_intervals", check_sample<cardano::era_t::dijkstra, dijkstra_body_field_codec<26>>},
-            {"auxiliary_data", check_sample<cardano::era_t::dijkstra, cbor_codec<cardano::dijkstra::auxiliary_data_t>>},
-            {"block", check_sample<cardano::era_t::dijkstra, block_codec<cardano::era_t::dijkstra, cardano::dijkstra::block>>},
-            {"block_body", check_sample<cardano::era_t::dijkstra, dijkstra_block_body_codec>},
-            {"certificate", check_sample<cardano::era_t::dijkstra, cbor_codec<cardano::dijkstra::certificate_t>>},
-            {"certificates", check_sample<cardano::era_t::dijkstra, cbor_codec<cardano::dijkstra::certificates_t>>},
-            {"cost_models", check_sample<cardano::era_t::dijkstra, cbor_codec<cardano::conway::cost_models_t>>},
-            {"credential", check_sample<cardano::era_t::dijkstra, cbor_codec<cardano::credential_t>>},
-            {"datum_option", check_sample<cardano::era_t::dijkstra, datum_option_codec>},
-            {"drep", check_sample<cardano::era_t::dijkstra, cbor_codec<cardano::drep_t>>},
-            {"gov_action", check_sample<cardano::era_t::dijkstra, cbor_codec<cardano::dijkstra::governance_action_t>>},
-            {"header", check_sample<cardano::era_t::dijkstra, header_codec<cardano::era_t::dijkstra, cardano::dijkstra::block_header>>},
-            {"header_body", check_sample<cardano::era_t::dijkstra, header_body_codec<cardano::era_t::dijkstra, cardano::dijkstra::block_header>>},
-            {"native_script", check_sample<cardano::era_t::dijkstra, cbor_codec<cardano::dijkstra::native_script_t>>},
-            {"plutus_data", check_sample<cardano::era_t::dijkstra, cbor_codec<cardano::dijkstra::plutus_data_t>>},
-            {"proposal_procedure", check_sample<cardano::era_t::dijkstra, dijkstra_proposal_codec>},
-            {"proposal_procedures", check_sample<cardano::era_t::dijkstra, cbor_codec<cardano::dijkstra::proposal_procedures_t>>},
-            {"protocol_param_update", check_sample<cardano::era_t::dijkstra, cbor_codec<cardano::dijkstra::protocol_param_update_t>>},
-            {"redeemers", check_sample<cardano::era_t::dijkstra, cbor_codec<cardano::dijkstra::redeemers_t>>},
-            {"relay", check_sample<cardano::era_t::dijkstra, cbor_codec<cardano::relay_info>>},
-            {"script", check_sample<cardano::era_t::dijkstra, cbor_codec<cardano::dijkstra::script_t>>},
-            {"sub_transaction_body", check_sample<cardano::era_t::dijkstra, cbor_codec<cardano::dijkstra::sub_transaction_body_t>>},
-            {"transaction", check_sample<cardano::era_t::dijkstra, cbor_codec<cardano::dijkstra::transaction_t>>},
-            {"transaction_body", check_sample<cardano::era_t::dijkstra, cbor_codec<cardano::dijkstra::transaction_body_t>>},
-            {"transaction_input", check_sample<cardano::era_t::dijkstra, cbor_codec<cardano::shelley::transaction_input_t>>},
-            {"transaction_output", check_sample<cardano::era_t::dijkstra, cbor_codec<cardano::dijkstra::transaction_output_t>>},
-            {"transaction_witness_set", check_sample<cardano::era_t::dijkstra, cbor_codec<cardano::dijkstra::transaction_witness_set_t>>},
-            {"value", check_sample<cardano::era_t::dijkstra, cbor_codec<cardano::dijkstra::value_t>>},
-            {"voting_procedure", check_sample<cardano::era_t::dijkstra, cbor_codec<cardano::voting_procedure_t>>},
-            {"voting_procedures", check_sample<cardano::era_t::dijkstra, dijkstra_body_field_codec<19>>}
+            {"account_balance_interval", check_sample<cbor_codec<cardano::era_t::dijkstra, cardano::dijkstra::account_balance_interval_t>>},
+            {"account_balance_intervals", check_sample<dijkstra_body_field_codec<26>>},
+            {"auxiliary_data", check_sample<cbor_codec<cardano::era_t::dijkstra, cardano::dijkstra::auxiliary_data_t>>},
+            {"block", check_sample<block_codec<cardano::era_t::dijkstra, cardano::dijkstra::block>>},
+            {"block_body", check_sample<dijkstra_block_body_codec>},
+            {"certificate", check_sample<cbor_codec<cardano::era_t::dijkstra, cardano::dijkstra::certificate_t>>},
+            {"certificates", check_sample<cbor_codec<cardano::era_t::dijkstra, cardano::dijkstra::certificates_t>>},
+            {"cost_models", check_sample<cbor_codec<cardano::era_t::dijkstra, cardano::conway::cost_models_t>>},
+            {"credential", check_sample<cbor_codec<cardano::era_t::dijkstra, cardano::credential_t>>},
+            {"datum_option", check_sample<datum_option_codec<cardano::era_t::dijkstra>>},
+            {"drep", check_sample<cbor_codec<cardano::era_t::dijkstra, cardano::drep_t>>},
+            {"gov_action", check_sample<cbor_codec<cardano::era_t::dijkstra, cardano::dijkstra::governance_action_t>>},
+            {"header", check_sample<header_codec<cardano::era_t::dijkstra, cardano::dijkstra::block_header>>},
+            {"header_body", check_sample<header_body_codec<cardano::era_t::dijkstra, cardano::dijkstra::block_header>>},
+            {"native_script", check_sample<cbor_codec<cardano::era_t::dijkstra, cardano::dijkstra::native_script_t>>},
+            {"plutus_data", check_sample<cbor_codec<cardano::era_t::dijkstra, cardano::dijkstra::plutus_data_t>>},
+            {"proposal_procedure", check_sample<dijkstra_proposal_codec>},
+            {"proposal_procedures", check_sample<cbor_codec<cardano::era_t::dijkstra, cardano::dijkstra::proposal_procedures_t>>},
+            {"protocol_param_update", check_sample<cbor_codec<cardano::era_t::dijkstra, cardano::dijkstra::protocol_param_update_t>>},
+            {"redeemers", check_sample<cbor_codec<cardano::era_t::dijkstra, cardano::dijkstra::redeemers_t>>},
+            {"relay", check_sample<cbor_codec<cardano::era_t::dijkstra, cardano::relay_info>>},
+            {"script", check_sample<cbor_codec<cardano::era_t::dijkstra, cardano::dijkstra::script_t>>},
+            {"sub_transaction_body", check_sample<cbor_codec<cardano::era_t::dijkstra, cardano::dijkstra::sub_transaction_body_t>>},
+            {"transaction", check_sample<cbor_codec<cardano::era_t::dijkstra, cardano::dijkstra::transaction_t>>},
+            {"transaction_body", check_sample<cbor_codec<cardano::era_t::dijkstra, cardano::dijkstra::transaction_body_t>>},
+            {"transaction_input", check_sample<cbor_codec<cardano::era_t::dijkstra, cardano::shelley::transaction_input_t>>},
+            {"transaction_output", check_sample<cbor_codec<cardano::era_t::dijkstra, cardano::dijkstra::transaction_output_t>>},
+            {"transaction_witness_set", check_sample<cbor_codec<cardano::era_t::dijkstra, cardano::dijkstra::transaction_witness_set_t>>},
+            {"value", check_sample<cbor_codec<cardano::era_t::dijkstra, cardano::dijkstra::value_t>>},
+            {"voting_procedure", check_sample<cbor_codec<cardano::era_t::dijkstra, cardano::voting_procedure_t>>},
+            {"voting_procedures", check_sample<dijkstra_body_field_codec<19>>}
         };
 
         auto dataset_path = sample_dir;
         if (!dataset_path.has_filename())
             dataset_path = dataset_path.parent_path();
-        const auto dataset_name = dataset_path.filename().string();
-        const auto separator = dataset_name.find('-');
-        const auto era_name = dataset_name.substr(0, separator);
+        const auto era_name = dataset_path.filename().string();
         if (era_name == "conway")
             return conway_codecs;
         if (era_name == "dijkstra")
@@ -280,49 +290,47 @@ namespace turbo::cli::test_cbor_dataset {
 
             std::map<std::string, std::string> res{};
             for (const auto &e: fs::recursive_directory_iterator(sample_dir)) {
-                if (!e.is_regular_file() || e.path().extension() != ".cbor")
-                    continue;
+                static constexpr std::string_view in_ext{".input.cbor"};
+                static constexpr std::string_view exp_ext{".expected.cbor"};
                 const auto path = e.path().string();
+                if (!e.is_regular_file() || !path.ends_with(in_ext))
+                    continue;
                 const auto relative_path = e.path().lexically_relative(sample_dir);
                 const auto relative_dir = relative_path.parent_path();
                 auto part_it = relative_dir.begin();
                 if (part_it == relative_dir.end()) [[unlikely]]
-                    throw error(fmt::format("can't determine the type name from path {}", relative_path));
+                    throw error{"can't determine the type name from path {}", relative_path};
                 const auto type_name = (part_it++)->string();
                 if (part_it == relative_dir.end()) [[unlikely]]
-                    throw error(fmt::format("can't determine the test name from path {}", relative_path));
+                    throw error{"can't determine the test name from path {}", relative_path};
                 auto test_name = (part_it++)->string();
-                for (; part_it != relative_dir.end(); ++part_it)
-                    test_name += "-" + part_it->string();
+                if (part_it != relative_dir.end()) [[unlikely]]
+                    throw error{"test-case's path is too depp: {}", relative_path};
                 if (!types.empty() && std::find(types.begin(), types.end(), type_name) == types.end())
-                    continue;
-                if (test_name == "expected")
                     continue;
 
                 auto &result = res[relative_path.string()];
                 const auto codec_it = codecs.find(type_name);
                 if (codec_it == codecs.end()) {
-                    result = "unsupported";
+                    result = fmt::format("unsupported: {}", type_name);
                     continue;
                 }
                 try {
                     const auto original = file::read(path);
-                    std::optional<uint8_vector> expected {};
-                    if (test_name == "valid") {
-                        const auto expected_path = e.path().parent_path().parent_path() / "expected" / e.path().filename();
-                        expected = file::read(expected_path.string());
-                    }
+                    std::optional<uint8_vector> expected{};
+                    if (test_name == "valid")
+                        expected = file::read(std::string{path}.replace(path.size() - in_ext.size(), in_ext.size(), exp_ext));
                     result = codec_it->second(original, decode_only, expected);
                 } catch (const std::exception &ex) {
                     result = ex.what();
                 }
             }
             if (res.empty()) [[unlikely]]
-                throw error(fmt::format("dataset contains no selected CBOR files: {}", sample_dir));
+                throw error{"dataset has no samples: {} type-filters: {}", sample_dir, types.size()};
             if (results_file != opts.end()) {
                 json::object results {};
                 for (const auto &[path, message]: res)
-                    results.emplace(path, message.empty() ? json::value { true } : json::value { message });
+                    results.emplace(path, message.empty() ? static_cast<json::value>(true) : static_cast<json::value>(message));
                 json::save_pretty(*results_file->second, results);
             }
             const auto failed = std::ranges::count_if(res, [](const auto &it) {
@@ -330,7 +338,7 @@ namespace turbo::cli::test_cbor_dataset {
             });
             logger::log(failed ? logger::level::err : logger::level::info,
                 "failed: {} out of: {} pass rate: {:0.3f}%",
-                res.size(), failed, static_cast<double>(res.size() - failed) * 100 / res.size());
+                failed, res.size(), static_cast<double>(res.size() - failed) * 100 / res.size());
             {
                 std::map<std::string, size_t> error_counts {};
                 for (const auto &[path, err]: res) {

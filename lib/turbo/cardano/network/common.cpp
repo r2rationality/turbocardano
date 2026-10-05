@@ -221,7 +221,9 @@ namespace turbo::cardano::network {
 
             cbor::encoder enc {};
             miniprotocol::handshake::version_map versions {};
-            for (auto mv = _version_cfg.min; mv <= _version_cfg.max; ++mv) {
+            for (const uint64_t mv: { 14, 999 }) {
+                if (mv < _version_cfg.min || mv > _version_cfg.max)
+                    continue;
                 versions.try_emplace(mv, miniprotocol::handshake::node_to_node_version_data_t {
                         numeric_cast<uint32_t>(_protocol_magic), true, false, false });
             }
@@ -234,7 +236,8 @@ namespace turbo::cardano::network {
             std::visit([&](const auto &mv) {
                 using T = std::decay_t<decltype(mv)>;
                 if constexpr (std::is_same_v<T, miniprotocol::handshake::msg_accept_version_t>) {
-                    if (mv.version < _version_cfg.min || mv.version > _version_cfg.max) [[unlikely]]
+                    if ((mv.version != 14 && mv.version != 999)
+                            || mv.version < _version_cfg.min || mv.version > _version_cfg.max) [[unlikely]]
                         throw error(fmt::format("peer at {}:{} ignored the requested protocol version range and returned {}!", _addr.host, _addr.port, mv.version));
                     logger::info("outbound peer {}: negotiated protocol version {}", _addr, mv.version);
                 } else {

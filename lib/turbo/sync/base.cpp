@@ -35,7 +35,7 @@ namespace turbo::sync {
             logger::info("attempting to sync with {} with the tip {}; validation mode: {}", peer.id(), peer.tip(), mode);
             // An empty upstream must not cause a local rollback.
             if (!peer.tip()) {
-                _cr.checkpoint();
+                _cr.save_state();
                 return false;
             }
             const auto near_tip = peer.intersection() && peer.tip().height >= peer.intersection()->height
@@ -50,7 +50,7 @@ namespace turbo::sync {
             static constexpr size_t repack_fragment_threshold = 128;
             const auto peer_tip = cardano::point::from_point3(static_cast<cardano::point3>(peer.tip()));
             progress_point target{peer_tip};
-            target.final_checkpoint = true;
+            target.final_snapshot = true;
             // explicitly set the max slot to ensure that the progress is computed correctly
             if (!max_slot)
                 max_slot = target.slot;
@@ -91,7 +91,7 @@ namespace turbo::sync {
                     }
                 }
             }
-            _cr.checkpoint();
+            _cr.save_state();
             logger::info("the validated tip: {}", _cr.tip());
             // the new chain's tip can be smaller but have a better chain, so compare for equality here
             return start_tip != _cr.tip();

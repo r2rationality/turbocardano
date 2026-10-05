@@ -32,17 +32,10 @@ namespace turbo::cardano::shelley {
                 }
                 return metadatum_t { std::move(items) };
             }
-            case cbor::major_type::nint: {
-                const auto magnitude = v.nint();
-                if (magnitude > uint64_t { 1 } << 63) [[unlikely]]
-                    throw error("metadata negative integer is smaller than min_int64");
-                const auto value = magnitude == uint64_t { 1 } << 63
-                    ? std::numeric_limits<int64_t>::min()
-                    : -numeric_cast<int64_t>(magnitude);
-                return metadatum_t { metadatum_t::value_type { std::in_place_type<int64_t>, value } };
-            }
+            case cbor::major_type::nint:
+                return metadatum_t { nint64_t { v.nint_raw() } };
             case cbor::major_type::uint:
-                return metadatum_t { metadatum_t::value_type { std::in_place_type<nint64_t>, v.uint() } };
+                return metadatum_t { v.uint() };
             case cbor::major_type::bytes: {
                 uint8_vector bytes {};
                 v.to_bytes(bytes);

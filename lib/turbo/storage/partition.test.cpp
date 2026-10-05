@@ -36,6 +36,33 @@ suite storage_partition_suite = [] {
             }
         };
 
+        "partition_map epoch bounds"_test = [&] {
+            const epoch_partition_map epochs { cr };
+            const auto first_epoch = cr.make_slot(epochs.at(0).first_slot()).epoch();
+            const auto &last = epochs.at(epochs.size() - 1);
+            const auto last_epoch = cr.make_slot(last.last_slot()).epoch();
+            const partition_map first { cr, { .last_epoch=first_epoch, .num_parts=1 } };
+            expect_equal(first.size(), 1);
+            expect_equal(first.at(0).offset(), epochs.at(0).offset());
+            expect_equal(first.at(0).end_offset(), epochs.at(0).end_offset());
+            const partition_map tail { cr, { .first_epoch=last_epoch, .num_parts=1 } };
+            expect_equal(tail.size(), 1);
+            expect_equal(tail.at(0).offset(), last.offset());
+            expect_equal(tail.at(0).end_offset(), last.end_offset());
+            const partition_map all { cr, { .first_epoch=first_epoch, .last_epoch=last_epoch, .num_parts=4 } };
+            expect_equal(all.size(), 4);
+            uint64_t offset = 0;
+            for (const auto &part: all) {
+                expect_equal(part.offset(), offset);
+                offset = part.end_offset();
+            }
+            expect_equal(offset, cr.num_bytes());
+            const partition_map missing { cr, { .first_epoch=last_epoch + 1, .num_parts=1 } };
+            expect_equal(missing.size(), 0);
+            expect(throws([&] { partition_map { cr, { .num_parts=0 } }; }));
+            expect(throws([&] { partition_map { cr, { .first_epoch=last_epoch + 1, .last_epoch=last_epoch, .num_parts=1 } }; }));
+        };
+
         "parse_parallel"_test = [&] {
             std::atomic_uint64_t num_parsed { 0 };
             parse_parallel<uint64_t>(cr, 4,

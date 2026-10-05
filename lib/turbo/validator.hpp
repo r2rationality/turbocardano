@@ -26,11 +26,11 @@ namespace turbo::validator {
         }
 
         static bool due(uint64_t height, std::optional<uint64_t> tip_height,
-            std::optional<uint64_t> saved_height, uint64_t k, std::chrono::steady_clock::duration elapsed, bool final_checkpoint=false)
+            std::optional<uint64_t> saved_height, uint64_t k, std::chrono::steady_clock::duration elapsed, bool final_snapshot=false)
         {
             if (!near_tip(height, tip_height, k))
                 return elapsed >= catchup_interval;
-            if (final_checkpoint && tip_height && (height >= *tip_height || elapsed < catchup_interval))
+            if (final_snapshot && tip_height && (height >= *tip_height || elapsed < catchup_interval))
                 return false;
             const auto previous = saved_height.value_or(0);
             return height > previous && height - previous > k;
@@ -45,6 +45,7 @@ namespace turbo::validator {
         std::optional<uint64_t> trusted_authority_epoch;
         uint64_t certified_core_offset;
         uint64_t format_version = snapshot_format_version;
+        std::optional<cardano::block_hash> block_hash {};
 
         static snapshot from_json(const json::value &j);
         snapshot(const cardano::ledger::state &st, std::optional<uint64_t> trusted_authority_epoch_,
@@ -61,7 +62,8 @@ namespace turbo::validator {
         {
             return epoch == o.epoch && end_offset == o.end_offset && last_slot == o.last_slot
                 && exportable == o.exportable && trusted_authority_epoch == o.trusted_authority_epoch
-                && certified_core_offset == o.certified_core_offset && format_version == o.format_version;
+                && certified_core_offset == o.certified_core_offset && format_version == o.format_version
+                && block_hash == o.block_hash;
         }
 
         bool operator<(const snapshot &b) const
@@ -93,10 +95,10 @@ namespace turbo::validator {
         [[nodiscard]] const cardano::ledger::state &state() const;
         [[nodiscard]] const snapshot_set &snapshots() const;
         void load_snapshot(cardano::ledger::state &st, const snapshot &snap) const;
-        void checkpoint(bool force=true);
+        void save_snapshot(bool force=true);
         void recover();
         void flush();
-        void request_checkpoint();
+        void request_commit();
         validation_mode validation(validation_mode);
     private:
         struct impl;

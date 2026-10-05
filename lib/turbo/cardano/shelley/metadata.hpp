@@ -5,15 +5,31 @@
  * License: https://github.com/r2rationality/turbocardano/blob/main/LICENSE */
 
 #include <turbo/cardano/common/types.hpp>
+#include <compare>
 
 namespace turbo::cardano::shelley {
-    typedef uint64_t nint64_t;
+    struct nint64_t {
+        // Raw CBOR argument: the mathematical value is -1 - raw.
+        uint64_t raw;
+
+        static constexpr auto serialize(auto &archive, auto &self)
+        {
+            return archive(self.raw);
+        }
+
+        constexpr bool operator==(const nint64_t &) const = default;
+
+        constexpr auto operator<=>(const nint64_t &o) const
+        {
+            return o.raw <=> raw;
+        }
+    };
 
     struct metadatum_t {
         using array_t = std::vector<metadatum_t>;
         // Metadata maps preserve their CBOR order and may contain duplicate keys.
         using map_t = std::vector<std::pair<metadatum_t, metadatum_t>>;
-        using value_type = std::variant<int64_t, nint64_t, uint8_vector, std::string, array_t, map_t>;
+        using value_type = std::variant<nint64_t, uint64_t, uint8_vector, std::string, array_t, map_t>;
 
         value_type value;
 

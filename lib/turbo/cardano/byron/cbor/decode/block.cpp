@@ -6,6 +6,18 @@
 #include <turbo/cardano/byron/block.hpp>
 
 namespace turbo::cardano::byron {
+    protocol_version_t protocol_version_t::from_cbor(cbor::zero2::value &v)
+    {
+        auto &it = v.array_sized();
+        if (v.special_uint() != 3) [[unlikely]]
+            throw error{"Byron protocol version must contain three elements"};
+        return {
+            numeric_cast<decltype(major)>(it.read().uint()),
+            numeric_cast<decltype(minor)>(it.read().uint()),
+            numeric_cast<decltype(alt)>(it.read().uint())
+        };
+    }
+
     boundary_block::boundary_block(const uint64_t era, const uint64_t offset, const uint64_t hdr_offset, cbor::zero2::value &block, const cardano::config &cfg):
         boundary_block { era, offset, hdr_offset, block.array(), block, cfg }
     {
@@ -54,7 +66,9 @@ namespace turbo::cardano::byron {
             while (!p_it.done()) {
                 auto &r_prop = p_it.read();
                 auto &prop_it = r_prop.array();
-                param_update upd { .protocol_ver=protocol_version::from_cbor(prop_it.read()) };
+                const auto version = protocol_version_t::from_cbor(prop_it.read());
+                // The common representation omits Byron's alternative version.
+                param_update upd { .protocol_ver=protocol_version { version.major, version.minor } };
                 {
                     auto &bvermod_it = prop_it.read().array();
                     {

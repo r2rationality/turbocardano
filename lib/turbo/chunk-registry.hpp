@@ -105,7 +105,7 @@ namespace turbo {
     using epoch_map = std::map<size_t, epoch_info>;
 
     struct progress_point {
-        bool final_checkpoint = false;
+        bool final_snapshot = false;
         std::optional<uint64_t> height {};
         uint64_t slot = 0; // required to be correct
         uint64_t end_offset = 0; // can be zero; a non-zero value is used for more accurate process calculations
@@ -354,13 +354,13 @@ namespace turbo {
         // may also validate and adopt unregistered chunks.
         void maintenance(bool recover_orphans=false);
         bool continuous() const noexcept { return _continuous; }
-        std::vector<cardano::point> checkpoint_points() const;
-        repack_stats_t checkpoint(bool force=true);
-        bool checkpoint_requested() const { return _checkpoint_requested.load(std::memory_order_acquire); }
-        void request_checkpoint() { _checkpoint_requested.store(true, std::memory_order_release); }
+        // Save the ordinary ledger snapshot, reclaim obsolete files, and compact closed chunks.
+        repack_stats_t save_state(bool force=true);
+        bool commit_requested() const { return _commit_requested.load(std::memory_order_acquire); }
+        void request_commit() { _commit_requested.store(true, std::memory_order_release); }
         // Replay the registered prefix through a chunk boundary; nullopt selects genesis.
         void revalidate(cardano::optional_point target,
-            std::chrono::steady_clock::duration checkpoint_interval=validator::snapshot_policy::catchup_interval);
+            std::chrono::steady_clock::duration snapshot_interval=validator::snapshot_policy::catchup_interval);
         void before_commit(std::function<void()> check) { _before_commit = std::move(check); }
         // merge_fragmented applies the threshold per logical chunk, including the open chunk.
         repack_stats_t repack(repack_mode_t mode=repack_mode_t::full, size_t fragment_threshold=0);
@@ -372,6 +372,8 @@ namespace turbo {
         // The caller guarantees that compressed decodes exactly to uncompressed.
         // Only that correspondence is trusted; normal block/chunk validation still applies.
         progress_point add_buffer_trusted(uint64_t offset, buffer uncompressed, buffer compressed, int32_t compression_level=0);
+        // Consumes the compressed allocation after writing, before parsing/indexing.
+        progress_point add_buffer_trusted(uint64_t offset, buffer uncompressed, uint8_vector &&compressed, int32_t compression_level=0);
         void add_file(uint64_t offset, const std::string &local_path, int32_t compression_level=0);
         // Ingestion requires an explicit target; a target at slot zero is valid.
         [[nodiscard]] std::exception_ptr accept_progress(const cardano::optional_point &start, const progress_point &target, const std::function<void()> &action);
@@ -401,17 +403,16 @@ namespace turbo {
         void _recover_registered();
         enum class replay_mode { registered, orphans, revalidation };
         void _replay(const chunk_list &chunks, const cardano::optional_point &start,
-            optional_progress_point target, std::chrono::steady_clock::duration checkpoint_interval,
+            optional_progress_point target, std::chrono::steady_clock::duration snapshot_interval,
             replay_mode mode=replay_mode::registered);
 
         struct repack_plan_t;
         std::unique_ptr<repack_plan_t> _prepare_repack(repack_mode_t mode, size_t fragment_threshold=0) const;
         repack_stats_t _commit_repack(repack_plan_t &plan);
-        std::filesystem::path _save_checkpoint(const cardano::point &point, const indexer::slice_list &live_slices);
 
         const bool _continuous;
-        uint64_t _coordinated_checkpoint_offset = 0;
-        std::atomic_bool _checkpoint_requested { false };
+        uint64_t _last_repack_snapshot_offset = 0;
+        std::atomic_bool _commit_requested { false };
         std::function<void()> _before_commit {};
 
         const mode _mode;
@@ -465,6 +466,7 @@ namespace turbo {
         void _stage_state(storage::commit_journal &journal) const;
         void _commit_state(std::unique_ptr<storage::commit_journal> journal);
         void _do_truncate(const cardano::optional_point &new_tip, const bool track_changes);
+        std::pair<std::string, cardano::block_hash> _stage_compressed(buffer uncompressed, buffer compressed) const;
         progress_point _add(const uint64_t offset, const std::string &local_path, buffer uncompressed,
             uint64_t compressed_size, int32_t compression_level, std::optional<cardano::block_hash> data_hash={});
         void _add(chunk_info &&chunk, const bool normal=true);

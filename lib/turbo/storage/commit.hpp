@@ -52,7 +52,7 @@ namespace turbo::storage {
         bool decided() const noexcept { return _phase == phase::pending || _phase == phase::completed; }
         const std::string &id() const noexcept { return _id; }
 
-        // Must precede checkpoint restoration, processor loading, and cleanup.
+        // Must precede processor loading and cleanup.
         // Read-only opens reject pending commits without changing the directory.
         // Writable recovery requires registry_writer_lock and no active journals:
         // every preparing directory is treated as abandoned.

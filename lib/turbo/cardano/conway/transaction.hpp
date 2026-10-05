@@ -74,6 +74,7 @@ namespace turbo::cardano::conway {
         output_value_t value {};
 
         static value_t from_cbor(cbor::zero2::value &);
+        static value_t from_cbor(cbor::zero2::array_reader &);
         void to_cbor(era_encoder &) const;
     };
 

@@ -141,30 +141,30 @@ namespace turbo::sync::p2p {
 
         void follow(const std::stop_token stop, const std::function<void(const optional_point &)> &publish,
             const std::optional<network::address> &addr, const version_config_t &versions,
-            const std::chrono::seconds checkpoint_interval)
+            const std::chrono::seconds snapshot_interval)
         {
             auto &cr = _parent.local_chain();
-            if (!cr.continuous() || checkpoint_interval.count() <= 0)
-                throw error("follow requires a continuous registry and a positive checkpoint interval");
+            if (!cr.continuous() || snapshot_interval.count() <= 0)
+                throw error("follow requires a continuous registry and a positive snapshot interval");
             const auto previous_mode = cr.validation(validator::validation_mode::full);
             scope_exit restore_mode { [&] {
                 if (!cr.tx())
                     cr.validation(previous_mode);
             }};
-            auto last_checkpoint = std::chrono::steady_clock::now();
-            auto checkpoint_tip = cr.tip();
-            if (cr.checkpoint(false).partial_groups_merged)
+            auto last_snapshot = std::chrono::steady_clock::now();
+            auto snapshot_tip = cr.tip();
+            if (cr.save_state(false).partial_groups_merged)
                 publish(cr.tip());
-            const auto maybe_checkpoint = [&] {
+            const auto maybe_save_state = [&] {
                 const auto now = std::chrono::steady_clock::now();
-                if (cr.tip() == checkpoint_tip || now - last_checkpoint < checkpoint_interval) return;
-                last_checkpoint = now;
+                if (cr.tip() == snapshot_tip || now - last_snapshot < snapshot_interval) return;
+                last_snapshot = now;
                 try {
-                    if (cr.checkpoint(false).partial_groups_merged)
+                    if (cr.save_state(false).partial_groups_merged)
                         publish(cr.tip());
-                    checkpoint_tip = cr.tip();
+                    snapshot_tip = cr.tip();
                 } catch (const std::exception &ex) {
-                    logger::error("live checkpoint failed (will retry after the interval): {}", ex.what());
+                    logger::error("live snapshot failed (will retry after the interval): {}", ex.what());
                 }
             };
             while (!stop.stop_requested()) {
@@ -199,9 +199,9 @@ namespace turbo::sync::p2p {
                                     throw error("peer supplied no advancing chain after 30 seconds waiting for headers");
                             };
                             const auto update = peer.client().next_header_sync(stop, [&] {
-                                const auto checkpoint_started = std::chrono::steady_clock::now();
-                                maybe_checkpoint();
-                                wait_started += std::chrono::steady_clock::now() - checkpoint_started;
+                                const auto save_started = std::chrono::steady_clock::now();
+                                maybe_save_state();
+                                wait_started += std::chrono::steady_clock::now() - save_started;
                                 check_progress();
                             });
                             check_progress();
@@ -240,7 +240,7 @@ namespace turbo::sync::p2p {
                         point2 target = bulk ? remote_tip.value() : headers.back();
                         peer.intersection(start);
                         std::exception_ptr failure;
-                        bool checkpoint_requested = false;
+                        bool commit_requested = false;
                         {
                             scope_exit clear { [&] { cr.before_commit({}); _follow_range.reset(); } };
                             _follow_range = std::make_pair(headers.front(), target);
@@ -248,12 +248,12 @@ namespace turbo::sync::p2p {
                             progress_target.height = remote_tip.height;
                             failure = _parent.accept_progress(start, progress_target, [&] {
                                 sync_attempt(peer, target.slot, stop);
-                                // Commit may clear the request after saving the checkpoint.
-                                checkpoint_requested = cr.checkpoint_requested();
+                                // Commit may clear the request after saving state.
+                                commit_requested = cr.commit_requested();
                                 cr.before_commit([&] {
                                     if (stop.stop_requested()) return;
                                     const auto tip = cr.tip();
-                                    if (!tip || (tip->hash != target.hash && !cr.checkpoint_requested()))
+                                    if (!tip || (tip->hash != target.hash && !cr.commit_requested()))
                                         throw error("block fetch did not reach the announced boundary");
                                 });
                             });
@@ -267,12 +267,12 @@ namespace turbo::sync::p2p {
                         if (stop.stop_requested()) {
                             break;
                         }
-                        maybe_checkpoint();
+                        maybe_save_state();
                         if (failure)
                             std::rethrow_exception(failure);
-                        if (bulk || checkpoint_requested) {
+                        if (bulk || commit_requested) {
                             target = static_cast<point2>(*cr.tip());
-                            // Bulk fetches advance beyond the ChainSync cursor. A checkpoint
+                            // Bulk fetches advance beyond the ChainSync cursor. A commit request
                             // may also interrupt a short fetch and close its connection.
                             const auto found = peer.client().find_intersection_sync(optional_point2_list { target });
                             if (!found.isect || found.isect->hash != target.hash)
@@ -290,10 +290,10 @@ namespace turbo::sync::p2p {
                         std::this_thread::sleep_for(std::chrono::milliseconds { 100 });
                 }
             }
-            logger::info("continuous sync stopped; saving final checkpoint");
-            if (cr.checkpoint().partial_groups_merged)
+            logger::info("continuous sync stopped; saving final snapshot");
+            if (cr.save_state().partial_groups_merged)
                 publish(cr.tip());
-            logger::info("continuous sync final checkpoint complete");
+            logger::info("continuous sync final snapshot complete");
         }
 
         void cancel_tasks(const uint64_t max_valid_offset)
@@ -390,7 +390,7 @@ namespace turbo::sync::p2p {
                                 err = std::move(rv);
                                 return false;
                             } else if constexpr (std::is_same_v<T, client::msg_block_t>) {
-                                if (stop.stop_requested() || _parent.local_chain().checkpoint_requested()) return false;
+                                if (stop.stop_requested() || _parent.local_chain().commit_requested()) return false;
                                 auto blk = std::make_unique<parsed_block>(rv.bytes);
                                 if (_invalid_first_offset.load(std::memory_order_relaxed) != no_recorded_value)
                                     return false;
@@ -401,7 +401,7 @@ namespace turbo::sync::p2p {
                                 _add_block(blk->blk);
                                 return true;
                             } else if constexpr (std::is_same_v<T, client::msg_compressed_blocks_t>) {
-                                if (stop.stop_requested() || _parent.local_chain().checkpoint_requested()) return false;
+                                if (stop.stop_requested() || _parent.local_chain().commit_requested()) return false;
                                 if (rv.encoding != T::encoding_zstd_fast && rv.encoding != T::encoding_zstd_max) [[unlikely]] {
                                     logger::error("unsupported encoding: {}", rv.encoding);
                                     return false;
@@ -479,19 +479,20 @@ namespace turbo::sync::p2p {
                                 keep += block.raw().size();
                             }
                             if (keep < raw.size()) {
+                                uint8_vector {}.swap(*compressed);
                                 if (keep) {
                                     const auto prefix = static_cast<buffer>(raw).subbuf(0, keep);
                                     const auto level = client::msg_compressed_blocks_t::fast_compression_level;
-                                    const auto trimmed = zstd::compress(prefix, level);
+                                    auto trimmed = zstd::compress(prefix, level);
                                     const auto progress = _parent.local_chain().add_buffer_trusted(
-                                        chunk_offset, prefix, trimmed, level);
+                                        chunk_offset, prefix, std::move(trimmed), level);
                                     _report_chunk_download_progress(progress);
                                 }
                                 _slot_limit_reached.store(true, std::memory_order_relaxed);
                                 return;
                             }
                             const auto progress = _parent.local_chain().add_buffer_trusted(
-                                chunk_offset, raw, *compressed, compression_level);
+                                chunk_offset, raw, std::move(*compressed), compression_level);
                             _report_chunk_download_progress(progress);
                             return;
                         }
@@ -582,9 +583,9 @@ namespace turbo::sync::p2p {
 
     void syncer::follow(const std::stop_token stop, const std::function<void(const optional_point &)> &on_update,
         const std::optional<network::address> addr, const version_config_t &versions,
-        const std::chrono::seconds checkpoint_interval)
+        const std::chrono::seconds snapshot_interval)
     {
-        _impl->follow(stop, on_update, addr, versions, checkpoint_interval);
+        _impl->follow(stop, on_update, addr, versions, snapshot_interval);
     }
 
     void syncer::cancel_tasks(const uint64_t max_valid_offset)

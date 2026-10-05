@@ -7,6 +7,15 @@
 #include <turbo/cardano/common/common.hpp>
 
 namespace turbo::cardano::byron {
+    struct protocol_version_t {
+        uint16_t major {};
+        uint16_t minor {};
+        uint8_t alt {};
+
+        static protocol_version_t from_cbor(cbor::zero2::value &);
+        void to_cbor(era_encoder &) const;
+    };
+
     struct boundary_block_header: block_header_base {
         static block_hash padded_hash(const uint8_t magic, const buffer data)
         {

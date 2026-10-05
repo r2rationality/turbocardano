@@ -6,37 +6,43 @@
 #include <turbo/storage/partition.hpp>
 
 namespace turbo::storage {
-    std::vector<partition> partition_map::_chunk_partitions(const chunk_registry &cr, const size_t num_parts)
+    partition_map::storage_type partition_map::_chunk_partitions(const chunk_registry &cr, const config_t &cfg)
     {
-        std::vector<partition> parts {};
+        if (!cfg.num_parts)
+            throw error("the number of partitions must be greater than zero");
+        if (cfg.first_epoch && cfg.last_epoch && *cfg.first_epoch > *cfg.last_epoch)
+            throw error("invalid epoch range: {}-{}", *cfg.first_epoch, *cfg.last_epoch);
+        partition::storage_type selected {};
+        uint64_t total_size = 0;
+        for (const auto &[offset, chunk]: cr.chunks()) {
+            const auto epoch = cr.make_slot(chunk.first_slot).epoch();
+            if (cfg.first_epoch && epoch < *cfg.first_epoch)
+                continue;
+            if (cfg.last_epoch && epoch > *cfg.last_epoch)
+                continue;
+            selected.emplace_back(&chunk);
+            total_size += chunk.data_size;
+        }
+        storage_type parts {};
         partition::storage_type chunks {};
-        uint64_t part_size = 0;
-        for (const auto &[chunk_last_byte, chunk]: cr.chunks()) {
-            const auto part_edge = cr.num_bytes() * (parts.size() + 1) / num_parts;
-            const auto potential_size = part_size + chunk.data_size;
-            if (chunk_last_byte < part_edge) [[likely]] {
-                chunks.emplace_back(&chunk);
-                part_size = potential_size;
-            } else {
-                const auto excess = potential_size - part_edge;
-                const auto lack = part_edge - part_size;
-                if (chunks.empty() || lack > excess) {
-                    chunks.emplace_back(&chunk);
-                    parts.emplace_back(std::move(chunks));
-                    chunks.clear();
-                    part_size = 0;
-                } else {
-                    parts.emplace_back(std::move(chunks));
-                    chunks.clear();
-                    chunks.emplace_back(&chunk);
-                    part_size = chunk.data_size;
-                }
+        uint64_t consumed_size = 0;
+        for (const auto *chunk: selected) {
+            // Cumulative boundaries use only selected bytes; distribute the remainder without multiplying total_size.
+            const auto part_no = parts.size() + 1;
+            const auto part_edge = total_size / cfg.num_parts * part_no
+                + std::min<uint64_t>(total_size % cfg.num_parts, part_no);
+            const auto next_size = consumed_size + chunk->data_size;
+            if (!chunks.empty() && part_no < cfg.num_parts
+                    && (consumed_size >= part_edge
+                        || (next_size > part_edge && part_edge - consumed_size < next_size - part_edge))) {
+                parts.emplace_back(std::move(chunks));
+                chunks.clear();
             }
+            chunks.emplace_back(chunk);
+            consumed_size = next_size;
         }
         if (!chunks.empty())
             parts.emplace_back(std::move(chunks));
-        if (parts.size() > num_parts) [[unlikely]]
-            throw error(fmt::format("invariant failed: the number of actual partitions: {} is greater than requested: {}", parts.size(), num_parts));
         return parts;
     }
 
