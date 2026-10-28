@@ -44,7 +44,7 @@ namespace turbo::cardano::alonzo {
             if (type < 16) {
                 const auto mask = static_cast<uint16_t>(1U << type);
                 if (seen_types & mask) [[unlikely]]
-                    throw error(fmt::format("duplicate alonzo::transaction_witness_set element type: {}", type));
+                    throw error{"duplicate alonzo::transaction_witness_set element type: {}", type};
                 seen_types |= mask;
             }
             auto &val = it.read_val(std::move(key));
@@ -55,7 +55,7 @@ namespace turbo::cardano::alonzo {
                 case 3: decode_scripts(res, script_type::plutus_v1, val); break;
                 case 4: decode_witnesses<tx_wit_datum>(res, val); break;
                 case 5: res.redeemers = redeemers_t::from_cbor(val); break;
-                [[unlikely]] default: throw error(fmt::format("unsupported alonzo::transaction_witness_set element type: {}", type));
+                [[unlikely]] default: throw error{"unsupported alonzo::transaction_witness_set element type: {}", type};
             }
         }
         res.raw = v.data_raw();

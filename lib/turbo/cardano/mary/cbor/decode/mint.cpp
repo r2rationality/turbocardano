@@ -50,7 +50,7 @@ namespace turbo::cardano::mary {
                                 throw error("duplicate mint asset name");
                             break;
                         }
-                        [[unlikely]] default: throw error(fmt::format("expecting an int but got {}", coin_v.type()));
+                        [[unlikely]] default: throw error{"expecting an int but got {}", coin_v.type()};
                     }
                 }
                 if (!p_m.empty()) [[likely]] {

@@ -28,7 +28,7 @@ namespace turbo::indexer {
             for (const auto &name: names) {
                 const auto path = dir / name;
                 if (!std::filesystem::is_directory(path)) [[unlikely]] {
-                    throw error(fmt::format("missing index directory {}: open the registry in validation mode first", path.string()));
+                    throw error{"missing index directory {}: open the registry in validation mode first", path.string()};
                 }
                 for (const auto &entry: std::filesystem::directory_iterator(path)) {
                     if (entry.is_regular_file()) {
@@ -69,7 +69,7 @@ namespace turbo::indexer {
                     if (!complete || slice.offset != end_offset || !slice.size || slice.end_offset() < slice.offset
                             || !storage::matches_block_boundary(chunks, slice.end_offset(), slice.max_slot)) [[unlikely]] {
                         if (strict) {
-                            throw error(fmt::format("inconsistent index slice {}: open the registry in validation mode first", slice.slice_id));
+                            throw error{"inconsistent index slice {}: open the registry in validation mode first", slice.slice_id};
                         }
                         logger::warn("ignoring inconsistent index slice {} and its successors", slice.slice_id);
                         state.repaired = true;
@@ -77,7 +77,7 @@ namespace turbo::indexer {
                     }
                     for (const auto &file: files) {
                         if (strict && marked.contains(file)) [[unlikely]] {
-                            throw error(fmt::format("index file {} is marked for deletion: open the registry in validation mode first", file));
+                            throw error{"index file {} is marked for deletion: open the registry in validation mode first", file};
                         }
                         state.unused_files.erase(file);
                     }
@@ -86,7 +86,7 @@ namespace turbo::indexer {
                 }
             }
             if (strict && !state.unused_files.empty()) [[unlikely]] {
-                throw error(fmt::format("unused index file {}: open the registry in validation mode first", *state.unused_files.begin()));
+                throw error{"unused index file {}: open the registry in validation mode first", *state.unused_files.begin()};
             }
             return state;
         }
@@ -109,7 +109,7 @@ namespace turbo::indexer {
         const auto require_empty = [&](const char *name) {
             const auto path = dir / name;
             if (std::filesystem::exists(path) && (!std::filesystem::is_directory(path) || !std::filesystem::is_empty(path))) [[unlikely]] {
-                throw error(fmt::format("unfinished ledger index data {}: open the registry in validation mode first", path.string()));
+                throw error{"unfinished ledger index data {}: open the registry in validation mode first", path.string()};
             }
         };
         for (const auto *name: index_layout_t::ledger) {
@@ -176,7 +176,7 @@ namespace turbo::indexer {
                 _retain_slice(slice);
             }
             if (end_offset != indexed_bytes()) [[unlikely]] {
-                throw error(fmt::format("internal error: indexed size calculation is incorrect: {} vs {}", end_offset, indexed_bytes()));
+                throw error{"internal error: indexed size calculation is incorrect: {} vs {}", end_offset, indexed_bytes()};
             }
             if (cr.operating_mode() == chunk_registry::mode::validate && (repaired || !std::filesystem::exists(_index_state_path))) {
                 _save_json_slices(_index_state_path);

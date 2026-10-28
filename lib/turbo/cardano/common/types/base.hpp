@@ -101,7 +101,7 @@ namespace turbo::cardano {
             switch (const auto typ = v.type(); typ) {
                 case cbor::major_type::array: return foreach_item_array(v, std::move(observer), std::move(sz_observer));
                 case cbor::major_type::tag: return foreach_item_array(v.tag().read(), std::move(observer), std::move(sz_observer));
-                [[unlikely]] default: throw error(fmt::format("unsupported set value type {}", typ));
+                [[unlikely]] default: throw error{"unsupported set value type {}", typ};
             }
         }
 
@@ -124,7 +124,7 @@ namespace turbo::cardano {
         {
             if (const auto it = base_type::nth(idx); it != base_type::end())
                 return *it;
-            throw error(fmt::format("set index out of range: {}", idx));
+            throw error{"set index out of range: {}", idx};
         }
 
         void to_cbor(era_encoder &) const;

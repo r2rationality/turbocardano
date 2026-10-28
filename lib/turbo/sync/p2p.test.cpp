@@ -255,7 +255,7 @@ suite sync_p2p_suite = [] {
                 {
                     if (++connections > 2) {
                         state.stop.request_stop();
-                        throw error(fmt::format("unexpected extra reconnect: {}", state.context));
+                        throw error{"unexpected extra reconnect: {}", state.context};
                     }
                     if (connections == 2) {
                         expect(!state.stop.stop_requested()) << state.context;

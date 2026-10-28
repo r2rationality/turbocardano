@@ -40,7 +40,7 @@ namespace turbo::cardano::shelley {
                 uint8_vector bytes {};
                 v.to_bytes(bytes);
                 if (bytes.size() > 64) [[unlikely]]
-                    throw error(fmt::format("metadata byte strings must not exceed 64 bytes but got: {}", bytes.size()));
+                    throw error{"metadata byte strings must not exceed 64 bytes but got: {}", bytes.size()};
                 return metadatum_t { std::move(bytes) };
             }
             case cbor::major_type::text: {
@@ -49,11 +49,11 @@ namespace turbo::cardano::shelley {
                 if (utf8::find_invalid(text.begin(), text.end()) != text.end()) [[unlikely]]
                     throw error("metadata text contains invalid UTF-8");
                 if (text.size() > 64) [[unlikely]]
-                    throw error(fmt::format("metadata text strings must not exceed 64 bytes but got: {}", text.size()));
+                    throw error{"metadata text strings must not exceed 64 bytes but got: {}", text.size()};
                 return metadatum_t { std::move(text) };
             }
             [[unlikely]] default:
-                throw error(fmt::format("unsupported metadatum value type: {}", v.type()));
+                throw error{"unsupported metadatum value type: {}", v.type()};
         }
     }
 

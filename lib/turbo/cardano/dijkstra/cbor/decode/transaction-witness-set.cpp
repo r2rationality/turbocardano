@@ -20,7 +20,7 @@ namespace turbo::cardano::dijkstra {
                 return v;
             auto &tag = v.tag();
             if (tag.id() != 258) [[unlikely]]
-                throw error(fmt::format("expected witness set tag 258 but got: {}", tag.id()));
+                throw error{"expected witness set tag 258 but got: {}", tag.id()};
             return tag.read();
         }
 
@@ -88,10 +88,10 @@ namespace turbo::cardano::dijkstra {
             auto &key = it.read_key();
             const auto type = key.uint();
             if (type > 7) [[unlikely]]
-                throw error(fmt::format("unsupported Dijkstra transaction_witness_set key: {}", type));
+                throw error{"unsupported Dijkstra transaction_witness_set key: {}", type};
             const auto mask = static_cast<uint16_t>(1U << type);
             if (seen_types & mask) [[unlikely]]
-                throw error(fmt::format("duplicate Dijkstra transaction_witness_set key: {}", type));
+                throw error{"duplicate Dijkstra transaction_witness_set key: {}", type};
             seen_types |= mask;
             auto &value = it.read_val(std::move(key));
             switch (type) {

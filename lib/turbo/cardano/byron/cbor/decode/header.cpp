@@ -80,7 +80,7 @@ namespace turbo::cardano::byron {
     {
         auto &it = v.array();
         if (const auto typ = it.read().uint(); typ != 2) [[unlikely]]
-            throw error(fmt::format("unsupported byron block signature type: {}", typ));
+            throw error{"unsupported byron block signature type: {}", typ};
         return { delegate_sig_t::from_cbor(it.read()) };
     }
 

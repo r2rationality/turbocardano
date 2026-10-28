@@ -11,7 +11,7 @@ namespace turbo::cardano::dijkstra {
         {
             const auto raw = v.uint();
             if (raw > 6) [[unlikely]]
-                throw error(fmt::format("unsupported Dijkstra redeemer tag: {}", raw));
+                throw error{"unsupported Dijkstra redeemer tag: {}", raw};
             return static_cast<redeemer_tag>(raw);
         }
     }

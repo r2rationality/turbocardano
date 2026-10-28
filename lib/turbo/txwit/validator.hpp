@@ -31,6 +31,6 @@ namespace turbo::txwit {
     extern cardano::optional_point validate(const chunk_registry &cr, const cardano::optional_point &from={},
           const cardano::optional_point &to={}, witness_type type=witness_type::all,
           const error_handler_func &error_handler=[](const std::string &what) {
-              throw error(fmt::format("txwit: error: {}", what));
+              throw error{"txwit: error: {}", what};
           });
 }

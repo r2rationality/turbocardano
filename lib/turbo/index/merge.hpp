@@ -59,8 +59,8 @@ namespace turbo::index {
             if (num_parts == 0)
                 num_parts = reader->num_parts();
             if (num_parts != reader->num_parts()) [[unlikely]]
-                throw error(fmt::format("chunk {} has a partition count: {} different from the one found in other chunks: {}!",
-                        chunks[i], reader->num_parts(), num_parts));
+                throw error{"chunk {} has a partition count: {} different from the one found in other chunks: {}!",
+                        chunks[i], reader->num_parts(), num_parts};
         }
         auto out_idx = std::make_shared<index::writer<T>>(final_path, num_parts);
         auto max_offset = std::make_shared<std::atomic<uint64_t>>(0);

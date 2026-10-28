@@ -90,7 +90,7 @@
                             } else if constexpr (std::is_same_v<T, uint8_vector>) {
                                 t_datum = term_from_datum(script_alloc, v);
                             } else {
-                                throw error(fmt::format("unsupported datum type: {}", typeid(T).name()));
+                                throw error{"unsupported datum type: {}", typeid(T).name()};
                             }
                         }, in.data.datum->val);
                     }
@@ -98,7 +98,7 @@
                         return apply_script(std::move(script_alloc), script, { *t_datum, t_redeemer, data(script_alloc, script.type(), r) }, r.budget);
                     throw error("Plutus V1/V2 spending script is missing its datum");
                 }
-                throw error(fmt::format("tx {} (spend) input #{}: the output address is not a payment script: {}!", _tx->hash(), r.ref_idx, in));
+                throw error{"tx {} (spend) input #{}: the output address is not a payment script: {}!", _tx->hash(), r.ref_idx, in};
             }
             case redeemer_tag::mint:
             case redeemer_tag::cert:
@@ -109,6 +109,6 @@
                 return apply_script(std::move(script_alloc), script, { t_redeemer, data(script_alloc, script.type(), r) }, r.budget);
             }
             [[unlikely]] default:
-                throw error(fmt::format("tx: {} unsupported redeemer_tag: {}", _tx->hash(), static_cast<int>(r.tag)));
+                throw error{"tx: {} unsupported redeemer_tag: {}", _tx->hash(), static_cast<int>(r.tag)};
         }
     }

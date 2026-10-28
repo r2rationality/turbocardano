@@ -16,7 +16,7 @@ namespace turbo::cardano::byron {
     {
         auto decoded = transaction_witness_set_t::from_cbor(v);
         if (decoded.items.size() != _body.inputs.size()) [[unlikely]]
-            throw error(fmt::format("slot: {} tx: {}: #wits: {} != #inputs: {}", _blk.slot_object(), hash(), decoded.items.size(), _body.inputs.size()));
+            throw error{"slot: {} tx: {}: #wits: {} != #inputs: {}", _blk.slot_object(), hash(), decoded.items.size(), _body.inputs.size()};
         _wits = std::move(decoded.items);
         _wits_raw = decoded.raw;
     }

@@ -15,7 +15,7 @@ namespace turbo::sync {
             return validation_mode_t::turbo;
         if (s == "full")
             return validation_mode_t::full;
-        throw error(fmt::format("unsupported validation mode: {}", s));
+        throw error{"unsupported validation mode: {}", s};
     }
 
     struct syncer::impl {

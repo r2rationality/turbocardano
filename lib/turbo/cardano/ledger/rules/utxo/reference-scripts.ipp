@@ -16,9 +16,9 @@
                 if (protocol_major < 9)
                     return;
                 if (part.ref_script_parts.size() != batch_info::num_parts) [[unlikely]]
-                    throw error(fmt::format(
+                    throw error{
                         "invalid number of reference-script join partitions: {} (expected: {})",
-                        part.ref_script_parts.size(), batch_info::num_parts));
+                        part.ref_script_parts.size(), batch_info::num_parts};
                 size_t num_uses = 0;
                 size_t num_produced = 0;
                 size_t num_consumed = 0;
@@ -54,9 +54,9 @@
                             const auto &utxo_part = _st.utxos().partition(pi);
                             for (const auto &use: ref_part.uses) {
                                 if (use.tx_info_idx >= num_txs) [[unlikely]]
-                                    throw error(fmt::format(
+                                    throw error{
                                         "invalid reference-script transaction index: {} (number of transactions: {})",
-                                        use.tx_info_idx, num_txs));
+                                        use.tx_info_idx, num_txs};
                                 const auto &tx = part.ref_script_txs[use.tx_info_idx];
 
                                 const auto produced_it = std::lower_bound(
@@ -84,18 +84,18 @@
                                 // producer index ambiguous and is invalid independently of
                                 // reference-script accounting.
                                 if (produced && ledger_txo) [[unlikely]]
-                                    throw error(fmt::format(
+                                    throw error{
                                         "reference-script accounting found duplicate TXO {}",
-                                        use.id));
+                                        use.id};
 
                                 // Input availability is shared by spending, reference and
                                 // collateral uses. Only the first two charge reference scripts.
                                 const bool produced_before = produced && produced->pos < tx.pos;
                                 const bool spent_before = consumed && consumed->pos < tx.pos;
                                 if ((!produced_before && !ledger_txo) || spent_before) [[unlikely]] {
-                                    throw error(fmt::format(
+                                    throw error{
                                         "reference-script accounting references an unavailable TXO {}",
-                                        use.id));
+                                        use.id};
                                 }
                                 if (!use.count_script)
                                     continue;
@@ -142,41 +142,40 @@
                 for (const auto &block: part.ref_script_blocks) {
                     const auto block_tx_end = static_cast<size_t>(block.first_tx_idx) + block.num_txs;
                     if (block_tx_end > num_txs) [[unlikely]]
-                        throw error(fmt::format(
+                        throw error{
                             "invalid reference-script block transaction range: {}..{} (number of transactions: {})",
-                            block.first_tx_idx, block_tx_end, num_txs));
+                            block.first_tx_idx, block_tx_end, num_txs};
                     size_t block_script_size = 0;
                     for (size_t ti = block.first_tx_idx; ti < block_tx_end; ++ti) {
                         const auto &tx = part.ref_script_txs[ti];
                         if (tx.pos.block_height != block.height) [[unlikely]]
-                            throw error(fmt::format(
+                            throw error{
                                 "reference-script transaction height {} does not match block height {}",
-                                tx.pos.block_height, block.height));
-                        if (tx.regular_ref_overlap) [[unlikely]] {
-                            throw error(fmt::format(
+                                tx.pos.block_height, block.height};
+                        if (protocol_major < 11 && tx.regular_ref_overlap) [[unlikely]] {
+                            throw error{
                                 "slot {} tx {} uses TXO {} as both a regular and a reference input",
-                                block.slot,
-                                tx.tx_id,
-                                *tx.regular_ref_overlap));
+                                block.slot, tx.tx_id, *tx.regular_ref_overlap
+                            };
                         }
                         const auto ledger_tx_script_size = ledger_script_sizes[ti].load(std::memory_order_relaxed);
                         if (ledger_tx_script_size > max_ref_script_size_per_tx) [[unlikely]] {
-                            throw error(fmt::format(
+                            throw error{
                                 "slot {} tx {} reference scripts have size {} exceeding the per-transaction limit {}",
                                 block.slot,
                                 tx.tx_id,
                                 ledger_tx_script_size,
-                                max_ref_script_size_per_tx));
+                                max_ref_script_size_per_tx};
                         }
                         block_script_size += block_script_sizes[ti].load(std::memory_order_relaxed);
                         part.ref_script_sizes[ti] = ledger_tx_script_size;
                     }
                     if (block_script_size > max_ref_script_size_per_block) [[unlikely]] {
-                        throw error(fmt::format(
+                        throw error{
                             "slot {} reference scripts have total size {} exceeding the per-block limit {}",
                             block.slot,
                             block_script_size,
-                            max_ref_script_size_per_block));
+                            max_ref_script_size_per_block};
                     }
                 }
                 logger::debug(

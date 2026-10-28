@@ -31,13 +31,13 @@
             current_it == _committee_hot_keys.end() ? nullptr : &current_it->second);
         if (!checked) [[unlikely]] {
             if (checked.failure == rules::govcert::failure::committee_member_resigned) [[unlikely]] {
-                throw error(fmt::format(
+                throw error{
                     "an attempt to provide a hot certificate to a resigned committee member: {}",
-                    c.cold_id));
+                    c.cold_id};
             }
-            throw error(fmt::format(
+            throw error{
                 "an attempt to provide a hot certificate to an unknown committee cold_id: {}",
-                c.cold_id));
+                c.cold_id};
         }
         const auto [it, created] = _committee_hot_keys.try_emplace(c.cold_id, c.hot_id);
         if (!created)
@@ -52,7 +52,7 @@
             _known_committee_cold_id(c.cold_id),
             key_it == _committee_hot_keys.end() ? nullptr : &key_it->second);
         if (!checked) [[unlikely]]
-            throw error(fmt::format("ineligible or already resigned committee cold_id: {}", c.cold_id));
+            throw error{"ineligible or already resigned committee cold_id: {}", c.cold_id};
         committee_t::resigned_t resigned {};
         if (c.anchor)
             resigned.anchor.emplace(*c.anchor);
@@ -71,11 +71,11 @@
             c.deposit);
         if (!checked) [[unlikely]] {
             if (checked.failure == rules::govcert::failure::drep_already_registered) [[unlikely]]
-                throw error(fmt::format("drep already registered: {}", c.drep_id));
-            throw error(fmt::format(
+                throw error{"drep already registered: {}", c.drep_id};
+            throw error{
                 "reg_drep_cert: expected deposit {} got {}",
                 _params.drep_deposit,
-                c.deposit));
+                c.deposit};
         }
         auto &registered = _drep_state.try_emplace(c.drep_id, c.deposit, c.anchor, checked.effect.expire_epoch).first->second;
         if (auto pending = _pending_drep_removals.find(c.drep_id); pending != _pending_drep_removals.end()) {
@@ -108,14 +108,14 @@
         if (!checked) [[unlikely]] {
             switch (checked.failure) {
                 case rules::govcert::failure::drep_unknown:
-                    throw error(fmt::format("unreg_drep_cert: an unknown drep_id: {}", c.drep_id));
+                    throw error{"unreg_drep_cert: an unknown drep_id: {}", c.drep_id};
                 case rules::govcert::failure::deposit_mismatch:
-                    throw error(fmt::format(
+                    throw error{
                         "the registered drep deposit: {} does not match the requested withdrawal: {}",
                         it->second.deposited,
-                        c.deposit));
+                        c.deposit};
                 case rules::govcert::failure::deposited_pot_insufficient:
-                    throw error(fmt::format("unable to withdraw the old drep deposit: {}", it->second.deposited));
+                    throw error{"unable to withdraw the old drep deposit: {}", it->second.deposited};
                 [[unlikely]] default:
                     throw error("unexpected GOVCERT-deregdrep failure");
             }
@@ -171,7 +171,7 @@
             _num_dormant_epochs,
             drep_it != _drep_state.end());
         if (!checked) [[unlikely]]
-            throw error(fmt::format("update_drep_cert: an unknown drep_id: {}", c.drep_id));
+            throw error{"update_drep_cert: an unknown drep_id: {}", c.drep_id};
         drep_it->second.anchor = c.anchor;
         drep_it->second.expire_epoch = checked.effect.expire_epoch;
         ++drep_it->second.num_updates;

@@ -16,7 +16,7 @@ namespace turbo::cardano::conway {
                 case 1: return script_type::plutus_v1;
                 case 2: return script_type::plutus_v2;
                 case 3: return script_type::plutus_v3;
-                [[unlikely]] default: throw error(fmt::format("unsupported script_type: {}", type));
+                [[unlikely]] default: throw error{"unsupported script_type: {}", type};
             }
         }
     }

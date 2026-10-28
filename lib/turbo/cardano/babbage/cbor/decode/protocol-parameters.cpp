@@ -22,7 +22,7 @@ namespace turbo::cardano::babbage {
                     [](auto &cost_models) {
                         return std::move(cost_models_t::from_cbor(cost_models).value);
                     })) [[unlikely]]
-                throw error(fmt::format("unsupported Babbage protocol parameter: {}", id));
+                throw error{"unsupported Babbage protocol parameter: {}", id};
         }
         return res;
     }

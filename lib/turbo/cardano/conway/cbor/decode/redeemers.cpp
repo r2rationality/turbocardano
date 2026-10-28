@@ -26,7 +26,7 @@ namespace turbo::cardano::conway {
                     res.add(std::move(redeemer_t::from_cbor(it).value));
                 break;
             }
-            [[unlikely]] default: throw error(fmt::format("unsupported redeemers type: {}", type));
+            [[unlikely]] default: throw error{"unsupported redeemers type: {}", type};
         }
         if (res.items.empty()) [[unlikely]]
             throw error("Conway redeemers must be nonempty when supplied");

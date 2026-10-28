@@ -105,7 +105,7 @@ namespace turbo::zpp_stream {
                     zstd::decompress(_buf, _zstd_buf);
                     _in.reset();
                 } catch (const std::exception &ex) {
-                    throw error(fmt::format("read failed while at byte {} out of {}: {}", _s_pos, _s_size, ex.what()));
+                    throw error{"read failed while at byte {} out of {}: {}", _s_pos, _s_size, ex.what()};
                 }
             }
             T v;

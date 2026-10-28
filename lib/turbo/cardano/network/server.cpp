@@ -127,7 +127,7 @@ namespace turbo::cardano::network {
                 boost::system::error_code ec;
                 const auto size = _conn.receive(boost::asio::buffer(&byte, 1), tcp::socket::message_peek, ec);
                 if (ec == boost::asio::error::would_block || ec == boost::asio::error::try_again) return 0;
-                if (ec) throw error(fmt::format("node-api socket read failed: {}", ec.message()));
+                if (ec) throw error{"node-api socket read failed: {}", ec.message()};
                 if (!size) throw error("node-api peer disconnected");
                 return size;
             }
@@ -269,7 +269,7 @@ namespace turbo::cardano::network {
             if (_stop_requested.load(std::memory_order_relaxed)) co_return;
             if (ec) throw boost::system::system_error { ec };
             if (results.empty()) [[unlikely]]
-                throw error(fmt::format("DNS resolve for {}:{} returned no results!", _addr.host, _addr.port));
+                throw error{"DNS resolve for {}:{} returned no results!", _addr.host, _addr.port};
             auto &acceptor = _shutdown->acceptor;
             const tcp::endpoint endpoint = *results.begin();
             acceptor.open(endpoint.protocol());

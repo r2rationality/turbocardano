@@ -56,13 +56,13 @@ namespace turbo::cardano::conway {
                         case script_type::plutus_v2: return 6;
                         case script_type::plutus_v3: return 7;
                         [[unlikely]] default:
-                            throw error(fmt::format(
+                            throw error{
                                 "script type {} cannot appear in a Conway witness set",
-                                static_cast<uint8_t>(value.type())));
+                                static_cast<uint8_t>(value.type())};
                     }
                 }
-                throw error(fmt::format(
-                    "witness type cannot appear in Conway: {}", typeid(T).name()));
+                throw error{
+                    "witness type cannot appear in Conway: {}", typeid(T).name()};
             }, witness);
         };
         for (const auto &witness: items)

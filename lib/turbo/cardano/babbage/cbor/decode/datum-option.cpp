@@ -16,7 +16,7 @@ namespace turbo::cardano {
             case 1: {
                 auto &tag = it.read().tag();
                 if (tag.id() != 24) [[unlikely]]
-                    throw error(fmt::format("expected a tag with id 24 but got: {}", tag.id()));
+                    throw error{"expected a tag with id 24 but got: {}", tag.id()};
                 uint8_vector data {};
                 auto &data_v = tag.read();
                 if (data_v.indefinite()) [[unlikely]]
@@ -29,7 +29,7 @@ namespace turbo::cardano {
                 res.val = std::move(data);
                 break;
             }
-            [[unlikely]] default: throw error(fmt::format("unsupported datum_option id: {}", id));
+            [[unlikely]] default: throw error{"unsupported datum_option id: {}", id};
         }
         if (!it.done()) [[unlikely]]
             throw error("unexpected trailing datum_option elements");

@@ -62,7 +62,7 @@ namespace turbo::cardano {
                 case 6: return babbage::block_header { era, hdr, cfg };
                 case 7: return conway::block_header { era, hdr, cfg };
                 case 8: return dijkstra::block_header { era, hdr, cfg };
-                [[unlikely]] default: throw error(fmt::format("unsupported era {}!", era));
+                [[unlikely]] default: throw error{"unsupported era {}!", era};
             }
         }
     };

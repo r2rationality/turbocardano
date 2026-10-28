@@ -59,7 +59,7 @@ namespace turbo::plutus::flat {
             const auto buf = cbor_item.get().bytes();
             if (buf.size() <= max_script_size) [[likely]]
                 return buf;
-            throw error(fmt::format("script size of {} bytes exceeds the maximum allowed size of {}", buf.size(), max_script_size));
+            throw error{"script size of {} bytes exceeds the maximum allowed size of {}", buf.size(), max_script_size};
         }
 
         template<size_t NUM_BITS>
@@ -70,7 +70,7 @@ namespace turbo::plutus::flat {
             size_t remaining = NUM_BITS;
             while (remaining) {
                 if (_byte_next >= _byte_end) [[unlikely]]
-                    throw error(fmt::format("out of data at byte {}", _byte_pos()));
+                    throw error{"out of data at byte {}", _byte_pos()};
                 const auto available = static_cast<size_t>(std::bit_width(static_cast<unsigned int>(_next_bit_mask)));
                 const auto take = remaining < available ? remaining : available;
                 const auto shift = available - take;
@@ -90,7 +90,7 @@ namespace turbo::plutus::flat {
         bool _next_bit()
         {
             if (_byte_next >= _byte_end) [[unlikely]]
-                throw error(fmt::format("out of data at byte {}", _byte_pos()));
+                throw error{"out of data at byte {}", _byte_pos()};
             const bool val = (*_byte_next & _next_bit_mask) != 0;
             _next_bit_mask >>= 1;
             if (!_next_bit_mask) {
@@ -104,7 +104,7 @@ namespace turbo::plutus::flat {
         {
             if (_next_bit_mask == 0x80) {
                 if (_byte_next >= _byte_end) [[unlikely]]
-                    throw error(fmt::format("out of data at byte {}", _byte_pos()));
+                    throw error{"out of data at byte {}", _byte_pos()};
                 return *_byte_next++;
             }
             return _decode_fixed_uint<8>();
@@ -144,7 +144,7 @@ namespace turbo::plutus::flat {
                 if (!(b & 0x80))
                     break;
                 if (_varint_scratch.size() >= max_varint_bytes) [[unlikely]]
-                    throw error(fmt::format("a variable length uint that has more than {} bytes at byte: {}", max_varint_bytes, _byte_pos()));
+                    throw error{"a variable length uint that has more than {} bytes at byte: {}", max_varint_bytes, _byte_pos()};
             }
             cpp_int v {};
             boost::multiprecision::import_bits(v, _varint_scratch.data(),
@@ -159,12 +159,12 @@ namespace turbo::plutus::flat {
                 const auto b = _next_byte();
                 const auto payload = static_cast<uint8_t>(b & 0x7F);
                 if (idx == 9 && payload > 1) [[unlikely]]
-                    throw error(fmt::format("{} does not fit into a 64-bit integer at byte: {}", kind, _byte_pos()));
+                    throw error{"{} does not fit into a 64-bit integer at byte: {}", kind, _byte_pos()};
                 val |= static_cast<uint64_t>(payload) << (idx * 7);
                 if (!(b & 0x80))
                     return val;
             }
-            throw error(fmt::format("{} does not fit into a 64-bit integer at byte: {}", kind, _byte_pos()));
+            throw error{"{} does not fit into a 64-bit integer at byte: {}", kind, _byte_pos()};
         }
 
         bint_type _decode_integer()
@@ -198,7 +198,7 @@ namespace turbo::plutus::flat {
                 // do nothing
             }
             if (_next_bit_mask != 0x80) [[unlikely]]
-                throw error(fmt::format("consume_padding: didn't finish on a byte boundary at bit {}!", _byte_pos()));
+                throw error{"consume_padding: didn't finish on a byte boundary at bit {}!", _byte_pos()};
         }
 
         buffer _decode_bytestring()
@@ -210,8 +210,8 @@ namespace turbo::plutus::flat {
 
             const auto read_chunk = [&](const size_t chunk_size) {
                 if (static_cast<size_t>(_byte_end - _byte_next) <= chunk_size) [[unlikely]]
-                    throw error(fmt::format("insufficient data for a bytestring of size {} at byte: {}",
-                        chunk_size, _byte_pos()));
+                    throw error{"insufficient data for a bytestring of size {} at byte: {}",
+                        chunk_size, _byte_pos()};
                 const buffer chunk { _byte_next, chunk_size };
                 _byte_next += chunk_size;
                 return chunk;
@@ -285,7 +285,7 @@ namespace turbo::plutus::flat {
                 case type_tag::application:
                     return _decode_type_application();
                 [[unlikely]] default:
-                    throw error(fmt::format("unsupported container type for an application: {}", container_tag));
+                    throw error{"unsupported container type for an application: {}", container_tag};
             }
         }
 
@@ -308,15 +308,15 @@ namespace turbo::plutus::flat {
                     throw error("list and pair types are supported only within a type application");
                 case type_tag::application:
                     return _decode_type_application();
-                [[unlikely]] default: throw error(fmt::format("unsupported constant type: {}", static_cast<int>(typ)));
+                [[unlikely]] default: throw error{"unsupported constant type: {}", static_cast<int>(typ)};
             }
         }
 
         constant_list::list_type _decode_sequence_vals(const constant_type &typ, const std::string_view kind)
         {
             if (typ->nested.size() != 1) [[unlikely]]
-                throw error(fmt::format("the nested type list for an {} must have just one element but has {}",
-                    kind, typ->nested.size()));
+                throw error{"the nested type list for an {} must have just one element but has {}",
+                    kind, typ->nested.size()};
             constant_list::list_type vals { _alloc };
             _decode_list([&] {
                 vals.emplace_back(_decode_constant_val(typ->nested.front()));
@@ -360,19 +360,19 @@ namespace turbo::plutus::flat {
                 }
                 case type_tag::pair: {
                     if (typ->nested.size() != 2) [[unlikely]]
-                        throw error(fmt::format("the nested type list for a pair must have two elements but has {}", typ->nested.size()));
+                        throw error{"the nested type list for a pair must have two elements but has {}", typ->nested.size()};
                     auto fst = _decode_constant_val(typ->nested.front());
                     auto snd = _decode_constant_val(typ->nested.back());
                     return { _alloc, constant_pair { _alloc, std::move(fst), std::move(snd) } };
                 }
-                [[unlikely]] default: throw error(fmt::format("unsupported constant type: {}", static_cast<int>(typ->typ)));
+                [[unlikely]] default: throw error{"unsupported constant type: {}", static_cast<int>(typ->typ)};
             }
         }
 
         constant _decode_constant()
         {
             if (!_next_bit()) [[unlikely]]
-                throw error(fmt::format("no type is defined at byte: {}!", _byte_pos()));
+                throw error{"no type is defined at byte: {}!", _byte_pos()};
             auto typ = _decode_constant_type(static_cast<type_tag>(_decode_fixed_uint<4>()));
             while (_next_bit())
                 static_cast<void>(_decode_fixed_uint<4>());
@@ -390,7 +390,7 @@ namespace turbo::plutus::flat {
                     _validation->check_builtin(builtin);
                 return builtin;
             }
-            throw error(fmt::format("unsupported builtin: {}!", static_cast<int>(tag)));
+            throw error{"unsupported builtin: {}!", static_cast<int>(tag)};
         }
 
         variable _decode_variable()
@@ -402,7 +402,7 @@ namespace turbo::plutus::flat {
                 return { _num_vars };
             if (rel_idx <= _num_vars) [[likely]]
                 return { rel_idx - 1 };
-            throw turbo::error(fmt::format("De Bruijn index is out of range: {} num_vars: {}", rel_idx, _num_vars));
+            throw turbo::error{"De Bruijn index is out of range: {} num_vars: {}", rel_idx, _num_vars};
         }
 
         t_delay _decode_delay()
@@ -517,7 +517,7 @@ namespace turbo::plutus::flat {
                 case term_tag::acase:
                     script_validation::check_term_version(_ver, typ);
                     return { _alloc, _decode_case() };
-                [[unlikely]] default: throw error(fmt::format("unexpected term: {}", static_cast<int>(typ)));
+                [[unlikely]] default: throw error{"unexpected term: {}", static_cast<int>(typ)};
             }
         }
 

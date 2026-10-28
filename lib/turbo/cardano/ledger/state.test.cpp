@@ -259,8 +259,8 @@ suite cardano_ledger_state_suite = [] {
                         // so its destructor does not erase the evidence.
                         const auto diagnostic = fmt::format("{}-pv{}-state.cbor", tmp.path(), major);
                         file::write(diagnostic, bytes);
-                        throw error(fmt::format("Node 11.1.3 protocol {} {}: {}; state saved at {}",
-                            major, operation, ex.what(), diagnostic));
+                        throw error{"Node 11.1.3 protocol {} {}: {}; state saved at {}",
+                            major, operation, ex.what(), diagnostic};
                     }
                 };
                 check("checksum verification", [&] { node_snapshot::verify(dir); });

@@ -53,7 +53,7 @@ namespace turbo::cardano {
                 case 6: return babbage::tx { blk, blk_off, tx, idx };
                 case 7: return conway::tx { blk, blk_off, tx, idx };
                 case 8: return dijkstra::tx { blk, blk_off, tx, idx, false, true };
-                [[unlikely]] default: throw error(fmt::format("unsupported era {}!", blk.era()));
+                [[unlikely]] default: throw error{"unsupported era {}!", blk.era()};
             }
         }
     };

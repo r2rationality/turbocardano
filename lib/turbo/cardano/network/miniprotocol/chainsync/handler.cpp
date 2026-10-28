@@ -17,7 +17,7 @@ namespace turbo::cardano::network::miniprotocol::chainsync {
         void data(const buffer bytes, const protocol_send_func &send_func)
         {
             if (!_state.is<st_idle_t>()) [[unlikely]]
-                throw error(fmt::format("no messages are expected in state {} but got one: {} bytes", _state.name(), bytes.size()));
+                throw error{"no messages are expected in state {} but got one: {} bytes", _state.name(), bytes.size()};
             _process_st_idle_msg(bytes, send_func);
         }
 
@@ -120,7 +120,7 @@ namespace turbo::cardano::network::miniprotocol::chainsync {
         template<typename M>
         void _process_msg(const M &, const protocol_send_func &)
         {
-            throw error(fmt::format("messages of type {} are not expected!", typeid(M).name()));
+            throw error{"messages of type {} are not expected!", typeid(M).name()};
         }
 
         optional_point3 _tip(const chain_source::view &v) const

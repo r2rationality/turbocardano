@@ -45,10 +45,10 @@ namespace turbo {
             const cardano::block_hash &previous_hash, const uint64_t slot, const uint64_t era, const bool check_hash=true)
         {
             if (!valid_slot_successor(previous.slot, previous_era, slot, era)) [[unlikely]] {
-                throw error(fmt::format("block slot {} is not after predecessor slot {}", slot, previous.slot));
+                throw error{"block slot {} is not after predecessor slot {}", slot, previous.slot};
             }
             if (check_hash && previous_hash != previous.hash) [[unlikely]] {
-                throw error(fmt::format("block at slot {} has predecessor hash {} instead of {}", slot, previous_hash, previous.hash));
+                throw error{"block at slot {} has predecessor hash {} instead of {}", slot, previous_hash, previous.hash};
             }
         }
 
@@ -230,9 +230,9 @@ namespace turbo {
                 compression_level_list_t compression_levels {};
                 in(compression_levels).or_throw();
                 if (compression_levels.size() != loaded_chunks.size()) [[unlikely]] {
-                    throw error(fmt::format(
+                    throw error{
                         "chunk registry state has {} chunks but {} compression levels",
-                        loaded_chunks.size(), compression_levels.size()));
+                        loaded_chunks.size(), compression_levels.size()};
                 }
                 auto level_it = compression_levels.begin();
                 for (auto &[last_byte_offset, chunk]: loaded_chunks) {
@@ -346,7 +346,7 @@ namespace turbo {
                 // do nothing
                 break;
             [[unlikely]] default:
-                throw error(fmt::format("unsupported mode: {}", static_cast<int>(settings.mode)));
+                throw error{"unsupported mode: {}", static_cast<int>(settings.mode)};
         }
         if (init_task_idx > 0) {
             _sched.process(true);
@@ -535,13 +535,13 @@ namespace turbo {
         }
         for (const auto &entry: std::filesystem::directory_iterator { chunk_dir }) {
             if (!entry.is_regular_file()) [[unlikely]] {
-                throw error(fmt::format("unexpected entry in chunk directory: {}", entry.path().string()));
+                throw error{"unexpected entry in chunk directory: {}", entry.path().string()};
             }
             auto path = entry.path();
             path.make_preferred();
             const auto extension = path.extension();
             if (extension != ".zstd" && extension != ".tmp") [[unlikely]] {
-                throw error(fmt::format("unexpected file in chunk directory: {}; expected .zstd or .tmp", path.string()));
+                throw error{"unexpected file in chunk directory: {}; expected .zstd or .tmp", path.string()};
             }
             if (extension == ".tmp") {
                 scan.temporary.emplace_back(path.string());
@@ -575,7 +575,7 @@ namespace turbo {
             const auto file_it = scan.chunks.find(path);
             if (_mode != mode::validate && (file_it == scan.chunks.end()
                     || file_it->second != chunk.compressed_size || marked.contains(path))) [[unlikely]] {
-                throw error(fmt::format("chunk {} requires repair: open the registry in validation mode first", path));
+                throw error{"chunk {} requires repair: open the registry in validation mode first", path};
             }
             if (file_it == scan.chunks.end()) [[unlikely]] {
                 logger::info("load_state: missing file {} - ignoring it and the following chunks!", chunk.rel_path());
@@ -596,16 +596,16 @@ namespace turbo {
                 [path, expected_size, expected_hash] {
                     const auto uncompressed = zstd::read(path);
                     if (uncompressed.size() != expected_size) [[unlikely]] {
-                        throw error(fmt::format(
+                        throw error{
                             "chunk {} decompressed to {} bytes instead of the recorded {}",
-                            path, uncompressed.size(), expected_size));
+                            path, uncompressed.size(), expected_size};
                     }
                     cardano::block_hash data_hash {};
                     crypto::blake2b::digest(data_hash, uncompressed);
                     if (data_hash != expected_hash) [[unlikely]] {
-                        throw error(fmt::format(
+                        throw error{
                             "chunk {} has uncompressed data hash {} instead of the recorded {}",
-                            path, data_hash, expected_hash));
+                            path, data_hash, expected_hash};
                     }
                 });
             repairs.emplace_back(&chunk, file_size);
@@ -1003,18 +1003,18 @@ namespace turbo {
             const auto &last = item.sources.back()->second;
             const auto size = last.end_offset() - item.chunk.offset;
             if (size > zstd::max_zstd_buffer)
-                throw error(fmt::format("repack chunk size {} exceeds the maximum {}", size, zstd::max_zstd_buffer));
+                throw error{"repack chunk size {} exceeds the maximum {}", size, zstd::max_zstd_buffer};
             uint8_vector uncompressed(size);
             uint64_t offset = item.chunk.offset;
             for (const auto source_it: item.sources) {
                 const auto &source = source_it->second;
                 if (source.offset != offset) [[unlikely]]
-                    throw error(fmt::format("noncontiguous repack chunk at offset {} instead of {}", source.offset, offset));
+                    throw error{"noncontiguous repack chunk at offset {} instead of {}", source.offset, offset};
                 const auto compressed = file::read(full_path(source.rel_path()));
                 auto bytes = write_buffer { uncompressed.data() + (offset - item.chunk.offset), source.data_size };
                 zstd::decompress(bytes, compressed);
                 if (crypto::blake2b::digest<cardano::block_hash>(bytes) != source.data_hash)
-                    throw error(fmt::format("cannot repack chunk with incorrect data hash: {}", source.rel_path()));
+                    throw error{"cannot repack chunk with incorrect data hash: {}", source.rel_path()};
                 offset += source.data_size;
                 if (source_it != item.sources.front())
                     item.chunk.blocks.insert(item.chunk.blocks.end(), source.blocks.begin(), source.blocks.end());
@@ -1292,19 +1292,19 @@ namespace turbo {
     {
         if (const auto block = find_block_by_offset_no_throw(offset))
             return *block;
-        throw error(fmt::format("unknown offset: {}!", offset));
+        throw error{"unknown offset: {}!", offset};
     }
 
     const storage::block_info &chunk_registry::find_block_by_slot(const uint64_t slot) const
     {
         const auto chunk_it = _find_chunk_by_slot(slot);
         if (chunk_it == _chunks.end()) [[unlikely]]
-            throw error(fmt::format("internal error: no block registered at a slot: {}!", slot));
+            throw error{"internal error: no block registered at a slot: {}!", slot};
         const auto block_it = _find_block_by_slot(chunk_it, slot);
         if (block_it == chunk_it->second.blocks.end()) [[unlikely]]
-            throw error(fmt::format("internal error: no block registered at a slot: {}!", slot));
+            throw error{"internal error: no block registered at a slot: {}!", slot};
         if (block_it->slot != slot) [[unlikely]]
-            throw error(fmt::format("internal error: no block registered at a slot: {}!", slot));
+            throw error{"internal error: no block registered at a slot: {}!", slot};
         return *block_it;
     }
 
@@ -1334,7 +1334,7 @@ namespace turbo {
     {
         if (const auto block_it = find_block(p); block_it != cend()) [[likely]]
             return *block_it;
-        throw error(fmt::format("internal error: no such block: {}!", p));
+        throw error{"internal error: no such block: {}!", p};
     }
 
     uint64_t chunk_registry::find_epoch(const uint64_t offset) const
@@ -1353,7 +1353,7 @@ namespace turbo {
         const auto it = std::find_if(_chunks.begin(), _chunks.end(),
                                      [&](const auto &el) { return el.second.last_block.hash == last_block_hash; });
         if (it == _chunks.end()) [[unlikely]]
-            throw error(fmt::format("there is no chunk with its last block hash {}", last_block_hash));
+            throw error{"there is no chunk with its last block hash {}", last_block_hash};
         return it->second;
     }
 
@@ -1453,7 +1453,7 @@ namespace turbo {
     uint64_t chunk_registry::read_holding_chunk(uint8_vector &chunk_data, const uint64_t offset) const
     {
         if (offset >= num_bytes()) [[unlikely]]
-            throw error(fmt::format("the requested offset {} is larger than the maximum one: {}", offset, num_bytes()));
+            throw error{"the requested offset {} is larger than the maximum one: {}", offset, num_bytes()};
         const auto &chunk = find_offset(offset);
         if (offset >= chunk.offset + chunk.data_size) [[unlikely]]
             throw error("the requested chunk segment is too small to parse it");
@@ -1531,7 +1531,7 @@ namespace turbo {
             throw error("add can be executed only inside of a transaction!");
         }
         if (uncompressed.empty() || uncompressed.size() > zstd::max_zstd_buffer) [[unlikely]] {
-            throw error(fmt::format("invalid chunk size: {}", uncompressed.size()));
+            throw error{"invalid chunk size: {}", uncompressed.size()};
         }
         const auto data_hash = crypto::blake2b::digest<cardano::block_hash>(uncompressed);
         const auto rel_path = fmt::format("chunk/{}.zstd.tmp", data_hash);
@@ -1559,7 +1559,7 @@ namespace turbo {
             throw error("add can be executed only inside of a transaction!");
         }
         if (uncompressed.empty() || uncompressed.size() > zstd::max_zstd_buffer) [[unlikely]] {
-            throw error(fmt::format("invalid chunk size: {}", uncompressed.size()));
+            throw error{"invalid chunk size: {}", uncompressed.size()};
         }
         auto [parsed_chunk, ex_ptr] = _parse(offset, uncompressed, compressed_size, compression_level, data_hash);
         const progress_point parsed_progress { parsed_chunk.last_block.slot, parsed_chunk.end_offset() };
@@ -1704,12 +1704,12 @@ namespace turbo {
                     uint32_t next_rel_slot = 0;
                     for (const auto *blk: m_chunk.blocks) {
                         if (blk->slot < chunk_start_slot) [[unlikely]]
-                            throw error(fmt::format("block with slot {} must not be in chunk {}!", blk->slot, chunk_id));
+                            throw error{"block with slot {} must not be in chunk {}!", blk->slot, chunk_id};
                         const auto blk_rel_slot = blk->era > 0 ? blk->slot - chunk_start_slot + 1 : 0;
                         for (; next_rel_slot <= blk_rel_slot; ++next_rel_slot)
                             pri_ws.write(buffer::from(host_to_net<uint32_t>(next_block_offset)));
                         if (blk->offset < chunk_start_offset) [[unlikely]]
-                            throw error(fmt::format("block with offset {} must not be in chunk starting at offset {}!", blk->offset, chunk_start_offset));
+                            throw error{"block with offset {} must not be in chunk starting at offset {}!", blk->offset, chunk_start_offset};
                         const auto blk_rel_offset = blk->offset - chunk_start_offset;
                         sec_ws.write(buffer::from(host_to_net<uint64_t>(blk_rel_offset)));
                         sec_ws.write(buffer::from(host_to_net<uint16_t>(blk->header_offset)));
@@ -1794,15 +1794,15 @@ namespace turbo {
     {
         try {
             if (normal && _transaction->target_slot() < chunk.last_block.slot) [[unlikely]]
-                throw error(fmt::format("chunk's slot range {}:{} exceeds the target slot: {}",
-                    chunk.first_slot, chunk.last_block.slot, _transaction->target_slot()));
+                throw error{"chunk's slot range {}:{} exceeds the target slot: {}",
+                    chunk.first_slot, chunk.last_block.slot, _transaction->target_slot()};
             if (chunk.data_size == 0 || chunk.num_blocks == 0 || chunk.blocks.empty()) [[unlikely]]
-                throw error(fmt::format("chunk at offset {} is empty!", chunk.offset));
+                throw error{"chunk at offset {} is empty!", chunk.offset};
             mutex::unique_lock update_lk { _update_mutex };
             auto [um_it, um_created] = _unmerged_chunks.try_emplace(chunk.offset + chunk.data_size - 1, std::move(chunk));
             // chunk variable should not be used after this point due to std::move(chunk) right above
             if (!um_created) [[unlikely]]
-                throw error(fmt::format("internal error: duplicate chunk offset: {} size: {}", um_it->second.offset, um_it->second.data_size));
+                throw error{"internal error: duplicate chunk offset: {} size: {}", um_it->second.offset, um_it->second.data_size};
             while (!_unmerged_chunks.empty() && _unmerged_chunks.begin()->second.offset == num_bytes()) {
                 const auto &tested_chunk = _unmerged_chunks.begin()->second;
                 if (const auto &first_block = tested_chunk.blocks.at(0); first_block.era >= 2 && !_cardano_cfg.shelley_started()) {
@@ -1811,27 +1811,27 @@ namespace turbo {
                 }
                 if (_validator) {
                     if (const auto future_slot = cardano::slot::from_future(_cardano_cfg); tested_chunk.last_block.slot >= future_slot) [[unlikely]]
-                        throw error(fmt::format("a chunk with its last block with a time slot from the future: {}!", tested_chunk.last_block.slot));
+                        throw error{"a chunk with its last block with a time slot from the future: {}!", tested_chunk.last_block.slot};
                     if (!_chunks.empty()) {
                         const auto &last = _chunks.rbegin()->second;
                         require_block_successor(last.last_block, last.blocks.back().era,
                             tested_chunk.prev_block_hash, tested_chunk.first_slot, tested_chunk.blocks.front().era);
                     } else {
                         if (tested_chunk.prev_block_hash != _cardano_cfg.byron_genesis_hash) [[unlikely]]
-                            throw error(fmt::format("chunk at offset {}: prev_block_hash {} does not match the genesis hash {}",
-                                tested_chunk.offset, tested_chunk.prev_block_hash, _cardano_cfg.byron_genesis_hash));
+                            throw error{"chunk at offset {}: prev_block_hash {} does not match the genesis hash {}",
+                                tested_chunk.offset, tested_chunk.prev_block_hash, _cardano_cfg.byron_genesis_hash};
                     }
                 }
                 const auto first_slot = make_slot(tested_chunk.first_slot);
                 const auto last_slot = make_slot(tested_chunk.last_block.slot);
                 if (first_slot.epoch() != last_slot.epoch()) [[unlikely]]
-                    throw error(fmt::format("chunk at offset {} contains blocks from multiple epochs: first slot: {} last_slot: {}", tested_chunk.offset, first_slot, last_slot));
+                    throw error{"chunk at offset {} contains blocks from multiple epochs: first slot: {} last_slot: {}", tested_chunk.offset, first_slot, last_slot};
                 if (first_slot.chunk_id() != last_slot.chunk_id()) [[unlikely]]
-                    throw error(fmt::format("chunk at offset {} contains blocks from multiple chunks: {} and {}", tested_chunk.offset, first_slot.chunk_id(), last_slot.chunk_id()));
+                    throw error{"chunk at offset {} contains blocks from multiple chunks: {} and {}", tested_chunk.offset, first_slot.chunk_id(), last_slot.chunk_id()};
                 auto [it, created, node] = _chunks.insert(_unmerged_chunks.extract(_unmerged_chunks.begin()));
                 const auto &inserted_chunk = it->second;
                 if (!created) [[unlikely]]
-                    throw error(fmt::format("internal error: duplicate chunk offset: {} size: {}", inserted_chunk.offset, inserted_chunk.data_size));
+                    throw error{"internal error: duplicate chunk offset: {} size: {}", inserted_chunk.offset, inserted_chunk.data_size};
             }
             if (normal) {
                 _notify_of_updates(update_lk);
@@ -1873,15 +1873,15 @@ namespace turbo {
                     }
                     static constexpr auto max_era = std::numeric_limits<uint8_t>::max();
                     if (blk.era() > max_era) [[unlikely]]
-                        throw error(fmt::format("block at slot {} has era {} that is outside of the supported max limit of {}", slot, blk.era(), max_era));
+                        throw error{"block at slot {} has era {} that is outside of the supported max limit of {}", slot, blk.era(), max_era};
                     static constexpr auto max_size = std::numeric_limits<uint32_t>::max();
                     if (blk_ptr.raw().size() > max_size) [[unlikely]]
-                        throw error(fmt::format("block at slot {} has size {} that is outside of the supported max limit of {}", slot, blk_ptr.raw().size(), max_size));
+                        throw error{"block at slot {} has size {} that is outside of the supported max limit of {}", slot, blk_ptr.raw().size(), max_size};
                     if (!chunk.blocks.empty()) {
                         const auto prev_chunk_id = cardano::slot::chunk_id(chunk.last_block.slot, _cardano_cfg);
                         const auto next_chunk_id = cardano::slot::chunk_id(slot, _cardano_cfg);
                         if (prev_chunk_id != next_chunk_id) [[unlikely]]
-                            throw error(fmt::format("chunk at offset {} contains blocks from multiple chunks: {} and {}", offset, prev_chunk_id, next_chunk_id));
+                            throw error{"chunk at offset {} contains blocks from multiple chunks: {} and {}", offset, prev_chunk_id, next_chunk_id};
                     } else {
                         chunk.prev_block_hash = blk.prev_hash();
                         chunk.first_slot = slot;
@@ -1952,7 +1952,7 @@ namespace turbo {
             if (chunk_it->second.offset < max_end_offset) {
                 auto block_it = _find_block_by_offset(chunk_it, max_end_offset);
                 if (block_it == chunk_it->second.blocks.end()) [[unlikely]]
-                    throw error(fmt::format("internal error: no block covers offset {}", max_end_offset));
+                    throw error{"internal error: no block covers offset {}", max_end_offset};
                 // truncate chunk data and update its metadata
                 if (track_changes)
                     _truncated_chunks.emplace(chunk_it->first, chunk_it->second);
@@ -2034,7 +2034,7 @@ namespace turbo {
             _file_remover.unmark(chunk_path);
             const auto [it, created] = _chunks.try_emplace(chunk.offset + chunk.data_size - 1, std::move(chunk));
             if (!created) [[unlikely]]
-                throw error(fmt::format("rollback failed: couldn't reinsert chunk {}", chunk_path));
+                throw error{"rollback failed: couldn't reinsert chunk {}", chunk_path};
         }
         _truncated_chunks.clear();
         _unmerged_chunks.clear();
@@ -2055,7 +2055,7 @@ namespace turbo {
     {
         const auto new_tip = tip();
         if (!new_tip || new_tip->end_offset <= _transaction->start_offset()) [[unlikely]] {
-            throw candidate_chain_rejected_t(fmt::format("candidate chain is not better: proposed tip: {} intersection: {}", new_tip, _transaction->start));
+            throw candidate_chain_rejected_t{"candidate chain is not better: proposed tip: {} intersection: {}", new_tip, _transaction->start};
         }
         if (!_truncated_chunks.empty()) {
             // Revalidating an unchanged prefix is not selection of a competing chain.
@@ -2101,8 +2101,8 @@ namespace turbo {
             const auto fork_new_height = const_iterator::block_distance(new_last_it, new_first_it).height();
 
             if (fork_prev_height >= fork_new_height) [[unlikely]] {
-                throw candidate_chain_rejected_t(fmt::format("candidate chain at byte {} is not better than the original: candidate block count {} vs {}",
-                    _transaction->start_offset(), fork_new_height, fork_prev_height));
+                throw candidate_chain_rejected_t{"candidate chain at byte {} is not better than the original: candidate block count {} vs {}",
+                    _transaction->start_offset(), fork_new_height, fork_prev_height};
             }
         }
     }
@@ -2170,7 +2170,7 @@ namespace turbo {
         if (_transaction || _journal) [[unlikely]]
             throw error("nested transactions are not allowed!");
         if (target < start) [[unlikely]]
-            throw error(fmt::format("the target slot {} cannot be smaller than the start chain {}", target, start));
+            throw error{"the target slot {} cannot be smaller than the start chain {}", target, start};
         if (start) {
             // checks that the requested start point is known
             const auto &block = get_block_info(cardano::point2 { start->slot, start->hash });
@@ -2338,7 +2338,7 @@ namespace turbo {
     {
         const auto it = _chunks.lower_bound(offset);
         if (it == _chunks.end()) [[unlikely]]
-            throw error(fmt::format("no chunk matches offset: {}!", offset));
+            throw error{"no chunk matches offset: {}!", offset};
         return it;
     }
 
@@ -2351,14 +2351,14 @@ namespace turbo {
     {
         const auto it = _find_chunk_by_offset_no_throw(offset);
         if (it == _chunks.end()) [[unlikely]]
-            throw error(fmt::format("no chunk matches offset: {}!", offset));
+            throw error{"no chunk matches offset: {}!", offset};
         return it;
     }
 
     storage::block_list::const_iterator chunk_registry::_find_block_by_offset(const chunk_map::const_iterator chunk_it, const uint64_t offset) const
     {
         if (chunk_it == _chunks.end()) [[unlikely]]
-            throw error(fmt::format("internal error: a non-empty chunk_iterator is expected!"));
+            throw error{"internal error: a non-empty chunk_iterator is expected!"};
         const auto &blocks = chunk_it->second.blocks;
         const auto block_it = std::lower_bound(blocks.begin(), blocks.end(), offset,
             [](const auto &b, const auto offset) { return b.end_offset() - 1 < offset; });

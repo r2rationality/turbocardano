@@ -19,7 +19,7 @@ namespace turbo::cardano {
     {
         if (is_byron()) [[likely]]
             return byron_addr::from_bytes(bytes());
-        throw error(fmt::format("address {} is not a byron one!", *this));
+        throw error{"address {} is not a byron one!", *this};
     }
 
     const pay_ident address::pay_id() const
@@ -46,12 +46,12 @@ namespace turbo::cardano {
                         auto nested_data = cbor::zero2::parse(w_data.array().read().tag().read().bytes());
                         return pay_ident { nested_data.get().array().read().bytes(), pay_ident::ident_type::BYRON_KEY };
                     }
-                    [[unlikely]] default: throw error(fmt::format("unsupported format of a byron address: {} items", n_items));
+                    [[unlikely]] default: throw error{"unsupported format of a byron address: {} items", n_items};
                 }
             }
 
             [[unlikely]] default:
-                throw error(fmt::format("unsupported address for type: {}!", type()));
+                throw error{"unsupported address for type: {}!", type()};
         }
     }
 
@@ -71,7 +71,7 @@ namespace turbo::cardano {
     {
         const auto pos = s.find('-');
         if (pos == std::string::npos) [[unlikely]]
-            throw error(fmt::format("invalid credential format: {}", s));
+            throw error{"invalid credential format: {}", s};
         const auto typ = s.substr(0, pos);
         const auto hex = s.substr(pos + 1);
         bool script;
@@ -80,7 +80,7 @@ namespace turbo::cardano {
         } else if (typ == "scriptHash") {
             script = true;
         } else {
-            throw error(fmt::format("invalid credential format: {}", s));
+            throw error{"invalid credential format: {}", s};
         }
         return { key_hash::from_hex(hex), script };
     }
@@ -129,7 +129,7 @@ namespace turbo::cardano {
         if (data.is_object()) {
             const auto &data_obj = data.as_object();
             if (orig.size() != data_obj.size()) [[unlikely]]
-                throw error(fmt::format("was expecting an array with {} elements but got {}", orig.size(), data_obj.size()));
+                throw error{"was expecting an array with {} elements but got {}", orig.size(), data_obj.size()};
             for (const auto &item: orig) {
                 const auto &key = item.first;
                 names.emplace_back(key);
@@ -137,19 +137,19 @@ namespace turbo::cardano {
                 if (it == data_obj.end())
                     it = data_obj.find(plutus::costs::v1_arg_name(key));
                 if (it == data_obj.end()) [[unlikely]]
-                    throw error(fmt::format("missing required cost model key: {}", key));
+                    throw error{"missing required cost model key: {}", key};
                 raw_values.emplace_back(json::value_to<int64_t>(it->value()));
             }
         } else if (data.is_array()) {
             const auto &data_arr = data.as_array();
             if (orig.raw_values().size() != data_arr.size()) [[unlikely]]
-                throw error(fmt::format("was expecting an array with {} elements but got {}", orig.raw_values().size(), data_arr.size()));
+                throw error{"was expecting an array with {} elements but got {}", orig.raw_values().size(), data_arr.size()};
             for (const auto &item: orig)
                 names.emplace_back(item.first);
             for (size_t i = 0; i < orig.raw_values().size(); ++i)
                 raw_values.emplace_back(json::value_to<int64_t>(data_arr[i]));
         } else {
-            throw error(fmt::format("an unsupported json value representing a cost model: {}", json::serialize_pretty(data)));
+            throw error{"an unsupported json value representing a cost model: {}", json::serialize_pretty(data)};
         }
         return plutus_cost_model { std::move(raw_values), names };
     }
@@ -193,7 +193,7 @@ namespace turbo::cardano {
                 return { secs - cfg.shelley_start_time() + cfg.shelley_start_slot(), cfg };
             return { (secs - cfg.byron_start_time) / cfg.byron_slot_duration, cfg };
         }
-        throw error(fmt::format("cannot create a slot from a time point before the byron start time: {}", cfg.byron_start_time));
+        throw error{"cannot create a slot from a time point before the byron start time: {}", cfg.byron_start_time};
     }
 
     slot slot::from_epoch(const uint64_t epoch, const uint64_t epoch_slot, const cardano::config &cfg)
@@ -315,13 +315,13 @@ namespace turbo::cardano {
                     return std::make_tuple(it->second, n_chars);
                 }
             }
-            throw error(fmt::format("Unsupported escape sequence starting with {}!", sv));
+            throw error{"Unsupported escape sequence starting with {}!", sv};
         } else {
             auto it = one_char_codes.find(sv[0]);
             if (it != one_char_codes.end()) {
                 return std::make_tuple(it->second, 1);
             }
-            throw error(fmt::format("Escape sequence starts from an unsupported character: '{}' code {}!", sv[0], (int)sv[0]));
+            throw error{"Escape sequence starts from an unsupported character: '{}' code {}!", sv[0], (int)sv[0]};
         }
     }
 
@@ -355,7 +355,7 @@ namespace turbo::cardano {
                 return { pv2.get().array(), v };
             }
             case 3: return { v.array(), v };
-            [[unlikely]] default: throw error(fmt::format("Unsupported byron address format {}!", v.special_uint()));
+            [[unlikely]] default: throw error{"Unsupported byron address format {}!", v.special_uint()};
         }
     }
 
@@ -395,7 +395,7 @@ namespace turbo::cardano {
     asset_name_t::asset_name_t(const buffer bytes)
     {
         if (bytes.size() > _data.size()) [[unlikely]]
-            throw error(fmt::format("asset names must have 32 bytes max but got {}!", bytes.size()));
+            throw error{"asset names must have 32 bytes max but got {}!", bytes.size()};
         if (!bytes.empty())
             memcpy(_data.data(), bytes.data(), bytes.size());
         _size = numeric_cast<uint8_t>(bytes.size());

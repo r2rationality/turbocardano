@@ -59,7 +59,7 @@ namespace turbo::cardano::network::miniprotocol::chainsync {
             case 5: return { msg_intersect_found_t::from_cbor(it) };
             case 6: return { msg_intersect_not_found_t::from_cbor(it) };
             case 7: return { msg_done_t::from_cbor(it) };
-            [[unlikely]] default: throw error(fmt::format("an unsupported type for a chainsync::msg_t: {}", typ));
+            [[unlikely]] default: throw error{"an unsupported type for a chainsync::msg_t: {}", typ};
         }
     }
 

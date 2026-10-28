@@ -44,7 +44,7 @@ namespace turbo::cardano::babbage {
             if (type < 16) {
                 const auto mask = static_cast<uint16_t>(1U << type);
                 if (seen_types & mask) [[unlikely]]
-                    throw error(fmt::format("duplicate babbage::transaction_witness_set element type: {}", type));
+                    throw error{"duplicate babbage::transaction_witness_set element type: {}", type};
                 seen_types |= mask;
             }
             auto &val = it.read_val(std::move(key));
@@ -56,7 +56,7 @@ namespace turbo::cardano::babbage {
                 case 4: decode_witnesses<tx_wit_datum>(res, val); break;
                 case 5: res.redeemers = alonzo::redeemers_t::from_cbor(val); break;
                 case 6: decode_scripts(res, script_type::plutus_v2, val); break;
-                [[unlikely]] default: throw error(fmt::format("unsupported babbage::transaction_witness_set element type: {}", type));
+                [[unlikely]] default: throw error{"unsupported babbage::transaction_witness_set element type: {}", type};
             }
         }
         res.raw = v.data_raw();

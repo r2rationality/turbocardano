@@ -279,7 +279,7 @@ namespace turbo {
                 clear();
             for (const auto &[k, v]: m) {
                 if (auto [it, created] = try_emplace(k, v); !created) [[unlikely]]
-                    throw error(fmt::format("duplicate key {}", k));
+                    throw error{"duplicate key {}", k};
             }
             return *this;
         }
@@ -441,7 +441,7 @@ namespace turbo {
             auto &part = _parts[partition_idx(k)];
             auto it = part.find(k);
             if (it == part.end()) [[unlikely]]
-                throw error(fmt::format("unknown key: {}", k));
+                throw error{"unknown key: {}", k};
             return it->second;
         }
 
@@ -450,7 +450,7 @@ namespace turbo {
             auto &part = _parts[partition_idx(k)];
             auto it = part.find(k);
             if (it == part.end()) [[unlikely]]
-                throw error(fmt::format("unknown key: {}", k));
+                throw error{"unknown key: {}", k};
             return it->second;
         }
 
@@ -512,7 +512,7 @@ namespace turbo {
         static void _check_part_idx(size_t part_idx)
         {
             if (part_idx >= num_parts) [[unlikely]]
-                throw error(fmt::format("partition idx is too big {}", part_idx));
+                throw error{"partition idx is too big {}", part_idx};
         }
 
         storage_type _parts {};

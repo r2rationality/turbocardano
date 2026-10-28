@@ -46,7 +46,7 @@ namespace turbo::validator {
             return {};
         const auto first = static_cast<uint64_t>(cardano::slot::from_epoch(epoch, cfg));
         if (slot < first) [[unlikely]]
-            throw error(fmt::format("slot {} precedes epoch {}", slot, epoch));
+            throw error{"slot {} precedes epoch {}", slot, epoch};
         const auto s = slot - first;
         const auto position = _ceil_product(s, d);
         if (position >= _ceil_product(s + 1, d))
@@ -259,8 +259,8 @@ namespace turbo::validator {
                 _cr.sched().process(true);
             }
             if (my_end_offset() != _state.end_offset()) [[unlikely]] {
-                throw error(fmt::format("validation reached offset {} but the ledger reached {}",
-                    my_end_offset(), _state.end_offset()));
+                throw error{"validation reached offset {} but the ledger reached {}",
+                    my_end_offset(), _state.end_offset()};
             }
             _request_commit_if_ready();
         }
@@ -467,9 +467,9 @@ namespace turbo::validator {
         {
             st.load_zpp(_storage_path("ledger", snap.end_offset));
             if (st.end_offset() != snap.end_offset) [[unlikely]]
-                throw error(fmt::format("loaded state does not match the recorded end offset: {} != {}", st.end_offset(), snap.end_offset));
+                throw error{"loaded state does not match the recorded end offset: {} != {}", st.end_offset(), snap.end_offset};
             if (st.end_offset() != st.valid_end_offset()) [[unlikely]]
-                throw error(fmt::format("validator state is in inconsistent state valid_end_offset: {} vs end_offset: {}", st.valid_end_offset(), st.end_offset()));
+                throw error{"validator state is in inconsistent state valid_end_offset: {} vs end_offset: {}", st.valid_end_offset(), st.end_offset()};
         }
     private:
         struct epoch_work {
@@ -1101,7 +1101,7 @@ namespace turbo::validator {
                 if (const auto valid_point = _state.add_subchain(std::move(sc)); valid_point && _cr.tx())
                     _cr.report_progress("validate", { valid_point->slot, valid_point->end_offset });
             } else {
-                throw error(fmt::format("chunk at offset {} contains no blocks!", sc.offset));
+                throw error{"chunk at offset {} contains no blocks!", sc.offset};
             }
         }
 
@@ -1211,7 +1211,7 @@ namespace turbo::validator {
                 throw error(fmt::format("failed to process epoch {} updates", e), ex);
             } catch (...) {
                 logger::error("apply_updates for epoch: {} unknown exception", e);
-                throw error(fmt::format("failed to process epoch {} updates cased by an unknown exception", e));
+                throw error{"failed to process epoch {} updates cased by an unknown exception", e};
             }
         }
 
@@ -1265,7 +1265,7 @@ namespace turbo::validator {
                     logger::info("validator::_apply_ledger_state_updates: complete for epoch: {} end offset: {} utxos: {}", _state.epoch(), _state.end_offset(), _state.utxos().size());
                 } catch (const std::exception &ex) {
                     logger::error("failed to process epoch {} updates: {}", e, ex.what());
-                    throw error(fmt::format("failed to process epoch {} updates: {}", e, ex.what()));
+                    throw error{"failed to process epoch {} updates: {}", e, ex.what()};
                 } catch (...) {
                     logger::error("failed to process epoch {} updates: unknown exception", e);
                     throw;
@@ -1285,23 +1285,23 @@ namespace turbo::validator {
             for (size_t vi = start_idx; vi < end_idx; ++vi) {
                 const auto &item = vrf_updates_ptr->at(vi);
                 if (active_protocol_ver.major >= 2 && item.era != active_era) [[unlikely]]
-                    throw error(fmt::format("block at slot {} has era {} but the active protocol version {} requires era {}",
-                        item.slot, item.era, active_protocol_ver, active_era));
+                    throw error{"block at slot {} has era {} but the active protocol version {} requires era {}",
+                        item.slot, item.era, active_protocol_ver, active_era};
                 if (_cr.config().shelley_network_id && active_protocol_ver.major >= 9
                         && item.protocol_ver.major > active_protocol_ver.major + 1) [[unlikely]]
-                    throw error(fmt::format("block at slot {} advertises protocol version {} above the allowed major version {}",
-                        item.slot, item.protocol_ver, active_protocol_ver.major + 1));
+                    throw error{"block at slot {} advertises protocol version {} above the allowed major version {}",
+                        item.slot, item.protocol_ver, active_protocol_ver.major + 1};
                 if (item.era < 6) {
                     const auto leader_input = cardano::vrf_make_seed(uc_leader, item.slot, nonce_epoch);
                     if (!cardano::vrf03_verify(item.leader_result, item.vkey, item.leader_proof, leader_input)) [[unlikely]]
-                        throw error(fmt::format("leader VRF verification failed: epoch: {} slot {} era {}", epoch, item.slot, item.era));
+                        throw error{"leader VRF verification failed: epoch: {} slot {} era {}", epoch, item.slot, item.era};
                     auto nonce_input = cardano::vrf_make_seed(uc_nonce, item.slot, nonce_epoch);
                     if (!cardano::vrf03_verify(item.nonce_result, item.vkey, item.nonce_proof, nonce_input)) [[unlikely]]
-                        throw error(fmt::format("nonce VRF verification failed: epoch: {} slot {} era {}", epoch, item.slot, item.era));
+                        throw error{"nonce VRF verification failed: epoch: {} slot {} era {}", epoch, item.slot, item.era};
                 } else {
                     const auto vrf_input = cardano::vrf_make_input(item.slot, nonce_epoch);
                     if (!cardano::vrf03_verify(item.leader_result, item.vkey, item.leader_proof, vrf_input)) [[unlikely]]
-                        throw error(fmt::format("VRF verification failed: epoch: {} slot {} era {}", epoch, item.slot, item.era));
+                        throw error{"VRF verification failed: epoch: {} slot {} era {}", epoch, item.slot, item.era};
                 }
                 const auto &genesis_delegs = decentralization.numerator
                     ? genesis_delegs_ptr->at(item.slot) : genesis_delegs_ptr->initial;
@@ -1310,26 +1310,26 @@ namespace turbo::validator {
                 const auto vrf_hash = crypto::blake2b::digest<cardano::vrf_vkey>(item.vkey);
                 if (overlay.reserved) {
                     if (!overlay.delegate) [[unlikely]]
-                        throw error(fmt::format("block at slot {} occupies an inactive overlay slot", item.slot));
+                        throw error{"block at slot {} occupies an inactive overlay slot", item.slot};
                     if (item.pool_id != overlay.delegate->delegate || vrf_hash != overlay.delegate->vrf) [[unlikely]]
-                        throw error(fmt::format("block at slot {} is not issued by the scheduled genesis delegate", item.slot));
+                        throw error{"block at slot {} is not issued by the scheduled genesis delegate", item.slot};
                 } else {
                     const auto pool_it = pool_dist_ptr->find(item.pool_id);
                     if (pool_it == pool_dist_ptr->end()) [[unlikely]]
-                        throw error(fmt::format("epoch {} pool-stake distribution misses block-issuing pool id {}!", epoch, item.pool_id));
+                        throw error{"epoch {} pool-stake distribution misses block-issuing pool id {}!", epoch, item.pool_id};
                     if (vrf_hash != pool_it->second.vrf_vkey) [[unlikely]]
-                        throw error(fmt::format("block at slot {} uses an unregistered VRF key", item.slot));
+                        throw error{"block at slot {} uses an unregistered VRF key", item.slot};
                     const auto &rel_stake = pool_it->second.rel_stake;
                     if (item.era < 6) {
                         if (!cardano::vrf_leader_is_eligible(item.leader_result,
                                 _cr.config().shelley_active_slots_coeff, rel_stake)) [[unlikely]]
-                            throw error(fmt::format("Leader-eligibility check failed for block at slot {} issued by {}: leader_result: {} rel_stake: {}",
-                                item.slot, item.pool_id, item.leader_result, rel_stake));
+                            throw error{"Leader-eligibility check failed for block at slot {} issued by {}: leader_result: {} rel_stake: {}",
+                                item.slot, item.pool_id, item.leader_result, rel_stake};
                     } else {
                         if (!cardano::vrf_leader_is_eligible(cardano::vrf_leader_value(item.leader_result),
                                 _cr.config().shelley_active_slots_coeff, rel_stake)) [[unlikely]]
-                            throw error(fmt::format("era 6 Leader-eligibility check failed for block at slot {} issued by {}: leader_result: {} rel_stake: {}",
-                                item.slot, item.pool_id, item.leader_result, rel_stake));
+                            throw error{"era 6 Leader-eligibility check failed for block at slot {} issued by {}: leader_result: {} rel_stake: {}",
+                                item.slot, item.pool_id, item.leader_result, rel_stake};
                     }
                 }
             }

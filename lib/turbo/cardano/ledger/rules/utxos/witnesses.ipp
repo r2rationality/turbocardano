@@ -15,7 +15,7 @@
                 ctx.eval_script(ps);
                 cnt += ps.typ;
             } catch (const std::exception &ex) {
-                throw error(fmt::format("redeemer {}#{}: {}", rinfo.tag, rinfo.ref_idx, ex.what()));
+                throw error{"redeemer {}#{}: {}", rinfo.tag, rinfo.ref_idx, ex.what()};
             }
         }
         return cnt;

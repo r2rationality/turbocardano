@@ -120,14 +120,14 @@ namespace turbo::storage {
                         try {
                             on_block(tmp, *blk);
                         } catch (const std::exception &ex) {
-                            throw error(fmt::format("failed to parse block at slot: {} hash: {}: {}", blk->slot(), blk->hash(), ex.what()));
+                            throw error{"failed to parse block at slot: {} hash: {}: {}", blk->slot(), blk->hash(), ex.what()};
                         }
                     }
                 }
                 try {
                     on_part_done(std::move(tmp), part_no, part);
                 } catch (const std::exception &ex) {
-                    throw error(fmt::format("failed to complete partition [{}:{}]: {}", part.offset(), part.end_offset(), ex.what()));
+                    throw error{"failed to complete partition [{}:{}]: {}", part.offset(), part.end_offset(), ex.what()};
                 }
                 if (progress_tag) {
                     const auto done = parsed_size.fetch_add(part.size(), std::memory_order::relaxed) + part.size();

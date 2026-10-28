@@ -36,7 +36,7 @@ namespace turbo::cardano::network {
                     if (mp != mini_protocol::handshake) {
                         const auto [it, created] = _protocols.try_emplace(mp, factory(res));
                         if (!created) [[unlikely]]
-                            throw error(fmt::format("mini protocol has already been registered with the connection: {}", mp));
+                            throw error{"mini protocol has already been registered with the connection: {}", mp};
                     }
                 }
             });
@@ -282,7 +282,7 @@ namespace turbo::cardano::network {
                 const auto mp_id = _parent._recv_header.mini_protocol_id();
                 const auto p_it = _parent._protocols.find(mp_id);
                 if (p_it == _parent._protocols.end()) [[unlikely]]
-                    throw error(fmt::format("a client has requested an unsupported mini protocol: {}", mp_id));
+                    throw error{"a client has requested an unsupported mini protocol: {}", mp_id};
                 p_it->second.observer->data(_parent._recv_payload, [&, mp_id](data_generator_t &&gen) {
                     if (!_parent.try_send(mp_id, std::move(gen))) [[unlikely]] {
                         const auto msg = fmt::format("mini protocol {} can't schedule data submission while another one is in progress!", mp_id);
@@ -385,9 +385,9 @@ namespace turbo::cardano::network {
             std::visit([&](const auto &sv) {
                 using T = std::decay_t<decltype(sv)>;
                 if constexpr (std::is_same_v<T, failed_t>) {
-                    throw error(fmt::format("the communication channel has failed: {}", sv.err));
+                    throw error{"the communication channel has failed: {}", sv.err};
                 } else if constexpr (std::is_same_v<T, stopped_t>) {
-                    throw error(fmt::format("the communication channel has been stopped"));
+                    throw error{"the communication channel has been stopped"};
                 } else {
                     // ok do nothing
                 }

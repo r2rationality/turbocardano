@@ -37,7 +37,7 @@ namespace turbo::cardano {
             tx_out_ref txo_id { crypto::blake2b::digest<tx_hash>(txo_addr), 0 };
             tx_out_data txo_data { std::move(txo_addr), std::stoull(json::value_to<std::string>(lovelace)) };
             if (const auto [it, created] = txos.try_emplace(txo_id, std::move(txo_data)); !created) [[unlikely]]
-                throw error(fmt::format("duplicate TXO {} in the byron genesis config", txo_id));
+                throw error{"duplicate TXO {} in the byron genesis config", txo_id};
         }
         return txos;
     }
@@ -98,7 +98,7 @@ namespace turbo::cardano {
         const auto cfg_hash = block_hash::from_hex(hash_hex);
         auto act_hash = crypto::blake2b::digest<block_hash>(genesis.bytes());
         if (act_hash != cfg_hash) [[unlikely]]
-            throw error(fmt::format("The actual hash of genesis file does not match {}!", hash_hex));
+            throw error{"The actual hash of genesis file does not match {}!", hash_hex};
         return act_hash;
     }
 
@@ -112,7 +112,7 @@ namespace turbo::cardano {
             costs.emplace_back(std::stoll(d_args.at(plutus::costs::canonical_arg_name(name))));
         }
         if (costs.size() != exp_size) [[unlikely]]
-            throw error(fmt::format("internal error: plutus {} default costs are invalid!", version));
+            throw error{"internal error: plutus {} default costs are invalid!", version};
         return plutus_cost_model { std::move(costs), names };
     }
 

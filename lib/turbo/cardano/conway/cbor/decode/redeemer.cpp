@@ -17,7 +17,7 @@ namespace turbo::cardano::conway {
                 case 3: return redeemer_tag::reward;
                 case 4: return redeemer_tag::vote;
                 case 5: return redeemer_tag::propose;
-                [[unlikely]] default: throw error(fmt::format("unsupported redeemer tag: {}", typ));
+                [[unlikely]] default: throw error{"unsupported redeemer tag: {}", typ};
             }
         }
     }

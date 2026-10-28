@@ -12,7 +12,7 @@ namespace turbo::cardano::dijkstra {
             if (v.type() == cbor::major_type::tag) {
                 auto &tag = v.tag();
                 if (tag.id() != 258) [[unlikely]]
-                    throw error(fmt::format("expected transaction input set tag 258 but got: {}", tag.id()));
+                    throw error{"expected transaction input set tag 258 but got: {}", tag.id()};
                 items = &tag.read();
             }
             transaction_inputs_t result {};
@@ -98,7 +98,7 @@ namespace turbo::cardano::dijkstra {
             if (v.type() == cbor::major_type::tag) {
                 auto &tag = v.tag();
                 if (tag.id() != 258) [[unlikely]]
-                    throw error(fmt::format("expected sub-transaction set tag 258 but got: {}", tag.id()));
+                    throw error{"expected sub-transaction set tag 258 but got: {}", tag.id()};
                 items = &tag.read();
             }
             std::vector<sub_transaction_t> res {};
@@ -133,10 +133,10 @@ namespace turbo::cardano::dijkstra {
                 auto &key = it.read_key();
                 const auto type = key.uint();
                 if (type > 27) [[unlikely]]
-                    throw error(fmt::format("unsupported Dijkstra transaction body key: {}", type));
+                    throw error{"unsupported Dijkstra transaction body key: {}", type};
                 const auto mask = uint32_t { 1 } << type;
                 if (seen & mask) [[unlikely]]
-                    throw error(fmt::format("duplicate Dijkstra transaction body key: {}", type));
+                    throw error{"duplicate Dijkstra transaction body key: {}", type};
                 seen |= mask;
                 auto &value = it.read_val(std::move(key));
                 switch (type) {
@@ -238,7 +238,7 @@ namespace turbo::cardano::dijkstra {
                         }
                         break;
                     [[unlikely]] default:
-                        throw error(fmt::format("unsupported Dijkstra transaction body key: {}", type));
+                        throw error{"unsupported Dijkstra transaction body key: {}", type};
                 }
             }
 

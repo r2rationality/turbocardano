@@ -31,7 +31,7 @@ namespace turbo::cardano::dijkstra {
         if (v.type() == cbor::major_type::tag) {
             auto &tag = v.tag();
             if (tag.id() != 258) [[unlikely]]
-                throw error(fmt::format("expected proposal set tag 258 but got: {}", tag.id()));
+                throw error{"expected proposal set tag 258 but got: {}", tag.id()};
             items = &tag.read();
         }
         if (!items->indefinite()) [[likely]]

@@ -97,7 +97,7 @@ namespace turbo::cardano::ledger {
     void state::save_node(const std::string &path, const point &tip, const int prio, const node_format format)
     {
         if (format == node_format::v11_1_3 && std::filesystem::exists(path))
-            throw error(fmt::format("snapshot output already exists: {}", path));
+            throw error{"snapshot output already exists: {}", path};
         const auto ser = to_cbor(tip, prio, format);
         timer t { "write the serialized node state to a file", logger::level::info };
         if (format == node_format::legacy) {
@@ -106,7 +106,7 @@ namespace turbo::cardano::ledger {
             const std::filesystem::path dir { path };
             // Preserve an earlier diagnostic artifact until explicitly removed.
             if (!std::filesystem::create_directory(dir))
-                throw error(fmt::format("snapshot output already exists: {}", path));
+                throw error{"snapshot output already exists: {}", path};
             file::write_stream out { (dir / "state").string(), 1024 * 1024 };
             CRC32 crc;
             ser.for_each_buffer([&](const buffer b) {
@@ -148,19 +148,19 @@ namespace turbo::cardano::ledger {
                 }
                 _subchains.merge_valid();
                 if (_subchains.size() > 1) [[unlikely]]
-                    throw error(fmt::format("inconsistent subschain list: {}", _subchains));
+                    throw error{"inconsistent subschain list: {}", _subchains};
                 const auto &sc = _subchains.rbegin()->second;
                 if (sc.offset != 0 || sc.end_offset() != end_offset()) [[unlikely]]
-                    throw error(fmt::format("the local subchain range: [{}:{}] does not match the chain: [0:{}]",
-                        sc.offset, sc.end_offset(), end_offset()));
+                    throw error{"the local subchain range: [{}:{}] does not match the chain: [0:{}]",
+                        sc.offset, sc.end_offset(), end_offset()};
             }
             if (end_offset() != valid_end_offset()) [[unlikely]]
-                throw error(fmt::format("validator state from {} is in inconsistent state valid_end_offset: {} vs end_offset: {}",
-                    path, valid_end_offset(), end_offset()));
+                throw error{"validator state from {} is in inconsistent state valid_end_offset: {} vs end_offset: {}",
+                    path, valid_end_offset(), end_offset()};
         } catch (const std::exception &ex) {
             const auto err_path = path + ".err";
             std::filesystem::rename(path, err_path);
-            throw error(fmt::format("loading state failed: {} moved the invalid state file to {}", ex.what(), err_path));
+            throw error{"loading state failed: {} moved the invalid state file to {}", ex.what(), err_path};
         }
     }
 
@@ -209,14 +209,14 @@ namespace turbo::cardano::ledger {
     {
         if (era > 0) [[likely]] {
             if (!_eras.empty() && slot < _eras.back()) [[unlikely]]
-                throw error(fmt::format("era blocks have reported out of order slot {} came after {}", slot, _eras.back()));
+                throw error{"era blocks have reported out of order slot {} came after {}", slot, _eras.back()};
             if (era > _eras.size()) [[unlikely]] {
                 const auto era_start_slot = !_eras.empty() && era > 2 ? slot - (slot - _eras.back()) % _cfg.shelley_epoch_length : slot;
                 while (era > _eras.size()) {
                     _eras.emplace_back(era_start_slot);
                 }
             } else if (era < _eras.size()) [[unlikely]] {
-                throw error(fmt::format("a block of era {} came in era {}", era, _eras.size()));
+                throw error{"a block of era {} came in era {}", era, _eras.size()};
             }
         }
     }
@@ -245,7 +245,7 @@ namespace turbo::cardano::ledger {
                 case 8:
                     // Dijkstra currently reuses the Conway ledger-state implementation.
                     break;
-                [[unlikely]] default: throw error(fmt::format("unsupported era: {}", new_era));
+                [[unlikely]] default: throw error{"unsupported era: {}", new_era};
             }
         }
     }
@@ -272,7 +272,7 @@ namespace turbo::cardano::ledger {
                 case 8:
                     // Dijkstra currently reuses the Conway VRF-state implementation.
                     break;
-                [[unlikely]] default: throw error(fmt::format("unsupported era: {}", new_era));
+                [[unlikely]] default: throw error{"unsupported era: {}", new_era};
             }
         }
     }

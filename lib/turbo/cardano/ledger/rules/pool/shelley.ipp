@@ -12,7 +12,7 @@
         const auto pv11 = _params.protocol_ver.major >= 11;
         if (active_it == _active_pool_params.end()) {
             if (pv11 && _pool_vrf_key_hashes.contains(reg.params.vrf_vkey)) [[unlikely]]
-                throw error(fmt::format("pool {} tried to register an already registered VRF key {}", reg.pool_id, reg.params.vrf_vkey));
+                throw error{"pool {} tried to register an already registered VRF key {}", reg.pool_id, reg.params.vrf_vkey};
             _active_pool_params.try_emplace(reg.pool_id, reg.params);
             if (pv11)
                 _add_pool_vrf_key_hash(reg.params.vrf_vkey);
@@ -24,7 +24,7 @@
                 || (_params.protocol_ver.major > 11 && future_it != _future_pool_params.end()
                     && reg.params.vrf_vkey == future_it->second.params.vrf_vkey);
             if (pv11 && !vrf_belongs_to_pool && _pool_vrf_key_hashes.contains(reg.params.vrf_vkey)) [[unlikely]] {
-                throw error(fmt::format("pool {} tried to re-register an already registered VRF key {}", reg.pool_id, reg.params.vrf_vkey));
+                throw error{"pool {} tried to re-register an already registered VRF key {}", reg.pool_id, reg.params.vrf_vkey};
             }
             auto [f_it, f_created] = _future_pool_params.try_emplace(reg.pool_id, reg.params);
             if (pv11) {
@@ -93,7 +93,7 @@
             // PV11 may have erased a shared key when another pool changed VRF.
             if (_params.protocol_ver.major == 11)
                 return;
-            throw error(fmt::format("VRF key {} is missing from the registered-key occurrence map", vrf));
+            throw error{"VRF key {} is missing from the registered-key occurrence map", vrf};
         }
         if (it->second <= 1)
             _pool_vrf_key_hashes.erase(it);

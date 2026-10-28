@@ -20,7 +20,7 @@ namespace turbo::storage {
         auto canon_path = std::filesystem::weakly_canonical(full_path);
         auto [diffBegin, diffEnd] = std::mismatch(db_dir.begin(), db_dir.end(), canon_path.begin());
         if (diffBegin != db_dir.end()) [[unlikely]]
-            throw error(fmt::format("the supplied path '{}' is not inside the host directory '{}'", canon_path.string(), db_dir.string()));
+            throw error{"the supplied path '{}' is not inside the host directory '{}'", canon_path.string(), db_dir.string()};
         return std::filesystem::relative(canon_path, db_dir).string();
     }
 
@@ -29,7 +29,7 @@ namespace turbo::storage {
         auto canon_path = std::filesystem::weakly_canonical(db_dir / rel_path);
         auto [diffBegin, diffEnd] = std::mismatch(db_dir.begin(), db_dir.end(), canon_path.begin());
         if (diffBegin != db_dir.end()) [[unlikely]]
-            throw error(fmt::format("the supplied path '{}' does not resolve into the host directory '{}'", canon_path.string(), db_dir.string()));
+            throw error{"the supplied path '{}' does not resolve into the host directory '{}'", canon_path.string(), db_dir.string()};
         std::filesystem::create_directories(canon_path.parent_path());
         return canon_path.string();
     }
@@ -98,7 +98,7 @@ namespace turbo::storage {
     const_iterator &const_iterator::operator=(const const_iterator &o)
     {
         if (&_chunks != &o._chunks) [[unlikely]]
-            throw error(fmt::format("an attempt to assign an iterator across different instances of chunk_registry"));
+            throw error{"an attempt to assign an iterator across different instances of chunk_registry"};
         _chunk_it = o._chunk_it;
         _block_no = o._block_no;
         _chunk_cache.reset();
@@ -108,7 +108,7 @@ namespace turbo::storage {
     bool const_iterator::operator<(const const_iterator &o) const
     {
         if (&_chunks != &o._chunks) [[unlikely]]
-            throw error(fmt::format("an attempt to use an iterator across different instances of chunk_registry"));
+            throw error{"an attempt to use an iterator across different instances of chunk_registry"};
         if (_chunk_it == o._chunk_it)
             return _block_no < o._block_no;
         if (_chunk_it == _chunks.end())

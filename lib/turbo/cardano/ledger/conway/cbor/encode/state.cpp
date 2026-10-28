@@ -20,7 +20,7 @@ namespace turbo::cardano::ledger::conway {
                 enc.uint(1);
                 v.anchor.to_cbor(enc);
             } else {
-                throw error(fmt::format("unsupported hot_key_t value: {}", typeid(T).name()));
+                throw error{"unsupported hot_key_t value: {}", typeid(T).name()};
             }
         }, val);
     }

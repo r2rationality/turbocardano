@@ -88,7 +88,7 @@ namespace turbo::cli::node_api {
                 size_t size = 0;
                 const auto [end, ec] = std::from_chars(value.data(), value.data() + value.size(), size);
                 if (ec != std::errc {} || end != value.data() + value.size() || !size)
-                    throw error(fmt::format("{} must be a positive integer", name));
+                    throw error{"{} must be a positive integer", name};
                 return size;
             };
             const auto max_connections = positive_size("max-connections");

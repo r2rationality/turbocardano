@@ -37,7 +37,7 @@ namespace turbo::cardano::network::miniprotocol::blockfetch {
             case encoding_zstd_fast:
             case encoding_zstd_max:
                 return zstd::decompress(payload);
-            [[unlikely]] default: throw error(fmt::format("unsupported encoding {}", encoding));
+            [[unlikely]] default: throw error{"unsupported encoding {}", encoding};
         }
     }
 
@@ -47,7 +47,7 @@ namespace turbo::cardano::network::miniprotocol::blockfetch {
             case encoding_raw: return 0;
             case encoding_zstd_fast: return fast_compression_level;
             case encoding_zstd_max: return zstd::default_compression_level;
-            [[unlikely]] default: throw error(fmt::format("unsupported encoding {}", encoding));
+            [[unlikely]] default: throw error{"unsupported encoding {}", encoding};
         }
     }
 
@@ -69,7 +69,7 @@ namespace turbo::cardano::network::miniprotocol::blockfetch {
             case 4: return { msg_block_t::from_cbor(it) };
             case 5: return { msg_batch_done_t {} };
             case 6: return { msg_compressed_blocks_t::from_cbor(it) };
-            [[unlikely]] default: throw error(fmt::format("an unsupported type for a chainsync::msg_t: {}", typ));
+            [[unlikely]] default: throw error{"an unsupported type for a chainsync::msg_t: {}", typ};
         }
     }
 

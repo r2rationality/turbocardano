@@ -23,7 +23,7 @@
                             case witness_type::script:
                             case witness_type::none:
                                 return {};
-                            [[unlikely]] default: throw error(fmt::format("unsupported witness type: {}", static_cast<int>(typ)));
+                            [[unlikely]] default: throw error{"unsupported witness type: {}", static_cast<int>(typ)};
                         }
                     } catch (const std::exception &ex) {
                         const auto msg = fmt::format("txwit: slot: {} tx: {} error: {}", blk->slot(), tx.hash(), ex.what());

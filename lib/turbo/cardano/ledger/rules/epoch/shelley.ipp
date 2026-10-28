@@ -18,7 +18,7 @@
                 new_epoch = 0;
         }
         if (*new_epoch < _epoch || *new_epoch > _epoch + 1) [[unlikely]]
-            throw error(fmt::format("unexpected new epoch value: {} the current epoch: {}", *new_epoch, _epoch));;
+            throw error{"unexpected new epoch value: {} the current epoch: {}", *new_epoch, _epoch};;
         _epoch = *new_epoch;
         _epoch_slot = 0;
         _apply_future_shelley_delegs(cardano::slot::from_epoch(_epoch, _cfg));

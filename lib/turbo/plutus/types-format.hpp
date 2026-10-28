@@ -155,15 +155,15 @@ namespace fmt {
                 return fmt::format_to(ctx.out(), "{}", v->typ);
             if (v->typ == type_tag::list || v->typ == type_tag::array) {
                 if (v->nested.size() != 1) [[unlikely]]
-                    throw error(fmt::format("the nested type list for a sequence must have just one element but has {}", v->nested.size()));
+                    throw error{"the nested type list for a sequence must have just one element but has {}", v->nested.size()};
                 return fmt::format_to(ctx.out(), "({} {})", v->typ, v->nested.front());
             }
             if (v->typ == type_tag::pair) {
                 if (v->nested.size() != 2) [[unlikely]]
-                    throw error(fmt::format("the nested type list for a pair must have two elements but has {}", v->nested.size()));
+                    throw error{"the nested type list for a pair must have two elements but has {}", v->nested.size()};
                 return fmt::format_to(ctx.out(), "({} {} {})", v->typ, v->nested.front(), v->nested.back());
             }
-            throw error(fmt::format("unsupported constant_type: {}!", v->typ));
+            throw error{"unsupported constant_type: {}!", v->typ};
         }
     };
 

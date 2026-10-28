@@ -70,7 +70,7 @@ namespace turbo::cli::plutus_sample_txs {
                 std::uniform_int_distribution<size_t> dist { 0, txs.size() };
                 const auto ri = dist(rnd);
                 if (const auto [it, created] = sample.emplace(txs[ri]); !created) [[unlikely]]
-                    throw error(fmt::format("trying to add a duplicate transaction id to the sample: {}", *it));
+                    throw error{"trying to add a duplicate transaction id to the sample: {}", *it};
                 if (ri + 1 != txs.size())
                     txs[ri] = txs.back();
                 txs.pop_back();

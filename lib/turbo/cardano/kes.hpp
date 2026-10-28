@@ -38,7 +38,7 @@ namespace turbo::cardano {
             if (span_memcmp(computed_vkey, vkey) != 0) [[unlikely]]
                 return false;
             if (period >= period_max) [[unlikely]]
-                throw error(fmt::format("KES period out of range: {}!", period));
+                throw error{"KES period out of range: {}!", period};
             if (period < period_split_point)
                 return _signature.verify(period, _lhs_vk, msg);
             return _signature.verify(period - period_split_point, _rhs_vk, msg);
@@ -64,7 +64,7 @@ namespace turbo::cardano {
         [[nodiscard]] bool verify(size_t period, const kes_vkey_span &vkey, const buffer &msg) const
         {
             if (period != 0) [[unlikely]]
-                throw error(fmt::format("period value must be 0 but got: {}", period));
+                throw error{"period value must be 0 but got: {}", period};
             return crypto::ed25519::verify(_signature, vkey, msg);
         }
     private:
@@ -80,7 +80,7 @@ namespace turbo::cardano {
 
             explicit split_seed(const buffer &sd) {
                 if (sd.size() != sizeof(crypto::ed25519::seed)) [[unlikely]]
-                    throw error(fmt::format("seed buffer must be of of {} bytes but got {}!", sizeof(crypto::ed25519::seed), sd.size()));
+                    throw error{"seed buffer must be of of {} bytes but got {}!", sizeof(crypto::ed25519::seed), sd.size()};
                 uint8_vector tmp {};
                 tmp << std::string_view { "\x01" } << sd;
                 crypto::blake2b::digest(left, tmp);
@@ -112,7 +112,7 @@ namespace turbo::cardano {
             void update()
             {
                 if (_period + 1 >= period_end) [[unlikely]]
-                    throw error(fmt::format("KES secret of level {} cannot grow >= {} while the current period is {}", DEPTH, period_end, _period));
+                    throw error{"KES secret of level {} cannot grow >= {} while the current period is {}", DEPTH, period_end, _period};
                 ++_period;
             }
 

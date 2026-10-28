@@ -68,7 +68,7 @@
                 const cpp_rational pool_rel_active_stake { pool_stake, std::max<uint64_t>(1, _go.pool_dist.total_stake()) };
                 const cpp_rational pledge_rel_total_stake { info.params.pledge, std::max<uint64_t>(1, total_stake) };
                 if (pool_rel_total_stake < pledge_rel_total_stake) [[unlikely]]
-                    throw error(fmt::format("internal error: pledged stake: {} of pool {} is larger than the pool's total stake: {}", info.params.pledge, pool_id, pool_stake));
+                    throw error{"internal error: pledged stake: {} of pool {} is larger than the pool's total stake: {}", info.params.pledge, pool_id, pool_stake};
                 const cpp_rational s_mark = std::min(pledge_rel_total_stake, z0_r);
                 const cpp_rational pool_pledge_influence = rational_from_r64(_params_prev.pool_pledge_influence);
                 const cpp_rational factor1 = cpp_rational { staking_reward_pot } / (cpp_rational { 1 } + pool_pledge_influence);

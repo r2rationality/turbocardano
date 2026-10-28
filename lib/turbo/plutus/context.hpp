@@ -42,8 +42,8 @@ namespace turbo::plutus {
         void validate_format() const
         {
             if (format_version != current_format_version) [[unlikely]]
-                throw error(fmt::format("unsupported stored transaction context format version: {}; expected: {}",
-                    format_version, current_format_version));
+                throw error{"unsupported stored transaction context format version: {}; expected: {}",
+                    format_version, current_format_version};
             if (!protocol_ver.major) [[unlikely]]
                 throw error("the stored transaction context has no protocol version");
         }

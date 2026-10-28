@@ -30,11 +30,11 @@ namespace turbo {
     inline void span_memcpy_off(const std::span<uint8_t> &dst, size_t dst_off, const buffer &src, const std::source_location &loc=std::source_location::current())
     {
         if (dst_off >= dst.size()) [[unlikely]]
-            throw error(fmt::format("dst_off must be less than {} but got {} in file {} at line {}!",
-                dst.size(), dst_off, loc.file_name(), loc.line()));
+            throw error{"dst_off must be less than {} but got {} in file {} at line {}!",
+                dst.size(), dst_off, loc.file_name(), loc.line()};
         if (dst.size() - dst_off < src.size()) [[unlikely]]
-            throw error(fmt::format("expected dst must have more than {} bytes after offset {} but got {} in file {}, line {}!",
-                src.size(), dst_off, dst.size() - dst_off, loc.file_name(), loc.line()));
+            throw error{"expected dst must have more than {} bytes after offset {} but got {} in file {}, line {}!",
+                src.size(), dst_off, dst.size() - dst_off, loc.file_name(), loc.line()};
         if (!src.empty())
             memcpy(dst.data() + dst_off, src.data(), src.size());
     }
@@ -42,8 +42,8 @@ namespace turbo {
     inline void span_memcpy(const std::span<uint8_t> &dst, const buffer &src, const std::source_location &loc=std::source_location::current())
     {
         if (dst.size() != src.size()) [[unlikely]]
-            throw error(fmt::format("expected src span to be of {} bytes but got {} in file {}, line {}!",
-                dst.size(), src.size(), loc.file_name(), loc.line()));
+            throw error{"expected src span to be of {} bytes but got {} in file {}, line {}!",
+                dst.size(), src.size(), loc.file_name(), loc.line()};
         if (!dst.empty())
             memcpy(dst.data(), src.data(), dst.size());
     }
@@ -52,8 +52,8 @@ namespace turbo {
     void span_memcpy(const std::span<uint8_t> &dst, const std::span<const uint8_t, SZ> &src, const std::source_location &loc=std::source_location::current())
     {
         if (dst.size() != src.size()) [[unlikely]]
-            throw error(fmt::format("expected src span to be of {} bytes but got {} in file {}, line {}!",
-                dst.size(), src.size(), loc.file_name(), loc.line()));
+            throw error{"expected src span to be of {} bytes but got {} in file {}, line {}!",
+                dst.size(), src.size(), loc.file_name(), loc.line()};
         if (!dst.empty())
             memcpy(dst.data(), src.data(), dst.size());
     }
@@ -71,8 +71,8 @@ namespace turbo {
     int span_memcmp(const std::span<const uint8_t> &dst, const std::span<const uint8_t, SZ> &src, const std::source_location &loc=std::source_location::current())
     {
         if (dst.size() != src.size()) [[unlikely]]
-            throw error(fmt::format("expected src span to be of {} bytes but got {} in file {}, line {}!",
-                dst.size(), src.size(), loc.file_name(), loc.line()));
+            throw error{"expected src span to be of {} bytes but got {} in file {}, line {}!",
+                dst.size(), src.size(), loc.file_name(), loc.line()};
         return dst.empty() ? 0 : memcmp(dst.data(), src.data(), dst.size());
     }
 

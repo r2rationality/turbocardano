@@ -11,7 +11,7 @@ namespace turbo::cardano::dijkstra {
         auto &it = v.array();
         const auto raw_type = it.read().uint();
         if (raw_type > 4) [[unlikely]]
-            throw error(fmt::format("unsupported Dijkstra script type: {}", raw_type));
+            throw error{"unsupported Dijkstra script type: {}", raw_type};
         const auto type = static_cast<script_type>(raw_type);
         auto &script = it.read();
         script_t res { ::turbo::cardano::detail::script_info_from_cbor(

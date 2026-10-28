@@ -15,7 +15,7 @@ namespace turbo::cardano::conway {
                 return v;
             auto &reader = v.tag();
             if (reader.id() != 258) [[unlikely]]
-                throw error(fmt::format("expected a tag with id 258 but got: {}!", reader.id()));
+                throw error{"expected a tag with id 258 but got: {}!", reader.id()};
             return reader.read();
         }
 
@@ -70,7 +70,7 @@ namespace turbo::cardano::conway {
             if (type < 16) {
                 const auto mask = static_cast<uint16_t>(1U << type);
                 if (seen_types & mask) [[unlikely]]
-                    throw error(fmt::format("duplicate conway::transaction_witness_set element type: {}", type));
+                    throw error{"duplicate conway::transaction_witness_set element type: {}", type};
                 seen_types |= mask;
             }
             auto &val = it.read_val(std::move(key));
@@ -91,7 +91,7 @@ namespace turbo::cardano::conway {
                 }
                 case 6: decode_scripts<script_type::plutus_v2>(res, val); break;
                 case 7: decode_scripts<script_type::plutus_v3>(res, val); break;
-                [[unlikely]] default: throw error(fmt::format("unsupported conway::transaction_witness_set element type: {}", type));
+                [[unlikely]] default: throw error{"unsupported conway::transaction_witness_set element type: {}", type};
             }
         }
         res.raw = v.data_raw();

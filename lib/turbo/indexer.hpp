@@ -51,7 +51,7 @@ namespace turbo::indexer {
         void emplace(std::shared_ptr<index::indexer_base> &&idxr) {
             auto [ it, created ] = try_emplace(idxr->name(), std::move(idxr));
             if (!created) [[unlikely]]
-                throw error(fmt::format("duplicate index: {}", it->first));
+                throw error{"duplicate index: {}", it->first};
         }
     };
 

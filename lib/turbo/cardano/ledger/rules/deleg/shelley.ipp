@@ -56,7 +56,7 @@
             if (acc.deposit >= deposit_size) [[likely]]
                 acc.deposit -= deposit_size;
             else
-                throw error(fmt::format("expected stake deposit: {} is more than the actual one: {}", deposit_size, acc.deposit));
+                throw error{"expected stake deposit: {} is more than the actual one: {}", deposit_size, acc.deposit};
             if (_deposited >= deposit_size) [[likely]]
                 _deposited -= deposit_size;
             else
@@ -90,7 +90,7 @@
                 acc_it != _accounts.end() && acc_it->second.deleg.has_value());
         }
         if (!pool_known) [[unlikely]]
-            throw error(fmt::format("trying to delegate {} to an unknown pool: {}", stake_id, pool_id));
+            throw error{"trying to delegate {} to an unknown pool: {}", stake_id, pool_id};
         auto &acc = _accounts.at(stake_id);
         const auto stake = acc.stake + acc.reward;
         const bool deleg_created = !acc.deleg;

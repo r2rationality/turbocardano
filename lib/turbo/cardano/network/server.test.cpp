@@ -500,7 +500,7 @@ suite cardano_network_server_suite = [] {
             expect(std::chrono::steady_clock::now() - started < std::chrono::seconds { 2 });
             srv.stop();
         };
-        "inquire the tip"_test = [&] {
+        "inquire the tip and find an intersection"_test = [&] {
             expect(fatal(cr->tip().has_value()));
             const auto iow = std::make_shared<asio::worker_manual>();
             const auto work_guard = boost::asio::make_work_guard(iow->io_context());
@@ -513,6 +513,8 @@ suite cardano_network_server_suite = [] {
             std::optional<client::find_response> tip_resp {};
             {
                 const auto client = client_manager_async::get().connect(listen_addr, v14, cr->config(), iow);
+                // Processing without requests must not prevent subsequent requests.
+                client->process(nullptr, iow.get());
                 client->find_tip([&](auto &&resp) {
                     iow->io_context().post([&] {
                         timer->cancel();
@@ -522,10 +524,24 @@ suite cardano_network_server_suite = [] {
                 });
                 iow->io_context().run();
                 iow->io_context().restart();
+                client->process(nullptr, iow.get());
+                const optional_point2_list points { *cr->tip(), cr->cbegin()->point2() };
+                client::find_response intersection;
+                client->find_intersection(points, [&](auto &&resp) { intersection = std::move(resp); });
+                client->process(nullptr, iow.get());
+                expect_equal(intersection.addr, listen_addr);
+                expect(fatal(std::holds_alternative<intersection_info_t>(intersection.res)));
+                const auto &found = std::get<intersection_info_t>(intersection.res);
+                expect(found.found);
+                expect_equal(found.isect, points.front());
+                expect_equal(found.tip, optional_point3 { cr->tip() });
             }
             expect(!timer_stop.load(std::memory_order_relaxed));
             if (tip_resp.has_value() && std::holds_alternative<intersection_info_t>(tip_resp->res)) {
                 const auto &isect = std::get<intersection_info_t>(tip_resp->res);
+                expect_equal(tip_resp->addr, listen_addr);
+                expect(!isect.found);
+                expect(!isect.isect);
                 expect_equal(optional_point3 { cr->tip() }, isect.tip);
             } else {
                 expect(false);
@@ -549,6 +565,8 @@ suite cardano_network_server_suite = [] {
                     auto client = client_manager_async::get().connect(listen_addr, v14, cr->config(), iow);
                     const optional_point2_list start_points {};
                     client->fetch_headers(start_points, num_hdrs, [&](auto &&resp) {
+                        expect_equal(resp.addr, listen_addr);
+                        expect(!resp.intersect);
                         std::visit([&](const auto &rv) {
                             using RT = std::decay_t<decltype(rv)>;
                             if constexpr (std::is_same_v<RT, client::error_msg>) {
@@ -559,6 +577,11 @@ suite cardano_network_server_suite = [] {
                                     iow->io_context().stop();
                                 });
                             } else {
+                                uint64_t prev_slot = 0;
+                                for (const auto &hdr: rv) {
+                                    expect(hdr.slot >= prev_slot);
+                                    prev_slot = hdr.slot;
+                                }
                                 num_blocks.fetch_add(rv.size(), std::memory_order_relaxed);
                             }
                         }, resp.res);
@@ -587,7 +610,9 @@ suite cardano_network_server_suite = [] {
                     auto client = client_manager_async::get().connect(listen_addr, v14, cr->config(), iow);
                     const point2 from { 74044592, block_hash::from_hex("9903904F8A09D48FDAF19646D0907403536AFD6BE85C9BD7038A58BF0267A1AA") };
                     const optional_point2_list start_points { from };
-                    client->fetch_headers(start_points, num_hdrs, [&](auto &&resp) {
+                    client->fetch_headers(start_points, num_hdrs, [&, from](auto &&resp) {
+                        expect_equal(resp.addr, listen_addr);
+                        expect(resp.intersect == std::optional<point2> { from });
                         std::visit([&](const auto &rv) {
                             using RT = std::decay_t<decltype(rv)>;
                             if constexpr (std::is_same_v<RT, client::error_msg>) {
@@ -598,6 +623,11 @@ suite cardano_network_server_suite = [] {
                                     iow->io_context().stop();
                                 });
                             } else {
+                                auto prev_slot = from.slot;
+                                for (const auto &hdr: rv) {
+                                    expect(hdr.slot >= prev_slot);
+                                    prev_slot = hdr.slot;
+                                }
                                 num_blocks.fetch_add(rv.size(), std::memory_order_relaxed);
                             }
                         }, resp.res);

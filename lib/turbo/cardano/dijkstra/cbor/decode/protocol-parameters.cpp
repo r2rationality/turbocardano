@@ -35,10 +35,10 @@ namespace turbo::cardano::dijkstra {
             auto &key = it.read_key();
             const auto type = key.uint();
             if (type > 39) [[unlikely]]
-                throw error(fmt::format("unsupported Dijkstra protocol parameter key: {}", type));
+                throw error{"unsupported Dijkstra protocol parameter key: {}", type};
             const auto mask = uint64_t { 1 } << type;
             if (seen_low & mask) [[unlikely]]
-                throw error(fmt::format("duplicate Dijkstra protocol parameter key: {}", type));
+                throw error{"duplicate Dijkstra protocol parameter key: {}", type};
             seen_low |= mask;
             auto &value = it.read_val(std::move(key));
             switch (type) {
@@ -94,7 +94,7 @@ namespace turbo::cardano::dijkstra {
                 }
                 case 39: upd.min_pool_margin = interval_from_cbor(value, true, false); break;
                 [[unlikely]] default:
-                    throw error(fmt::format("unsupported Dijkstra protocol parameter key: {}", type));
+                    throw error{"unsupported Dijkstra protocol parameter key: {}", type};
             }
         }
         return res;

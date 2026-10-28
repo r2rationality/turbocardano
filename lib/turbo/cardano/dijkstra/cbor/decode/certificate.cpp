@@ -29,7 +29,7 @@ namespace turbo::cardano::dijkstra {
             if (v.type() == cbor::major_type::tag) {
                 auto &tag = v.tag();
                 if (tag.id() != 258) [[unlikely]]
-                    throw error(fmt::format("expected pool owner set tag 258 but got: {}", tag.id()));
+                    throw error{"expected pool owner set tag 258 but got: {}", tag.id()};
                 items = &tag.read();
             }
             set_t<stake_keyhash_t> result {};
@@ -113,11 +113,11 @@ namespace turbo::cardano::dijkstra {
                     optional_anchor_t::from_cbor(it.read())
                 } }};
                 [[unlikely]] default:
-                    throw error(fmt::format("unsupported Dijkstra certificate type: {}", type));
+                    throw error{"unsupported Dijkstra certificate type: {}", type};
             }
         }();
         if (!it.done()) [[unlikely]]
-            throw error(fmt::format("Dijkstra certificate type {} has trailing elements", type));
+            throw error{"Dijkstra certificate type {} has trailing elements", type};
         return res;
     }
 
@@ -128,7 +128,7 @@ namespace turbo::cardano::dijkstra {
         if (v.type() == cbor::major_type::tag) {
             auto &tag = v.tag();
             if (tag.id() != 258) [[unlikely]]
-                throw error(fmt::format("expected certificate set tag 258 but got: {}", tag.id()));
+                throw error{"expected certificate set tag 258 but got: {}", tag.id()};
             items = &tag.read();
         }
         if (!items->indefinite()) [[likely]]

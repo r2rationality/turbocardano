@@ -34,7 +34,7 @@
             else if (c.source == reward_source::treasury)
                 instant_reward_treasury(stake_id, coin);
             else
-                throw error(fmt::format("unsupported reward source: {}", static_cast<int>(c.source)));
+                throw error{"unsupported reward source: {}", static_cast<int>(c.source)};
         }
     }
 
@@ -53,7 +53,7 @@
     {
         if (_params.protocol_ver.major >= 2) {
             if (!_cfg.shelley_delegates.contains(prop.key_id)) [[unlikely]]
-                throw error(fmt::format("protocol update proposal from a key not in the shelley genesis delegate list: {}!", prop.key_id));
+                throw error{"protocol update proposal from a key not in the shelley genesis delegate list: {}!", prop.key_id};
             if (!prop.epoch || *prop.epoch == _epoch) {
                 const auto too_late = cardano::slot::from_epoch(_epoch + 1, _cfg) - 2 * _cfg.shelley_stability_window;
                 if (slot < too_late) {
@@ -75,18 +75,18 @@
         const cardano::pool_hash &pool_id, const cardano::vrf_vkey &vrf_vkey)
     {
         if (!_shelley_delegs.contains(hash)) [[unlikely]]
-            throw error(fmt::format("an attempt to redelegate an unknown shelley genesis delegate {}", hash));
+            throw error{"an attempt to redelegate an unknown shelley genesis delegate {}", hash};
         for (const auto &[genesis, deleg]: _shelley_delegs) {
             if (genesis != hash && deleg.delegate == pool_id) [[unlikely]]
-                throw error(fmt::format("shelley genesis delegate {} is already active", pool_id));
+                throw error{"shelley genesis delegate {} is already active", pool_id};
             if (genesis != hash && deleg.vrf == vrf_vkey) [[unlikely]]
-                throw error(fmt::format("shelley genesis VRF key {} is already active", vrf_vkey));
+                throw error{"shelley genesis VRF key {} is already active", vrf_vkey};
         }
         for (const auto &[future, deleg]: _future_shelley_delegs) {
             if (future.genesis != hash && deleg.delegate == pool_id) [[unlikely]]
-                throw error(fmt::format("shelley genesis delegate {} is already scheduled", pool_id));
+                throw error{"shelley genesis delegate {} is already scheduled", pool_id};
             if (future.genesis != hash && deleg.vrf == vrf_vkey) [[unlikely]]
-                throw error(fmt::format("shelley genesis VRF key {} is already scheduled", vrf_vkey));
+                throw error{"shelley genesis VRF key {} is already scheduled", vrf_vkey};
         }
         if (slot > std::numeric_limits<uint64_t>::max() - _cfg.shelley_stability_window) [[unlikely]]
             throw error("shelley genesis delegation activation slot overflows");
@@ -161,8 +161,8 @@
                 {
                     const auto utxo_bal = utxo_balance();
                     if (utxo_bal > _cfg.shelley_max_lovelace_supply) [[unlikely]]
-                        throw error(fmt::format("utxo balance: {} is larger than the total ADA supply: {}",
-                            cardano::amount { utxo_bal }, cardano::amount { _cfg.shelley_max_lovelace_supply }));
+                        throw error{"utxo balance: {} is larger than the total ADA supply: {}",
+                            cardano::amount { utxo_bal }, cardano::amount { _cfg.shelley_max_lovelace_supply }};
                     _reserves = _cfg.shelley_max_lovelace_supply - utxo_bal;
                 }
                 // remove empty UTXO entries

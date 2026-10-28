@@ -109,7 +109,7 @@ namespace turbo::cardano::network {
         {
             std::scoped_lock lk { _futures_mutex };
             if (!_futures.empty()) [[unlikely]]
-                throw error(fmt::format("a client instances can be reset only when there are no active requests but there are: {}", _futures.size()));
+                throw error{"a client instances can be reset only when there are no active requests but there are: {}", _futures.size()};
             _conn.reset();
         }
 
@@ -180,7 +180,7 @@ namespace turbo::cardano::network {
                 logger::error("unexpected message: mode: {} mini_protocol_id: {} body size: {} body: {}",
                     static_cast<int>(recv_info.mode()), static_cast<uint16_t>(recv_info.mini_protocol_id()), recv_payload.size(),
                     cbor::zero2::parse(recv_payload).get().to_string());
-                throw error(fmt::format("unexpected message: mode: {} protocol_id: {}", static_cast<int>(recv_info.mode()), static_cast<uint16_t>(recv_info.mini_protocol_id())));
+                throw error{"unexpected message: mode: {} protocol_id: {}", static_cast<int>(recv_info.mode()), static_cast<uint16_t>(recv_info.mini_protocol_id())};
             }
             co_return recv_payload;
         }
@@ -188,7 +188,7 @@ namespace turbo::cardano::network {
         static boost::asio::awaitable<void> _write_request(tcp::socket &socket, const mini_protocol mp_id, const buffer &data)
         {
             if (data.size() >= (1 << 16)) [[unlikely]]
-                throw error(fmt::format("payload is larger than allowed: {}!", data.size()));
+                throw error{"payload is larger than allowed: {}!", data.size()};
             uint8_vector segment {};
             auto epoch_time = std::chrono::system_clock::now().time_since_epoch();
             auto micros = static_cast<uint32_t>(std::chrono::duration_cast<std::chrono::microseconds>(epoch_time).count());
@@ -212,11 +212,11 @@ namespace turbo::cardano::network {
             auto results = co_await _wait_with_deadline(_resolver->async_resolve(_addr.host, _addr.port, boost::asio::use_awaitable));
             _check_stop(_stop);
             if (results.empty()) [[unlikely]]
-                throw error(fmt::format("DNS resolve for {}:{} returned no results!", _addr.host, _addr.port));
+                throw error{"DNS resolve for {}:{} returned no results!", _addr.host, _addr.port};
             co_await _wait_with_deadline(socket->async_connect(*results.begin(), boost::asio::use_awaitable));
             _check_stop(_stop);
             if (!socket->is_open()) [[unlikely]] {
-                throw error(fmt::format("failed to connect to {} within the allotted timeframe", _addr));
+                throw error{"failed to connect to {} within the allotted timeframe", _addr};
             }
 
             cbor::encoder enc {};
@@ -238,10 +238,10 @@ namespace turbo::cardano::network {
                 if constexpr (std::is_same_v<T, miniprotocol::handshake::msg_accept_version_t>) {
                     if ((mv.version != 14 && mv.version != 999)
                             || mv.version < _version_cfg.min || mv.version > _version_cfg.max) [[unlikely]]
-                        throw error(fmt::format("peer at {}:{} ignored the requested protocol version range and returned {}!", _addr.host, _addr.port, mv.version));
+                        throw error{"peer at {}:{} ignored the requested protocol version range and returned {}!", _addr.host, _addr.port, mv.version};
                     logger::info("outbound peer {}: negotiated protocol version {}", _addr, mv.version);
                 } else {
-                    throw error(fmt::format("peer at {}:{} refused the requested protocol versions!", _addr.host, _addr.port));
+                    throw error{"peer at {}:{} refused the requested protocol versions!", _addr.host, _addr.port};
                 }
             }, msg);
             co_return socket;
@@ -272,7 +272,7 @@ namespace turbo::cardano::network {
                     break;
                 }
                 [[unlikely]] default:
-                    throw error(fmt::format("unexpected chain_sync message: {}!", typ));
+                    throw error{"unexpected chain_sync message: {}!", typ};
             }
             co_return isect;
         }
@@ -322,7 +322,7 @@ namespace turbo::cardano::network {
             };
             auto res = co_await (complete() || _wait_for_timer(deadline));
             if (std::holds_alternative<timer_stopped_t>(res)) [[unlikely]]
-                throw error(fmt::format("network operation timed out after {} ms", std::chrono::duration_cast<std::chrono::milliseconds>(deadline).count()));
+                throw error{"network operation timed out after {} ms", std::chrono::duration_cast<std::chrono::milliseconds>(deadline).count()};
             if (failure)
                 std::rethrow_exception(failure);
             if constexpr (!std::is_same_v<T, void>)
@@ -350,7 +350,7 @@ namespace turbo::cardano::network {
                                 batch_done = true;
                                 return false;
                             } else {
-                                throw error(fmt::format("unexpected blockfetch message: {}!", msg.index()));
+                                throw error{"unexpected blockfetch message: {}!", msg.index()};
                             }
                         }, std::move(msg));
                         if (!go_on)
@@ -403,7 +403,7 @@ namespace turbo::cardano::network {
                         break;
                     }
                     [[unlikely]] default:
-                        throw error(fmt::format("unexpected chain_sync message: {}!", typ));
+                        throw error{"unexpected chain_sync message: {}!", typ};
                 }
             } catch (const std::exception &ex) {
                 handler(block_response_t { fmt::format("fetch_blocks error: {}", ex.what()) });
@@ -553,7 +553,7 @@ namespace turbo::cardano::network {
                         break;
                     }
                     if (typ != 2) [[unlikely]] // !MsgRollForward
-                        throw error(fmt::format("unexpected chain_sync message: {}!", typ));
+                        throw error{"unexpected chain_sync message: {}!", typ};
                     {
                         const auto hdr = parsed_header::from_cbor(resp_it.read(), _cfg);
                         headers.emplace_back(hdr->slot(), hdr->hash());

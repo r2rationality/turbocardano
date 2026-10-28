@@ -39,7 +39,7 @@ namespace turbo::plutus {
 
         data unsupported_conway_v1_v2_cert(const char *typ)
         {
-            throw error(fmt::format("{} is not supported in a {} script context", typ, _typ));
+            throw error{"{} is not supported in a {} script context", typ, _typ};
             // A noop, to make Visual C++ happy
             return data::bint(_alloc, 0);
         }
@@ -59,13 +59,13 @@ namespace turbo::plutus {
             if ((_typ == script_type::plutus_v1 || _typ == script_type::plutus_v2) && tx.block().era() >= 7) {
                 const auto &ctx = dynamic_cast<const conway::tx_base &>(tx);
                 if (!ctx.votes().empty()) [[unlikely]]
-                    throw error(fmt::format("voting procedures are not supported in a {} script context", _typ));
+                    throw error{"voting procedures are not supported in a {} script context", _typ};
                 if (!ctx.proposals().empty()) [[unlikely]]
-                    throw error(fmt::format("proposal procedures are not supported in a {} script context", _typ));
+                    throw error{"proposal procedures are not supported in a {} script context", _typ};
                 if (ctx.current_treasury()) [[unlikely]]
-                    throw error(fmt::format("current treasury is not supported in a {} script context", _typ));
+                    throw error{"current treasury is not supported in a {} script context", _typ};
                 if (ctx.donation() != 0) [[unlikely]]
-                    throw error(fmt::format("treasury donation is not supported in a {} script context", _typ));
+                    throw error{"treasury donation is not supported in a {} script context", _typ};
             }
         }
 
@@ -99,7 +99,7 @@ namespace turbo::plutus {
                 inputs.emplace(in.id);
             for (const auto &in: ctx.ref_inputs()) {
                 if (inputs.contains(in.id)) [[unlikely]]
-                    throw error(fmt::format("reference input is also spent: {}", in.id));
+                    throw error{"reference input is also spent: {}", in.id};
             }
         }
 
@@ -132,7 +132,7 @@ namespace turbo::plutus {
                         encode(ref.hash),
                         encode(ref.idx)
                     });
-                [[unlikely]] default: throw error(fmt::format("unsupported script_type: {}", static_cast<int>(_typ)));
+                [[unlikely]] default: throw error{"unsupported script_type: {}", static_cast<int>(_typ)};
             }
         }
 
@@ -141,7 +141,7 @@ namespace turbo::plutus {
             switch (pay_id.type) {
                 case pay_ident::ident_type::SHELLEY_KEY: return constr(0, { encode(pay_id.hash) });
                 case pay_ident::ident_type::SHELLEY_SCRIPT: return constr(1, { encode(pay_id.hash) });
-                [[unlikely]] default: throw error(fmt::format("an unsupported pay_id type within a script context: {}", static_cast<int>(pay_id.type)));
+                [[unlikely]] default: throw error{"an unsupported pay_id type within a script context: {}", static_cast<int>(pay_id.type)};
             }
         }
 
@@ -161,7 +161,7 @@ namespace turbo::plutus {
                 case script_type::plutus_v3:
                     return encode(stake_id);
                 [[unlikely]] default:
-                    throw error(fmt::format("unsupported script type: {}", _typ));
+                    throw error{"unsupported script type: {}", _typ};
             }
         }
 
@@ -175,7 +175,7 @@ namespace turbo::plutus {
                     return constr(1, {});
                 if constexpr (std::is_same_v<T, drep_t::no_confidence_t>)
                     return constr(2, {});
-                throw error(fmt::format("unsupported drep type: {}", typeid(T).name()));
+                throw error{"unsupported drep type: {}", typeid(T).name()};
                 return constr(2, {});
             }, drep.val);
         }
@@ -194,7 +194,7 @@ namespace turbo::plutus {
                 case voter_t::pool_key:
                     return constr(2, { encode(voter.hash) });
                 [[unlikely]] default:
-                    throw error(fmt::format("unsuported voter type: {}", static_cast<int>(voter.type)));
+                    throw error{"unsuported voter type: {}", static_cast<int>(voter.type)};
             }
         }
 
@@ -209,7 +209,7 @@ namespace turbo::plutus {
                 case vote_t::no: return constr(0, {});
                 case vote_t::yes: return constr(1, {});
                 case vote_t::abstain: return constr(2, {});
-                [[unlikely]] default: throw error(fmt::format("unsupported vote: {}", static_cast<int>(vote)));
+                [[unlikely]] default: throw error{"unsupported vote: {}", static_cast<int>(vote)};
             }
         }
 
@@ -237,7 +237,7 @@ namespace turbo::plutus {
                             return constr(3, { encode(cert) });
                         case script_type::plutus_v3:
                             return constr(3, { data::bint(_alloc, r.ref_idx), encode(cert) });
-                        [[unlikely]] default: throw error(fmt::format("unsupported script type: {}", _typ));
+                        [[unlikely]] default: throw error{"unsupported script type: {}", _typ};
                     }
                 }
                 case redeemer_tag::vote: {
@@ -246,7 +246,7 @@ namespace turbo::plutus {
                 case redeemer_tag::propose: {
                     return constr(5, { data::bint(_alloc, r.ref_idx), encode(ctx.proposal_at(r.ref_idx)) });
                 }
-                [[unlikely]] default: throw error(fmt::format("unsupported redeemer_tag: {}", static_cast<int>(r.tag)));
+                [[unlikely]] default: throw error{"unsupported redeemer_tag: {}", static_cast<int>(r.tag)};
             }
         }
 
@@ -258,7 +258,7 @@ namespace turbo::plutus {
                     return constr(0, { encode(id) });
                 if constexpr (std::is_same_v<T, stake_pointer>)
                     return constr(1, { encode(id.slot), encode(id.tx_idx), encode(id.cert_idx) });
-                throw error(fmt::format("unsupported stake_id type: {}", typeid(T).name()));
+                throw error{"unsupported stake_id type: {}", typeid(T).name()};
                 // A noop, to make Visual C++ happy
                 return data::bint(_alloc, 0);
             }, stake_id);
@@ -318,18 +318,18 @@ namespace turbo::plutus {
                 case script_type::plutus_v3:
                     return constr(0, { stake_cred(c.stake_id), constr(1, {}) });
                 [[unlikely]] default:
-                    throw error(fmt::format("unsupported script type: {}", _typ));
+                    throw error{"unsupported script type: {}", _typ};
             }
         }
 
         data encode(const genesis_deleg_cert &c)
         {
-            throw error(fmt::format("data serialization not implemented for: {}", typeid(c).name()));
+            throw error{"data serialization not implemented for: {}", typeid(c).name()};
         }
 
         data encode(const instant_reward_cert &c)
         {
-            throw error(fmt::format("data serialization not implemented for: {}", typeid(c).name()));
+            throw error{"data serialization not implemented for: {}", typeid(c).name()};
         }
 
         data encode(const reg_cert &c)
@@ -341,7 +341,7 @@ namespace turbo::plutus {
                 case script_type::plutus_v3:
                     return constr(0, { stake_cred(c.stake_id), conway_deposit(c.deposit) });
                 [[unlikely]] default:
-                    throw error(fmt::format("unsupported script type: {}", _typ));
+                    throw error{"unsupported script type: {}", _typ};
             }
         }
 
@@ -354,7 +354,7 @@ namespace turbo::plutus {
                 case script_type::plutus_v3:
                     return constr(1, { stake_cred(c.stake_id), constr(1, {}) });
                 [[unlikely]] default:
-                    throw error(fmt::format("unsupported script type: {}", _typ));
+                    throw error{"unsupported script type: {}", _typ};
             }
         }
 
@@ -367,7 +367,7 @@ namespace turbo::plutus {
                 case script_type::plutus_v3:
                     return constr(1, { stake_cred(c.stake_id), conway_deposit(c.deposit) });
                 [[unlikely]] default:
-                    throw error(fmt::format("unsupported script type: {}", _typ));
+                    throw error{"unsupported script type: {}", _typ};
             }
         }
 
@@ -379,7 +379,7 @@ namespace turbo::plutus {
                     return constr(2, { stake_cred(c.stake_id), encode(c.pool_id) });
                 case script_type::plutus_v3:
                     return constr(2, { stake_cred(c.stake_id), constr(0, { encode(c.pool_id) }) });
-                [[unlikely]] default: throw error(fmt::format("unsupported script type: {}", static_cast<int>(_typ)));
+                [[unlikely]] default: throw error{"unsupported script type: {}", static_cast<int>(_typ)};
             }
         }
 
@@ -392,7 +392,7 @@ namespace turbo::plutus {
                 case script_type::plutus_v3:
                     return constr(2, { encode(c.stake_id), constr(1, { encode(c.drep) }) });
                 [[unlikely]] default:
-                    throw error(fmt::format("unsupported script type: {}", _typ));
+                    throw error{"unsupported script type: {}", _typ};
             }
         }
 
@@ -405,7 +405,7 @@ namespace turbo::plutus {
                 case script_type::plutus_v3:
                     return constr(2, { encode(c.stake_id), constr(2, { encode(c.pool_id), encode(c.drep) }) });
                 [[unlikely]] default:
-                    throw error(fmt::format("unsupported script type: {}", _typ));
+                    throw error{"unsupported script type: {}", _typ};
             }
         }
 
@@ -418,7 +418,7 @@ namespace turbo::plutus {
                 case script_type::plutus_v3:
                     return constr(3, { encode(c.stake_id), constr(0, { encode(c.pool_id) }), data::bint(_alloc, c.deposit) });
                 [[unlikely]] default:
-                    throw error(fmt::format("unsupported script type: {}", _typ));
+                    throw error{"unsupported script type: {}", _typ};
             }
         }
 
@@ -431,7 +431,7 @@ namespace turbo::plutus {
                 case script_type::plutus_v3:
                     return constr(3, { encode(c.stake_id), constr(1, { encode(c.drep) }), data::bint(_alloc, c.deposit) });
                 [[unlikely]] default:
-                    throw error(fmt::format("unsupported script type: {}", _typ));
+                    throw error{"unsupported script type: {}", _typ};
             }
         }
 
@@ -444,7 +444,7 @@ namespace turbo::plutus {
                 case script_type::plutus_v3:
                     return constr(3, { encode(c.stake_id), constr(2, { encode(c.pool_id), encode(c.drep) }), data::bint(_alloc, c.deposit) });
                 [[unlikely]] default:
-                    throw error(fmt::format("unsupported script type: {}", _typ));
+                    throw error{"unsupported script type: {}", _typ};
             }
         }
 
@@ -457,7 +457,7 @@ namespace turbo::plutus {
                 case script_type::plutus_v3:
                     return constr(4, { encode(c.drep_id), data::bint(_alloc, c.deposit) });
                 [[unlikely]] default:
-                    throw error(fmt::format("unsupported script type: {}", _typ));
+                    throw error{"unsupported script type: {}", _typ};
             }
         }
 
@@ -470,7 +470,7 @@ namespace turbo::plutus {
                 case script_type::plutus_v3:
                     return constr(5, { encode(c.drep_id) });
                 [[unlikely]] default:
-                    throw error(fmt::format("unsupported script type: {}", _typ));
+                    throw error{"unsupported script type: {}", _typ};
             }
         }
 
@@ -483,7 +483,7 @@ namespace turbo::plutus {
                 case script_type::plutus_v3:
                     return constr(6, { encode(c.drep_id), data::bint(_alloc, c.deposit) });
                 [[unlikely]] default:
-                    throw error(fmt::format("unsupported script type: {}", _typ));
+                    throw error{"unsupported script type: {}", _typ};
             }
         }
 
@@ -496,7 +496,7 @@ namespace turbo::plutus {
                 case script_type::plutus_v3:
                     return constr(7, { encode(c.pool_id), encode(c.params.vrf_vkey) });
                 [[unlikely]] default:
-                    throw error(fmt::format("unsupported script type: {}", _typ));
+                    throw error{"unsupported script type: {}", _typ};
             }
         }
 
@@ -509,7 +509,7 @@ namespace turbo::plutus {
                 case script_type::plutus_v3:
                     return constr(8, { encode(c.pool_id), encode(static_cast<uint64_t>(c.epoch)) });
                 [[unlikely]] default:
-                    throw error(fmt::format("unsupported script type: {}", _typ));
+                    throw error{"unsupported script type: {}", _typ};
             }
         }
 
@@ -522,7 +522,7 @@ namespace turbo::plutus {
                 case script_type::plutus_v3:
                     return constr(9, { encode(c.cold_id), encode(c.hot_id) });
                 [[unlikely]] default:
-                    throw error(fmt::format("unsupported script type: {}", _typ));
+                    throw error{"unsupported script type: {}", _typ};
             }
         }
 
@@ -535,7 +535,7 @@ namespace turbo::plutus {
                 case script_type::plutus_v3:
                     return constr(10, { encode(c.cold_id) });
                 [[unlikely]] default:
-                    throw error(fmt::format("unsupported script type: {}", _typ));
+                    throw error{"unsupported script type: {}", _typ};
             }
         }
 
@@ -672,7 +672,7 @@ namespace turbo::plutus {
                     using T = std::decay_t<decltype(d)>;
                     if constexpr (std::is_same_v<T, datum_hash>)
                         return constr(0, { encode(d) });
-                    throw error(fmt::format("unsupported datum type: {}", typeid(T).name()));
+                    throw error{"unsupported datum type: {}", typeid(T).name()};
                     // Make Visual C++ happy
                     return data::bint(_alloc, 0);
                 }, datum->val);
@@ -690,7 +690,7 @@ namespace turbo::plutus {
                     } else if constexpr (std::is_same_v<T, uint8_vector>) {
                         return constr(2, { data::from_cbor(_alloc, d) });
                     } else {
-                        throw error(fmt::format("unsupported datum type: {}", typeid(T).name()));
+                        throw error{"unsupported datum type: {}", typeid(T).name()};
                     }
                 }, datum->val);
             }
@@ -709,7 +709,7 @@ namespace turbo::plutus {
                     } else if constexpr (std::is_same_v<T, uint8_vector>) {
                         return constr(0, { data::from_cbor(_alloc, d) });
                     } else {
-                        throw error(fmt::format("unsupported datum type: {}", typeid(T).name()));
+                        throw error{"unsupported datum type: {}", typeid(T).name()};
                     }
                 }, datum->val);
             }
@@ -740,7 +740,7 @@ namespace turbo::plutus {
                         datum_option(txo.datum),
                         script_ref(txo.script_ref)
                     });
-                [[unlikely]] default: throw error(fmt::format("unsupported script type: {}", static_cast<int>(_typ)));
+                [[unlikely]] default: throw error{"unsupported script type: {}", static_cast<int>(_typ)};
             }
         }
 
@@ -762,7 +762,7 @@ namespace turbo::plutus {
                     }
                     return data::map(_alloc, std::move(m));
                 }
-                [[unlikely]] default: throw error(fmt::format("unsupported script type: {}", static_cast<int>(_typ)));
+                [[unlikely]] default: throw error{"unsupported script type: {}", static_cast<int>(_typ)};
             }
         }
 
@@ -810,7 +810,7 @@ namespace turbo::plutus {
                     });
                 case script_type::plutus_v3:
                     return encode(tx.fee());
-                [[unlikely]] default: throw error(fmt::format("unsupported script type: {}", static_cast<int>(_typ)));
+                [[unlikely]] default: throw error{"unsupported script type: {}", static_cast<int>(_typ)};
             }
         }
 
@@ -827,7 +827,7 @@ namespace turbo::plutus {
                 case script_type::plutus_v3:
                     // do nothing
                     break;
-                [[unlikely]] default: throw error(fmt::format("unsupported script type: {}", static_cast<int>(_typ)));
+                [[unlikely]] default: throw error{"unsupported script type: {}", static_cast<int>(_typ)};
             }
             tx.foreach_mint([&](const auto &policy_id, const auto &policy_assets) {
                 data::map_type a_m { _alloc };
@@ -889,7 +889,7 @@ namespace turbo::plutus {
                     });
                     return data::map(_alloc, std::move(m));
                 }
-                [[unlikely]] default: throw error(fmt::format("unsupported script type: {}", static_cast<int>(_typ)));
+                [[unlikely]] default: throw error{"unsupported script type: {}", static_cast<int>(_typ)};
             }
         }
 
@@ -953,7 +953,7 @@ namespace turbo::plutus {
                             return constr(1, { encode(in.id) });
                         case script_type::plutus_v3:
                             return constr(1, { encode(in.id), datum_value(ctx, in.data.datum) });
-                        [[unlikely]] default: throw error(fmt::format("unsupported script type: {}", static_cast<int>(_typ)));
+                        [[unlikely]] default: throw error{"unsupported script type: {}", static_cast<int>(_typ)};
                     }
                 }
                 case redeemer_tag::cert: {
@@ -964,7 +964,7 @@ namespace turbo::plutus {
                             return constr(3, { encode(cert) });
                         case script_type::plutus_v3:
                             return constr(3, { data::bint(_alloc, r.ref_idx), encode(cert) });
-                        [[unlikely]] default: throw error(fmt::format("unsupported script type: {}", static_cast<int>(_typ)));
+                        [[unlikely]] default: throw error{"unsupported script type: {}", static_cast<int>(_typ)};
                     }
                 }
                 default: return encode(r, ctx);
@@ -1104,7 +1104,7 @@ namespace turbo::plutus {
                 case script_type::plutus_v1: return context_shared_v1(ctx);
                 case script_type::plutus_v2: return context_shared_v2(ctx);
                 case script_type::plutus_v3: return context_shared_v3(ctx);
-                [[unlikely]] default: throw error(fmt::format("unsupported script_type: {}", static_cast<int>(_typ)));
+                [[unlikely]] default: throw error{"unsupported script_type: {}", static_cast<int>(_typ)};
             }
         }
 
@@ -1114,7 +1114,7 @@ namespace turbo::plutus {
                 case script_type::plutus_v1: return context_v1(ctx, ctx_shared, r);
                 case script_type::plutus_v2: return context_v2(ctx, ctx_shared, r);
                 case script_type::plutus_v3: return context_v3(ctx, ctx_shared, r);
-                [[unlikely]] default: throw error(fmt::format("unsupported script_type: {}", static_cast<int>(_typ)));
+                [[unlikely]] default: throw error{"unsupported script_type: {}", static_cast<int>(_typ)};
             }
         }
     private:
@@ -1140,7 +1140,7 @@ namespace turbo::plutus {
             case 6: return {};
             case 7: return {};
             [[unlikely]] default:
-                throw error(fmt::format("unsupported era for Plutus context protocol version fallback: {}", era));
+                throw error{"unsupported era for Plutus context protocol version fallback: {}", era};
         }
     }
 
@@ -1148,15 +1148,15 @@ namespace turbo::plutus {
     {
         if (_protocol_ver)
             return *_protocol_ver;
-        throw error(fmt::format(
+        throw error{
             "the protocol version must be set explicitly for era {} because the era spans multiple protocol versions",
-            _block_info.era));
+            _block_info.era};
     }
 
     void context::_require_configurable(const std::string_view operation) const
     {
         if (_prepared) [[unlikely]]
-            throw error(fmt::format("cannot {} after transaction-context preparation", operation));
+            throw error{"cannot {} after transaction-context preparation", operation};
     }
 
     context::context(uint8_vector &&tx_body_data, uint8_vector &&tx_wits_data, const storage::block_info &block, const cardano::config &cfg):
@@ -1234,7 +1234,7 @@ namespace turbo::plutus {
     {
         const auto it = t.nth(idx);
         if (!it) [[unlikely]]
-            throw error(fmt::format("nth_or_die: invalid index: {}", idx));
+            throw error{"nth_or_die: invalid index: {}", idx};
         return it;
     }
 
@@ -1302,7 +1302,7 @@ namespace turbo::plutus {
         data_encoder enc { script_alloc, typ, pv };
         const auto shared_it = _shared.find(typ);
         if (shared_it == _shared.end()) [[unlikely]]
-            throw error(fmt::format("missing prepared transaction data for {}", typ));
+            throw error{"missing prepared transaction data for {}", typ};
         return { script_alloc, constant { script_alloc, enc.context(*this, shared_it->second, r) } };
     }
 }

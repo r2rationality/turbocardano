@@ -88,7 +88,7 @@ namespace turbo::cardano::conway {
             } }};
             case 18: return {{ update_drep_cert::from_cbor(it) }};
             [[unlikely]] default:
-                throw error(fmt::format("unsupported cert type: {}", typ));
+                throw error{"unsupported cert type: {}", typ};
         }
     }
 }

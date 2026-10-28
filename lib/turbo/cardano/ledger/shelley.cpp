@@ -127,7 +127,7 @@ namespace turbo::cardano::ledger::shelley {
         crypto::blake2b::hash_32 nonce_block {};
         for (const auto &item: updates) {
             if (item.slot < _slot_last) [[unlikely]]
-                throw error(fmt::format("got block with a slot number {} when last seed slot is : {}", item.slot, _slot_last));
+                throw error{"got block with a slot number {} when last seed slot is : {}", item.slot, _slot_last};
             if (item.era < 6) {
                 crypto::blake2b::digest(nonce_block, item.nonce_result);
             } else {
@@ -147,7 +147,7 @@ namespace turbo::cardano::ledger::shelley {
                 if (item.kes_counter > kes_it->second)
                     kes_it->second = item.kes_counter;
                 else if (item.kes_counter < kes_it->second) [[unlikely]]
-                    throw error(fmt::format("slot: {} out of order KES counter {} < {} for pool: {}", item_slot, item.kes_counter, kes_it->second, item.pool_id));
+                    throw error{"slot: {} out of order KES counter {} < {} for pool: {}", item_slot, item.kes_counter, kes_it->second, item.pool_id};
             }
         }
     }
@@ -222,7 +222,7 @@ namespace turbo::cardano::ledger::shelley {
                 for (const auto &stake_id: delegators) {
                     const auto acc_it = _accounts.find(stake_id);
                     if (acc_it == _accounts.end()) [[unlikely]]
-                        throw error(fmt::format("pool {} references unknown delegator {}", pool_id, stake_id));
+                        throw error{"pool {} references unknown delegator {}", pool_id, stake_id};
                     _active_pool_dist.add(pool_id, acc_it->second.stake + acc_it->second.reward);
                 }
             }
@@ -674,7 +674,7 @@ namespace turbo::cardano::ledger::shelley {
                         while (!map_it.done())
                             load_pool_params(map_it, _active_pool_params);
                     } else {
-                        throw error(fmt::format("unsupported PState key size: {}", key_bytes.size()));
+                        throw error{"unsupported PState key size: {}", key_bytes.size()};
                     }
                 }
             }
@@ -706,7 +706,7 @@ namespace turbo::cardano::ledger::shelley {
                         while (!map_it.done())
                             load_pool_params(map_it, _future_pool_params);
                     } else {
-                        throw error(fmt::format("unsupported PState value discriminator size: {}", first_field.size()));
+                        throw error{"unsupported PState value discriminator size: {}", first_field.size()};
                     }
                 }
             }
@@ -736,7 +736,7 @@ namespace turbo::cardano::ledger::shelley {
                         while (!map_it.done())
                             load_pool_uint(map_it, _pools_retiring);
                     } else {
-                        throw error(fmt::format("unsupported PState third-field value type: {}", value.type()));
+                        throw error{"unsupported PState third-field value type: {}", value.type()};
                     }
                 }
             }

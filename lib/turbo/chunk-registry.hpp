@@ -89,7 +89,7 @@ namespace turbo {
             const auto last_era = _chunks.back()->era();
             if (first_era == last_era || (first_era == 0 && last_era == 1)) [[likely]]
                 return last_era;
-            throw error(fmt::format("epoch has blocks from multiple eras {} and {}", first_era, last_era));
+            throw error{"epoch has blocks from multiple eras {} and {}", first_era, last_era};
         }
 
         [[nodiscard]] uint64_t compressed_size() const

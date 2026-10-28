@@ -43,7 +43,7 @@ namespace fmt {
                     return fmt::format_to(ctx.out(), "(program {} {}) (cost: {})", s.version, s.expr, s.cost);
                 }
                 case 1: return fmt::format_to(ctx.out(), "{}", std::get<std::string>(v));
-                [[unlikely]] default: throw error(fmt::format("unsupported script_info index: {}", v.index()));
+                [[unlikely]] default: throw error{"unsupported script_info index: {}", v.index()};
             }
         }
     };
@@ -65,17 +65,17 @@ namespace {
         cardano::ex_units budget {};
         const std::string text { file::read(path).str() };
         if (!text.starts_with("({cpu: ")) [[unlikely]]
-            throw error(fmt::format("unsupported budget format: {}", text));
+            throw error{"unsupported budget format: {}", text};
         const auto eol_pos = text.find('\n');
         if (eol_pos == std::string::npos) [[unlikely]]
-            throw error(fmt::format("unsupported budget format: {}", text));
+            throw error{"unsupported budget format: {}", text};
         budget.steps = std::stoull(text.substr(7, eol_pos - 7));
         const auto line2 = text.substr(eol_pos + 1);
         if (!line2.starts_with("| mem: ")) [[unlikely]]
-            throw error(fmt::format("unsupported budget format: {}", text));
+            throw error{"unsupported budget format: {}", text};
         const auto rbr_pos = line2.find('}');
         if (rbr_pos == std::string::npos) [[unlikely]]
-            throw error(fmt::format("unsupported budget format: {}", text));
+            throw error{"unsupported budget format: {}", text};
         budget.mem = std::stoull(line2.substr(7, rbr_pos - 7));
         return budget;
     }

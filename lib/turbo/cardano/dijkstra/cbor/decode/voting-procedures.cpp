@@ -10,7 +10,7 @@ namespace turbo::cardano::dijkstra {
         auto &it = v.array();
         const auto vote = it.read().uint();
         if (vote > static_cast<uint64_t>(vote_t::abstain)) [[unlikely]]
-            throw error(fmt::format("unsupported vote: {}", vote));
+            throw error{"unsupported vote: {}", vote};
         voting_procedure_t res {{ static_cast<decltype(res.vote)>(vote), optional_anchor_t::from_cbor(it.read()) }};
         if (!it.done()) [[unlikely]]
             throw error("unexpected trailing Dijkstra voting procedure elements");

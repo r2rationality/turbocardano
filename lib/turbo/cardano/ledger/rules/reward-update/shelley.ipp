@@ -126,9 +126,9 @@
                                             && _active_pool_params.contains(*acc_it->second.deleg)) {
                                         const auto pool_it = pool_indices.find(*acc_it->second.deleg);
                                         if (pool_it == pool_indices.end()) [[unlikely]] {
-                                            throw error(fmt::format(
+                                            throw error{
                                                 "active reward delegation pool {} is missing from the stake distribution",
-                                                *acc_it->second.deleg));
+                                                *acc_it->second.deleg};
                                         }
                                         part_pool_updates[pool_update_offset + pool_it->second] += account_reward;
                                     }

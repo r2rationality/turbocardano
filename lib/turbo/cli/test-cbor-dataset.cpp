@@ -99,7 +99,7 @@ namespace turbo::cli::test_cbor_dataset {
                 if (field == FIELD)
                     return value.data_raw();
             }
-            throw error(fmt::format("reserialized Dijkstra transaction body omitted field {}", FIELD));
+            throw error{"reserialized Dijkstra transaction body omitted field {}", FIELD};
         }
     };
 
@@ -254,7 +254,7 @@ namespace turbo::cli::test_cbor_dataset {
             return conway_codecs;
         if (era_name == "dijkstra")
             return dijkstra_codecs;
-        throw error(fmt::format("can't determine a supported era from dataset directory {}", sample_dir));
+        throw error{"can't determine a supported era from dataset directory {}", sample_dir};
     }
 
     struct cmd: command {
@@ -274,7 +274,7 @@ namespace turbo::cli::test_cbor_dataset {
                 throw error("--results-file requires a non-empty filename");
             const fs::path requested_sample_dir { args.at(0) };
             if (!fs::is_directory(requested_sample_dir)) [[unlikely]]
-                throw error(fmt::format("expected a dataset directory: {}", requested_sample_dir));
+                throw error{"expected a dataset directory: {}", requested_sample_dir};
             const auto sample_dir = fs::canonical(requested_sample_dir);
             const auto &codecs = codecs_for(sample_dir);
 

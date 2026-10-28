@@ -146,13 +146,13 @@ namespace turbo::cardano::ledger::conway {
         const auto enacted = rules::enact::step(st, gid, ga, _epoch);
         if (!enacted) [[unlikely]] {
             if (enacted.failure == rules::enact::failure::committee_term_too_long) [[unlikely]] {
-                throw error(fmt::format(
+                throw error{
                     "{} failed: committee term exceeds the maximum",
-                    rules::name(enacted.rule)));
+                    rules::name(enacted.rule)};
             }
-            throw error(fmt::format(
+            throw error{
                 "{} failed: treasury withdrawal exceeds the remaining treasury",
-                rules::name(enacted.rule)));
+                rules::name(enacted.rule)};
         }
     }
 }

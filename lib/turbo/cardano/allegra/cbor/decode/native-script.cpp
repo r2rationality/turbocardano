@@ -66,10 +66,10 @@ namespace turbo::cardano::allegra {
                     break;
                 }
                 [[unlikely]] default:
-                    throw error(fmt::format("unsupported native script type {}", type));
+                    throw error{"unsupported native script type {}", type};
             }
             if (!it.done()) [[unlikely]]
-                throw error(fmt::format("native script type {} has unexpected trailing elements", type));
+                throw error{"native script type {} has unexpected trailing elements", type};
         }
     }
 

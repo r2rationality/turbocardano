@@ -25,7 +25,7 @@ namespace turbo::cardano::alonzo {
                 case 1: return redeemer_tag::mint;
                 case 2: return redeemer_tag::cert;
                 case 3: return redeemer_tag::reward;
-                [[unlikely]] default: throw error(fmt::format("unsupported redeemer tag: {}", typ));
+                [[unlikely]] default: throw error{"unsupported redeemer tag: {}", typ};
             }
         }
     }

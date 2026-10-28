@@ -11,7 +11,7 @@ namespace turbo::cardano::conway {
         if (v.type() == cbor::major_type::uint)
             return {{ v.uint() }};
         if (v.type() != cbor::major_type::array) [[unlikely]]
-            throw error(fmt::format("unsupported output value type: {}", v.type()));
+            throw error{"unsupported output value type: {}", v.type()};
 
         return from_cbor(v.array_sized());
     }

@@ -12,7 +12,7 @@ namespace turbo::cardano::dijkstra {
                 return v;
             auto &tag = v.tag();
             if (tag.id() != 258) [[unlikely]]
-                throw error(fmt::format("expected guard set tag 258 but got: {}", tag.id()));
+                throw error{"expected guard set tag 258 but got: {}", tag.id()};
             return tag.read();
         }
     }

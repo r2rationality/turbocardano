@@ -14,7 +14,7 @@ namespace turbo::cardano {
             case 2: return voter_t::drep_key;
             case 3: return voter_t::drep_script;
             case 4: return voter_t::pool_key;
-            [[unlikely]] default: throw error(fmt::format("unsupported voter type: {}", typ));
+            [[unlikely]] default: throw error{"unsupported voter type: {}", typ};
         }
     }
 
@@ -30,7 +30,7 @@ namespace turbo::cardano {
             case 0: return vote_t::no;
             case 1: return vote_t::yes;
             case 2: return vote_t::abstain;
-            [[unlikely]] default: throw error(fmt::format("unsupported vote: {}", vote));
+            [[unlikely]] default: throw error{"unsupported vote: {}", vote};
         }
     }
 

@@ -65,7 +65,7 @@ namespace turbo::cli::plutus_eval {
                 return script_type::plutus_v2;
             if (version == "v3")
                 return script_type::plutus_v3;
-            throw error(fmt::format("unsupported plutus version: {}", version));
+            throw error{"unsupported plutus version: {}", version};
         }
 
         static uint64_t parse_protocol(const std::string &protocol)
@@ -77,7 +77,7 @@ namespace turbo::cli::plutus_eval {
                     return major;
             } catch (const std::exception &) {
             }
-            throw error(fmt::format("unsupported protocol version: {}", protocol));
+            throw error{"unsupported protocol version: {}", protocol};
         }
 
         static void _eval_file(const std::string &format, const std::string &path, const script_type typ,
@@ -88,7 +88,7 @@ namespace turbo::cli::plutus_eval {
                 return _eval<script_flat_pure>(path, typ, protocol_major);
             if (format == "flat-cbor")
                 return _eval<script_flat_cbor>(path, typ, protocol_major);
-            throw error(fmt::format("unsupported script format: {}", format));
+            throw error{"unsupported script format: {}", format};
         }
 
         template<typename S>

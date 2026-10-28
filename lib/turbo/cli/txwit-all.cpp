@@ -29,7 +29,7 @@ namespace turbo::cli::txwit_all {
                 const auto from_slot = slot::from_epoch(std::stoull(*opt_it->second), cr.config());
                 const auto p = cr.latest_block_after_or_at_slot(from_slot);
                 if (p == cr.cend()) [[unlikely]]
-                    throw error(fmt::format("can't find data for the first-epoch: {}", *opt_it->second));
+                    throw error{"can't find data for the first-epoch: {}", *opt_it->second};
                 from.emplace(p->point());
             }
             optional_point to {};
@@ -37,7 +37,7 @@ namespace turbo::cli::txwit_all {
                 const auto to_slot = static_cast<uint64_t>(slot::from_epoch(std::stoull(*opt_it->second) + 1, cr.config())) - 1;
                 const auto p = cr.latest_block_before_or_at_slot(to_slot);
                 if (p == cr.cend()) [[unlikely]]
-                    throw error(fmt::format("can't find data for the last-epoch: {}", *opt_it->second));
+                    throw error{"can't find data for the last-epoch: {}", *opt_it->second};
                 to.emplace(p->point());
             }
             const txwit::witness_type typ = txwit::witness_type_from_str(opts.at("wits").value());

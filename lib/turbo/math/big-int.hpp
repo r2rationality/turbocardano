@@ -40,7 +40,7 @@ namespace turbo {
     inline cpp_int big_uint_from_bytes(const buffer data)
     {
         if (data.size() > big_int_max_size) [[unlikely]]
-            throw error(fmt::format("big ints larger than {} bytes are not supported but got: {}!", big_int_max_size, data.size()));
+            throw error{"big ints larger than {} bytes are not supported but got: {}!", big_int_max_size, data.size()};
         cpp_int val = 0;
         for (const uint8_t &b: data) {
             val *= 256;
@@ -86,10 +86,10 @@ namespace turbo {
                 switch (const auto id = t.id(); id) {
                     case 2: return big_uint_from_cbor(t.read());
                     case 3: return big_nint_from_cbor(t.read());
-                    [[unlikely]] default: throw error(fmt::format("unsupported tag type for a bigint: {}!", id));
+                    [[unlikely]] default: throw error{"unsupported tag type for a bigint: {}!", id};
                 }
             }
-            [[unlikely]] default: throw error(fmt::format("cannot interpret cbor value as a bigint: {}", v.to_string()));
+            [[unlikely]] default: throw error{"cannot interpret cbor value as a bigint: {}", v.to_string()};
         }
     }
 

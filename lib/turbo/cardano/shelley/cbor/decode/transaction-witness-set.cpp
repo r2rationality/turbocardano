@@ -43,7 +43,7 @@ namespace turbo::cardano::shelley {
             if (type < 16) {
                 const auto mask = static_cast<uint16_t>(1U << type);
                 if (seen_types & mask) [[unlikely]]
-                    throw error(fmt::format("duplicate shelley::transaction_witness_set element type: {}", type));
+                    throw error{"duplicate shelley::transaction_witness_set element type: {}", type};
                 seen_types |= mask;
             }
             auto &val = it.read_val(std::move(key));
@@ -51,7 +51,7 @@ namespace turbo::cardano::shelley {
                 case 0: decode_witnesses<tx_wit_shelley_vkey>(res, val); break;
                 case 1: decode_native_scripts(res, val); break;
                 case 2: decode_witnesses<tx_wit_shelley_bootstrap>(res, val); break;
-                [[unlikely]] default: throw error(fmt::format("unsupported shelley::transaction_witness_set element type: {}", type));
+                [[unlikely]] default: throw error{"unsupported shelley::transaction_witness_set element type: {}", type};
             }
         }
         res.raw = v.data_raw();

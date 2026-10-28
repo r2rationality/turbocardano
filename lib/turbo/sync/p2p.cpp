@@ -108,7 +108,7 @@ namespace turbo::sync::p2p {
 
                 const auto isect_it = _parent.local_chain().find_block(*intersection.isect);
                 if (isect_it == _parent.local_chain().cend()) [[unlikely]]
-                    throw error(fmt::format("failed to find a local block {}:{}", intersection.isect->slot, intersection.isect->hash));
+                    throw error{"failed to find a local block {}:{}", intersection.isect->slot, intersection.isect->hash};
 
                 if (const auto next_last_it = isect_it + std::min(ptrdiff_t { step }, (last_it - isect_it)); next_last_it != _parent.local_chain().cend())
                     last_it = next_last_it;
@@ -430,7 +430,7 @@ namespace turbo::sync::p2p {
                 _add_last_chunk_if_not_empty();
                 _parent.local_chain().sched().process();
                 if (err && !stop.stop_requested()) [[unlikely]]
-                    throw error(fmt::format("fetch_block has failed with error: {}", err));
+                    throw error{"fetch_block has failed with error: {}", err};
             }
         }
 
@@ -452,8 +452,8 @@ namespace turbo::sync::p2p {
         {
             const auto uncompressed_size = zstd::decompressed_size(compressed);
             if (uncompressed_size > zstd::max_zstd_buffer) [[unlikely]]
-                throw error(fmt::format("compressed chunk expands to {} bytes, exceeding the maximum of {}",
-                    uncompressed_size, zstd::max_zstd_buffer));
+                throw error{"compressed chunk expands to {} bytes, exceeding the maximum of {}",
+                    uncompressed_size, zstd::max_zstd_buffer};
             // A bounded import may also allocate a recompressed prefix of the decoded message.
             const auto raw_budget = max_slot ? 2 * uncompressed_size : uncompressed_size;
             auto budget_lease = _inflight_budget->acquire(storage::chunk_work_policy_t::estimated_cost(raw_budget, compressed.capacity()), stop);
@@ -508,8 +508,8 @@ namespace turbo::sync::p2p {
         void _add_chunk(uint8_vector uncompressed, const int64_t priority)
         {
             if (uncompressed.size() > zstd::max_zstd_buffer) [[unlikely]]
-                throw error(fmt::format("chunk has {} bytes, exceeding the maximum of {}",
-                    uncompressed.size(), zstd::max_zstd_buffer));
+                throw error{"chunk has {} bytes, exceeding the maximum of {}",
+                    uncompressed.size(), zstd::max_zstd_buffer};
             const auto chunk_offset = _next_chunk_offset;
             logger::debug("adding an uncompressed chunk at offset {}: raw size: {}", chunk_offset, uncompressed.size());
             _next_chunk_offset += uncompressed.size();
@@ -546,7 +546,7 @@ namespace turbo::sync::p2p {
             const auto blk_slot = _parent.local_chain().make_slot(blk->slot());
             const auto last_block_slot = _last_block_slot.load(std::memory_order_relaxed);
             if (last_block_slot != no_recorded_value && last_block_slot > blk_slot) [[unlikely]]
-                throw error(fmt::format("unexpected block order: block with slot {} comes after slot {}", blk_slot, cardano::slot { last_block_slot, _parent.local_chain().config() }));
+                throw error{"unexpected block order: block with slot {} comes after slot {}", blk_slot, cardano::slot { last_block_slot, _parent.local_chain().config() }};
             _parent.local_chain().report_progress("download", { blk_slot, blk.end_offset() });
             if (last_block_slot == no_recorded_value
                     || cardano::slot { last_block_slot, _parent.local_chain().config() }.chunk_id() != blk_slot.chunk_id()) {

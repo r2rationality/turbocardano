@@ -25,7 +25,7 @@
                     msg << tx_hash;
                     const auto vk_short = static_cast<buffer>(wv.vkey).subbuf(0, 32);
                     if (!crypto::ed25519::verify(wv.sig, vk_short, msg)) [[unlikely]]
-                        throw error(fmt::format("byron tx witness type 0 failed for tx {}", tx_hash));
+                        throw error{"byron tx witness type 0 failed for tx {}", tx_hash};
                     valid_vkeys.emplace(crypto::blake2b::digest<key_hash>(vk_short));
                     ++cnts.vkey;
                 } else if constexpr (std::is_same_v<T, tx_wit_byron_redeemer>) {
@@ -38,17 +38,17 @@
                     msg << 0x20; // hash size
                     msg << tx_hash;
                     if (!crypto::ed25519::verify(wv.sig, wv.vkey, msg)) [[unlikely]]
-                        throw error(fmt::format("byron tx witness type 2 failed for tx {}", tx_hash));
+                        throw error{"byron tx witness type 2 failed for tx {}", tx_hash};
                     valid_vkeys.emplace(crypto::blake2b::digest<key_hash>(wv.vkey));
                     ++cnts.vkey;
                 } else if constexpr (std::is_same_v<T, tx_wit_shelley_vkey>) {
                     if (!crypto::ed25519::verify(wv.sig, wv.vkey, hash())) [[unlikely]]
-                        throw error(fmt::format("shelley vkey witness failed at slot {}: vkey: {}, sig: {} tx_hash: {}", block().slot(), wv.vkey, wv.sig, hash()));
+                        throw error{"shelley vkey witness failed at slot {}: vkey: {}, sig: {} tx_hash: {}", block().slot(), wv.vkey, wv.sig, hash()};
                     valid_vkeys.emplace(crypto::blake2b::digest<key_hash>(wv.vkey));
                     ++cnts.vkey;
                 } else if constexpr (std::is_same_v<T, tx_wit_shelley_bootstrap>) {
                     if (!crypto::ed25519::verify(wv.sig, wv.vkey, hash())) [[unlikely]]
-                        throw error(fmt::format("shelley bootstrap witness failed at slot {}: vkey: {}, sig: {} tx_hash: {}", block().slot(), wv.vkey, wv.sig, hash()));
+                        throw error{"shelley bootstrap witness failed at slot {}: vkey: {}, sig: {} tx_hash: {}", block().slot(), wv.vkey, wv.sig, hash()};
                     // This set feeds native scripts, which use addrTxWits only.
                     // Bootstrap roots enter UTXOW's key-hash union in preprocessing.
                     ++cnts.vkey;
@@ -68,7 +68,7 @@
                     ? native_script::validate(w_data.get(), native_script::validity_interval { validity_start(), validity_end() }, vkeys)
                     : native_script::validate(w_data.get(), block().slot(), vkeys);
                 if (err) [[unlikely]]
-                    throw error(fmt::format("native script for tx {} failed: {} script: {}", hash(), *err, w_data.get().to_string()));
+                    throw error{"native script for tx {} failed: {} script: {}", hash(), *err, w_data.get().to_string()};
                 ++cnts.native_script;
             }
         });

@@ -199,10 +199,10 @@ namespace turbo::cardano {
             throw error("slotsPerKESPeriod must be positive");
         const uint64_t block_period = slot / period_slots;
         if (period > block_period) [[unlikely]]
-            throw error(fmt::format("KES period {} is greater than the current period {}", period, block_period));
+            throw error{"KES period {} is greater than the current period {}", period, block_period};
         const uint64_t t = block_period - period;
         if (t >= max_evolutions) [[unlikely]]
-            throw error(fmt::format("KES evolution {} exceeds the certificate limit {}", t, max_evolutions));
+            throw error{"KES evolution {} exceeds the certificate limit {}", t, max_evolutions};
         const kes_signature kes_sig { sig };
         if (!kes_sig.verify(t, vkey_hot.first<32>(), header_body)) [[unlikely]] {
             logger::debug("a KES signature has failed verification for issuer: {}", vkey_cold);

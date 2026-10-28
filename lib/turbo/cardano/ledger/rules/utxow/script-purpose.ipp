@@ -16,7 +16,7 @@
                 const auto addr = in.data.addr();
                 if (const auto pay_id = addr.pay_id(); pay_id.type == pay_ident::ident_type::SHELLEY_SCRIPT) [[likely]]
                     return pay_id.hash;
-                throw error(fmt::format("tx {} (spend) input #{}: the output address is not a payment script: {}!", _tx->hash(), r.ref_idx, in));
+                throw error{"tx {} (spend) input #{}: the output address is not a payment script: {}!", _tx->hash(), r.ref_idx, in};
             }
             case redeemer_tag::mint: return mint_at(r.ref_idx);
             case redeemer_tag::cert: return cert_cred_at(r.ref_idx).hash;
@@ -27,6 +27,6 @@
                 return proposal_script_hash(p.procedure.action);
             }
             [[unlikely]] default:
-                throw error(fmt::format("tx: {} unsupported redeemer_tag: {}", _tx->hash(), static_cast<int>(r.tag)));
+                throw error{"tx: {} unsupported redeemer_tag: {}", _tx->hash(), static_cast<int>(r.tag)};
         };
     }

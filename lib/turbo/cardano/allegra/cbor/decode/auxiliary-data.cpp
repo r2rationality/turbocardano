@@ -32,7 +32,7 @@ namespace turbo::cardano::allegra {
         switch (v.type()) {
             case cbor::major_type::map: return { metadata_t::from_cbor(v) };
             case cbor::major_type::array: return { auxiliary_data_array_t::from_cbor(v) };
-            [[unlikely]] default: throw error(fmt::format("unsupported auxiliary_data value type: {}", v.type()));
+            [[unlikely]] default: throw error{"unsupported auxiliary_data value type: {}", v.type()};
         }
     }
 

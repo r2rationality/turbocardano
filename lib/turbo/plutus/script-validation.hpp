@@ -15,30 +15,30 @@ namespace turbo::plutus {
         void check_version(const version &ver) const
         {
             if (!builtins::version_available(ver, _typ, _protocol_major)) [[unlikely]] {
-                throw error(fmt::format("UPLC version {} is not available for {} at protocol version {}",
-                    ver, _typ, _protocol_major));
+                throw error{"UPLC version {} is not available for {} at protocol version {}",
+                    ver, _typ, _protocol_major};
             }
         }
 
         void check_builtin(const t_builtin &builtin) const
         {
             if (!builtins::available(builtin.tag, _typ, _protocol_major)) [[unlikely]] {
-                throw error(fmt::format("builtin {} is not available for {} at protocol version {}",
-                    builtin.name(), _typ, _protocol_major));
+                throw error{"builtin {} is not available for {} at protocol version {}",
+                    builtin.name(), _typ, _protocol_major};
             }
         }
 
         void check_constant(const constant_type &typ) const
         {
             if (_protocol_major < 11 && _contains_batch_six_type(typ)) [[unlikely]] {
-                throw error(fmt::format(
-                    "constant type {} is not available before protocol version 11", typ));
+                throw error{
+                    "constant type {} is not available before protocol version 11", typ};
             }
             if (_protocol_major >= 11) {
                 const auto header_size = _constant_type_header_size(typ);
                 if (header_size > 32) [[unlikely]] {
-                    throw error(fmt::format(
-                        "constant type header size {} exceeds the protocol limit of 32", header_size));
+                    throw error{
+                        "constant type header size {} exceeds the protocol limit of 32", header_size};
                 }
             }
         }
@@ -46,16 +46,16 @@ namespace turbo::plutus {
         void check_constr(const size_t num_fields) const
         {
             if (_protocol_major >= 11 && num_fields > 1024) [[unlikely]] {
-                throw error(fmt::format(
-                    "constr with {} fields exceeds the protocol limit of 1024", num_fields));
+                throw error{
+                    "constr with {} fields exceeds the protocol limit of 1024", num_fields};
             }
         }
 
         static void check_term_version(const version &ver, const term_tag tag)
         {
             if ((tag == term_tag::constr || tag == term_tag::acase) && !(ver >= version { 1, 1, 0 })) [[unlikely]] {
-                throw error(fmt::format("{} is not available in UPLC version {}",
-                    tag == term_tag::constr ? "constr" : "case", ver));
+                throw error{"{} is not available in UPLC version {}",
+                    tag == term_tag::constr ? "constr" : "case", ver};
             }
         }
     private:

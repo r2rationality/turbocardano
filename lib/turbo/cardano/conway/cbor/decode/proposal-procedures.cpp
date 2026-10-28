@@ -32,7 +32,7 @@ namespace turbo::cardano::conway {
         if (v.type() == cbor::major_type::tag) {
             auto &reader = v.tag();
             if (reader.id() != 258) [[unlikely]]
-                throw error(fmt::format("expected a tag with id 258 but got: {}!", reader.id()));
+                throw error{"expected a tag with id 258 but got: {}!", reader.id()};
             items = &reader.read();
         }
         if (!items->indefinite()) [[likely]]

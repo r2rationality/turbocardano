@@ -26,7 +26,7 @@ namespace turbo::cardano::alonzo {
     {
         auto &tag = v.tag();
         if (tag.id() != 259) [[unlikely]]
-            throw error(fmt::format("expected a tag with id 259 but got: {}", tag.id()));
+            throw error{"expected a tag with id 259 but got: {}", tag.id()};
         auxiliary_data_map_t res {};
         auto &it = tag.read().map();
         while (!it.done()) {
@@ -37,7 +37,7 @@ namespace turbo::cardano::alonzo {
                 case 0: res.metadata = metadata_t::from_cbor(value_v); break;
                 case 1: add_scripts(value_v, script_type::native, res.native_scripts); break;
                 case 2: add_scripts(value_v, script_type::plutus_v1, res.plutus_v1_scripts); break;
-                [[unlikely]] default: throw error(fmt::format("unsupported auxiliary_data_map key: {}", key));
+                [[unlikely]] default: throw error{"unsupported auxiliary_data_map key: {}", key};
             }
         }
         return res;
@@ -49,7 +49,7 @@ namespace turbo::cardano::alonzo {
             case cbor::major_type::map: return { metadata_t::from_cbor(v) };
             case cbor::major_type::array: return { auxiliary_data_array_t::from_cbor(v) };
             case cbor::major_type::tag: return { auxiliary_data_map_t::from_cbor(v) };
-            [[unlikely]] default: throw error(fmt::format("unsupported auxiliary_data value type: {}", v.type()));
+            [[unlikely]] default: throw error{"unsupported auxiliary_data value type: {}", v.type()};
         }
     }
 

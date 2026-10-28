@@ -13,6 +13,6 @@
             machine m { ps.alloc, cost_models().for_script(ps.typ, builtins::semantics_variant(ps.typ, pv.major)), ps.typ, ps.budget, pv.major };
             return m.evaluate_no_res(ps.expr);
         } catch (const error &ex) {
-            throw error(fmt::format("script {} {}: {}", ps.typ, ps.hash, ex.what()));
+            throw error{"script {} {}: {}", ps.typ, ps.hash, ex.what()};
         }
     }

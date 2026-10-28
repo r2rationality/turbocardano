@@ -16,7 +16,7 @@ namespace turbo::cardano::shelley {
             const auto id = key.uint();
             auto &value = it.read_val(std::move(key));
             if (!detail::protocol_param_update_from_cbor<true, true>(res.value, id, value)) [[unlikely]]
-                throw error(fmt::format("unsupported Shelley protocol parameter: {}", id));
+                throw error{"unsupported Shelley protocol parameter: {}", id};
         }
         return res;
     }

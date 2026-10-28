@@ -56,7 +56,7 @@ namespace turbo {
         {
             const auto it = _json.find(name);
             if (it == _json.end()) [[unlikely]]
-                throw error(fmt::format("Config does not have the requested {} element!", name));
+                throw error{"Config does not have the requested {} element!", name};
             return it->value();
         }
 

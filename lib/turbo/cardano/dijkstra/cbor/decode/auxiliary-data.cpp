@@ -43,7 +43,7 @@ namespace turbo::cardano::dijkstra {
     {
         auto &tag = v.tag();
         if (tag.id() != 259) [[unlikely]]
-            throw error(fmt::format("expected auxiliary data tag 259 but got: {}", tag.id()));
+            throw error{"expected auxiliary data tag 259 but got: {}", tag.id()};
         auxiliary_data_map_t res {};
         uint8_t seen = 0;
         auto &it = tag.read().map();
@@ -51,10 +51,10 @@ namespace turbo::cardano::dijkstra {
             auto &key_v = it.read_key();
             const auto key = key_v.uint();
             if (key > 5) [[unlikely]]
-                throw error(fmt::format("unsupported Dijkstra auxiliary_data_map key: {}", key));
+                throw error{"unsupported Dijkstra auxiliary_data_map key: {}", key};
             const auto mask = static_cast<uint8_t>(1U << key);
             if (seen & mask) [[unlikely]]
-                throw error(fmt::format("duplicate Dijkstra auxiliary_data_map key: {}", key));
+                throw error{"duplicate Dijkstra auxiliary_data_map key: {}", key};
             seen |= mask;
             auto &value_v = it.read_val(std::move(key_v));
             switch (key) {
@@ -77,7 +77,7 @@ namespace turbo::cardano::dijkstra {
             case cbor::major_type::array: return { auxiliary_data_array_from_cbor(v) };
             case cbor::major_type::tag: return { auxiliary_data_map_t::from_cbor(v) };
             [[unlikely]] default:
-                throw error(fmt::format("unsupported Dijkstra auxiliary_data value type: {}", v.type()));
+                throw error{"unsupported Dijkstra auxiliary_data value type: {}", v.type()};
         }
     }
 }

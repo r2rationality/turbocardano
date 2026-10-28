@@ -49,7 +49,7 @@ namespace fmt {
                 case validation_mode_t::full: return fmt::format_to(ctx.out(), "full");
                 case validation_mode_t::turbo: return fmt::format_to(ctx.out(), "turbo");
                 case validation_mode_t::none: return fmt::format_to(ctx.out(), "none");
-                [[unlikely]] default: throw turbo::error(fmt::format("unsupported validation_mode_t value: {}", static_cast<int>(v)));
+                [[unlikely]] default: throw turbo::error{"unsupported validation_mode_t value: {}", static_cast<int>(v)};
             }
         }
     };

@@ -24,9 +24,9 @@ namespace turbo::cardano::ledger {
         {
             right.check_coherency();
             if (end_offset() != right.offset) [[unlikely]]
-                throw error(fmt::format("unmergeable sub-chains: left end: {} right start: {}", end_offset(), right.offset));
+                throw error{"unmergeable sub-chains: left end: {} right start: {}", end_offset(), right.offset};
             if (right.first_block_slot < last_block_slot) [[unlikely]]
-                throw error(fmt::format("unmergeable sub-chains: left last_block_slot: {} right first_block_slot: {}", last_block_slot, right.first_block_slot));
+                throw error{"unmergeable sub-chains: left last_block_slot: {} right first_block_slot: {}", last_block_slot, right.first_block_slot};
             num_bytes += right.num_bytes;
             num_blocks += right.num_blocks;
             valid_blocks += right.valid_blocks;
@@ -42,15 +42,15 @@ namespace turbo::cardano::ledger {
             if (num_blocks == 0) [[unlikely]]
                 throw error("a sub-chain must contain blocks!");
             if (first_block_slot > last_block_slot) [[unlikely]]
-                throw error(fmt::format("a sub-chain must contain monotonically increasing slots but got {} > {}!", first_block_slot, last_block_slot));
+                throw error{"a sub-chain must contain monotonically increasing slots but got {} > {}!", first_block_slot, last_block_slot};
             if (num_blocks == 1) {
                 if (first_block_hash != last_block_hash) [[unlikely]]
-                    throw error(fmt::format("a single block sub-chain must have the same first and last hashes but got: {} and {}!", first_block_hash, last_block_hash));
+                    throw error{"a single block sub-chain must have the same first and last hashes but got: {} and {}!", first_block_hash, last_block_hash};
                 if (first_block_slot != last_block_slot) [[unlikely]]
-                    throw error(fmt::format("a single block sub-chain must have the same first and last slots but got: {} and {}!", first_block_slot, last_block_slot));
+                    throw error{"a single block sub-chain must have the same first and last slots but got: {} and {}!", first_block_slot, last_block_slot};
             } else {
                 if (first_block_hash == last_block_hash) [[unlikely]]
-                    throw error(fmt::format("a multi-block sub-chain must have different first and last hashes but got: {} and {}!", first_block_hash, last_block_hash));
+                    throw error{"a multi-block sub-chain must have different first and last hashes but got: {} and {}!", first_block_hash, last_block_hash};
                 // it is theoretically possible for two blocks to have the same slot, so no need to check for the slots
             }
         }
@@ -119,7 +119,7 @@ namespace turbo::cardano::ledger {
         {
             auto it = lower_bound(offset);
             if (it == end() || !(it->second.offset <= offset && it->first >= offset)) [[unlikely]]
-                throw error(fmt::format("internal error: can't find a sub-chain for the blockchain offset {}", offset));
+                throw error{"internal error: can't find a sub-chain for the blockchain offset {}", offset};
             return it;
         }
 
@@ -159,13 +159,13 @@ namespace turbo::cardano::ledger {
                     const auto first_block_slot = cardano::slot { it->second.first_block_slot, cfg };
                     const auto last_block_slot = cardano::slot { it->second.last_block_slot, cfg };
                     if (!it->second && first_block_slot.epoch() != last_block_slot.epoch()) [[unlikely]]
-                        throw error(fmt::format("an unvalidated subchain at [{}:{})) has slots from different epochs: first slot: {} last_slot: {}",
-                            it->second.offset, it->second.end_offset(), first_block_slot, last_block_slot));
+                        throw error{"an unvalidated subchain at [{}:{})) has slots from different epochs: first slot: {} last_slot: {}",
+                            it->second.offset, it->second.end_offset(), first_block_slot, last_block_slot};
                     const auto next_first_block_slot = cardano::slot { next_it->second.first_block_slot, cfg };
                     const auto next_last_block_slot = cardano::slot { next_it->second.last_block_slot, cfg };
                     if (!next_it->second && next_first_block_slot.epoch() != next_last_block_slot.epoch()) [[unlikely]]
-                        throw error(fmt::format("an unvalidated subchain at [{}:{}) has slots from different epochs: first slot: {} last_slot: {}",
-                            next_it->second.offset, next_it->second.end_offset(), next_first_block_slot, next_last_block_slot));
+                        throw error{"an unvalidated subchain at [{}:{}) has slots from different epochs: first slot: {} last_slot: {}",
+                            next_it->second.offset, next_it->second.end_offset(), next_first_block_slot, next_last_block_slot};
                     if (static_cast<bool>(it->second) != static_cast<bool>(next_it->second))
                         break;
                     if (last_block_slot.epoch() != next_first_block_slot.epoch())
@@ -199,7 +199,7 @@ namespace turbo::cardano::ledger {
                 node.key() = last_offset;
                 auto [new_it, created, nt] = insert(std::move(node));
                 if (!created) [[unlikely]]
-                    throw error(fmt::format("duplicate subchain found with last_offset {}", last_offset));
+                    throw error{"duplicate subchain found with last_offset {}", last_offset};
             }
         }
     };

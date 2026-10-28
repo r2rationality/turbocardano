@@ -18,7 +18,7 @@ namespace turbo::cardano {
             case 6: return era_t::babbage;
             case 7: return era_t::conway;
             case 8: return era_t::dijkstra;
-            [[unlikely]] default: throw error(fmt::format("unsupported era value: {}", era));
+            [[unlikely]] default: throw error{"unsupported era value: {}", era};
         }
     }
 }

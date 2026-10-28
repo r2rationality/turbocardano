@@ -26,7 +26,7 @@ namespace turbo::cardano::conway {
     {
         auto &tag = v.tag();
         if (tag.id() != 259) [[unlikely]]
-            throw error(fmt::format("expected a tag with id 259 but got: {}", tag.id()));
+            throw error{"expected a tag with id 259 but got: {}", tag.id()};
         auxiliary_data_map_t res {};
         uint8_t seen = 0;
         auto &it = tag.read().map();
@@ -34,10 +34,10 @@ namespace turbo::cardano::conway {
             auto &key_v = it.read_key();
             const auto key = key_v.uint();
             if (key > 4) [[unlikely]]
-                throw error(fmt::format("unsupported auxiliary_data_map key: {}", key));
+                throw error{"unsupported auxiliary_data_map key: {}", key};
             const auto mask = static_cast<uint8_t>(1U << key);
             if (seen & mask) [[unlikely]]
-                throw error(fmt::format("duplicate Conway auxiliary_data_map key: {}", key));
+                throw error{"duplicate Conway auxiliary_data_map key: {}", key};
             seen |= mask;
             auto &value_v = it.read_val(std::move(key_v));
             switch (key) {
@@ -46,7 +46,7 @@ namespace turbo::cardano::conway {
                 case 2: add_scripts(value_v, script_type::plutus_v1, res.plutus_v1_scripts); break;
                 case 3: add_scripts(value_v, script_type::plutus_v2, res.plutus_v2_scripts); break;
                 case 4: add_scripts(value_v, script_type::plutus_v3, res.plutus_v3_scripts); break;
-                [[unlikely]] default: throw error(fmt::format("unsupported auxiliary_data_map key: {}", key));
+                [[unlikely]] default: throw error{"unsupported auxiliary_data_map key: {}", key};
             }
         }
         return res;
@@ -58,7 +58,7 @@ namespace turbo::cardano::conway {
             case cbor::major_type::map: return { metadata_t::from_cbor(v) };
             case cbor::major_type::array: return { auxiliary_data_array_t::from_cbor(v) };
             case cbor::major_type::tag: return { auxiliary_data_map_t::from_cbor(v) };
-            [[unlikely]] default: throw error(fmt::format("unsupported auxiliary_data value type: {}", v.type()));
+            [[unlikely]] default: throw error{"unsupported auxiliary_data value type: {}", v.type()};
         }
     }
 
@@ -76,7 +76,7 @@ namespace turbo::cardano::conway {
             auto auxiliary = decoded_cbor_t<auxiliary_data_t>::from_cbor(value_v);
             res.emplace_hint(res.end(), tx_idx, std::move(auxiliary));
             if (res.size() == old_size) [[unlikely]]
-                throw error(fmt::format("duplicate Conway auxiliary data index: {}", tx_idx));
+                throw error{"duplicate Conway auxiliary data index: {}", tx_idx};
         }
         res.raw = v.data_raw();
         return res;

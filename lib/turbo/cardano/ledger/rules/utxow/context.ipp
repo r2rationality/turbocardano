@@ -14,7 +14,7 @@
                     if (!data) {
                         const auto it = utxos.find(id);
                         if (it == utxos.end()) [[unlikely]]
-                            throw error(fmt::format("tx {} references an unknown TXO {}!", tx.tx_id, id));
+                            throw error{"tx {} references an unknown TXO {}!", tx.tx_id, id};
                         data = it->second;
                     }
                 };

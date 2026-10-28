@@ -55,7 +55,7 @@ namespace turbo::plutus::uplc {
         {
             if (_pos< _bytes.size()) [[likely]]
                 return static_cast<char>(_bytes[_pos++]);
-            throw error(fmt::format("invalid script: expected more data at pos: {}", _pos));
+            throw error{"invalid script: expected more data at pos: {}", _pos};
         }
 
         void _eat(char k)
@@ -63,10 +63,10 @@ namespace turbo::plutus::uplc {
             if (_pos < _bytes.size()) [[likely]] {
                 const char b = static_cast<char>(_bytes[_pos]);
                 if (k != b) [[unlikely]]
-                    throw error(fmt::format("invalid script: expected {} at pos {} but got {}", k, _pos, b));
+                    throw error{"invalid script: expected {} at pos {} but got {}", k, _pos, b};
                 ++_pos;
             } else {
-                throw error(fmt::format("invalid script: expected {} after the end of data", k));
+                throw error{"invalid script: expected {} after the end of data", k};
             }
         }
 
@@ -99,7 +99,7 @@ namespace turbo::plutus::uplc {
         void _eat_space_must()
         {
             if (_eat_space() == 0) [[unlikely]]
-                throw error(fmt::format("invalid script: expected a space at pos: {}", _pos));
+                throw error{"invalid script: expected a space at pos: {}", _pos};
         }
 
         void _eat_lpar()
@@ -152,7 +152,7 @@ namespace turbo::plutus::uplc {
                 tok += _bytes[_pos];
             }
             if (_pos >= _bytes.size() || !pred(static_cast<char>(_bytes[_pos]))) [[unlikely]]
-                throw error(fmt::format("invalid script: match predicate failed at pos: {}", _pos));
+                throw error{"invalid script: match predicate failed at pos: {}", _pos};
             ++_pos;
             return tok;
         }
@@ -168,7 +168,7 @@ namespace turbo::plutus::uplc {
             _eat_space();
             if (!tok.empty()) [[likely]]
                 return tok;
-            throw error(fmt::format("invalid script: expected a non-empty token before space at pos: {}", _pos));
+            throw error{"invalid script: expected a non-empty token before space at pos: {}", _pos};
         }
 
         str_type::value_type _eat_name()
@@ -176,7 +176,7 @@ namespace turbo::plutus::uplc {
             auto name = _eat_all([](char k) { return std::isalnum(k) || k == '_' || k == '\'' || k == '-'; });
             if (!name.empty()) [[likely]]
                 return name;
-            throw error(fmt::format("name cannot be empty at pos: {}", _pos));
+            throw error{"name cannot be empty at pos: {}", _pos};
         }
 
         void _decode_version()
@@ -285,7 +285,7 @@ namespace turbo::plutus::uplc {
                 ++_pos;
             str += _eat_all([](char k) { return std::isdigit(k); });
             if (str.empty()) [[unlikely]]
-                throw error(fmt::format("expected an integer at pos: {}", _pos));
+                throw error{"expected an integer at pos: {}", _pos};
             return bint_type { _alloc, str };
         }
 
@@ -299,7 +299,7 @@ namespace turbo::plutus::uplc {
                 _eat("True");
                 return true;
             }
-            throw error(fmt::format("unexpected boolean value at pos: {}", _pos));
+            throw error{"unexpected boolean value at pos: {}", _pos};
         }
 
         bls12_381_g1_element _decode_bls12_381_g1()
@@ -358,13 +358,13 @@ namespace turbo::plutus::uplc {
             switch ((tok)[0]) {
                 case 'B': {
                     if (tok != "B") [[unlikely]]
-                        throw error(fmt::format("unsupported token in data definition: {} at pos: {}", tok, _pos));
+                        throw error{"unsupported token in data definition: {} at pos: {}", tok, _pos};
                     _eat_space();
                     return { _alloc, _decode_bytestring() };
                 }
                 case 'C': {
                     if (tok != "Constr") [[unlikely]]
-                        throw error(fmt::format("unsupported token in data definition: {} at pos: {}", tok, _pos));
+                        throw error{"unsupported token in data definition: {} at pos: {}", tok, _pos};
                     _eat_space();
                     auto id = _decode_integer();
                     _eat_space();
@@ -373,23 +373,23 @@ namespace turbo::plutus::uplc {
                 }
                 case 'I': {
                     if (tok != "I") [[unlikely]]
-                        throw error(fmt::format("unsupported token in data definition: {} at pos: {}", tok, _pos));
+                        throw error{"unsupported token in data definition: {} at pos: {}", tok, _pos};
                     _eat_space();
                     return { _alloc, _decode_integer() };
                 }
                 case 'L': {
                     if (tok != "List") [[unlikely]]
-                        throw error(fmt::format("unsupported token in data definition: {} at pos: {}", tok, _pos));
+                        throw error{"unsupported token in data definition: {} at pos: {}", tok, _pos};
                     _eat_space();
                     return { _alloc, _decode_data_list() };
                 }
                 case 'M': {
                     if (tok != "Map") [[unlikely]]
-                        throw error(fmt::format("unsupported token in data definition: {} at pos: {}", tok, _pos));
+                        throw error{"unsupported token in data definition: {} at pos: {}", tok, _pos};
                     _eat_space();
                     return { _alloc, _decode_data_map() };
                 }
-                [[unlikely]] default: throw error(fmt::format("unsupported token '{}' at pos: {}", tok, _pos));
+                [[unlikely]] default: throw error{"unsupported token '{}' at pos: {}", tok, _pos};
             }
         }
 
@@ -429,7 +429,7 @@ namespace turbo::plutus::uplc {
                 return _decode_sequence_type(type_tag::array);
             if (typ == "pair")
                 return _decode_pair_type();
-            throw error(fmt::format("unexpected token '{}' at pos: {}", typ, _pos));
+            throw error{"unexpected token '{}' at pos: {}", typ, _pos};
         }
 
         constant_type _decode_constant_type()
@@ -451,35 +451,35 @@ namespace turbo::plutus::uplc {
                         return { _alloc, type_tag::bls12_381_g1_element };
                     if (typ == "bls12_381_G2_element")
                         return { _alloc, type_tag::bls12_381_g2_element };
-                    throw error(fmt::format("unexpected token '{}' at pos: {}", typ, _pos));
+                    throw error{"unexpected token '{}' at pos: {}", typ, _pos};
                 case 'd':
                     if (typ != "data") [[unlikely]]
-                        throw error(fmt::format("unexpected token '{}' at pos: {}", typ, _pos));
+                        throw error{"unexpected token '{}' at pos: {}", typ, _pos};
                     return { _alloc, type_tag::data };
                 case 'i':
                     if (typ != "integer") [[unlikely]]
-                        throw error(fmt::format("unexpected token '{}' at pos: {}", typ, _pos));
+                        throw error{"unexpected token '{}' at pos: {}", typ, _pos};
                     return { _alloc, type_tag::integer };
                 case 's':
                     if (typ != "string") [[unlikely]]
-                        throw error(fmt::format("unexpected token '{}' at pos: {}", typ, _pos));
+                        throw error{"unexpected token '{}' at pos: {}", typ, _pos};
                     return { _alloc, type_tag::string };
                 case 'u':
                     if (typ != "unit") [[unlikely]]
-                        throw error(fmt::format("unexpected token '{}' at pos: {}", typ, _pos));
+                        throw error{"unexpected token '{}' at pos: {}", typ, _pos};
                     return { _alloc, type_tag::unit };
                 case 'v':
                     if (typ != "value") [[unlikely]]
-                        throw error(fmt::format("unexpected token '{}' at pos: {}", typ, _pos));
+                        throw error{"unexpected token '{}' at pos: {}", typ, _pos};
                     return { _alloc, type_tag::value };
-                [[unlikely]] default: throw error(fmt::format("unexpected token '{}' at pos: {}", typ, _pos));
+                [[unlikely]] default: throw error{"unexpected token '{}' at pos: {}", typ, _pos};
             }
         }
 
         constant_pair _decode_pair_value(constant_type &&typ)
         {
             if (typ->nested.size() != 2) [[unlikely]]
-                    throw error(fmt::format("the nested type list for a pair must have two elements but has {}", typ->nested.size()));
+                    throw error{"the nested type list for a pair must have two elements but has {}", typ->nested.size()};
             _eat_lpar();
             auto fst = _decode_constant_value(constant_type { typ->nested.front() }, true);
             _eat_space();
@@ -498,8 +498,8 @@ namespace turbo::plutus::uplc {
         decoded_sequence _decode_sequence_value(constant_type &&seq_typ, const std::string_view kind)
         {
             if (seq_typ->nested.size() != 1) [[unlikely]]
-                throw error(fmt::format("the nested type list for an {} must have just one element but has {}",
-                    kind, seq_typ->nested.size()));
+                throw error{"the nested type list for an {} must have just one element but has {}",
+                    kind, seq_typ->nested.size()};
             _eat_lbr();
             auto typ = seq_typ->nested.front();
             constant_list::list_type vals { _alloc };
@@ -588,7 +588,7 @@ namespace turbo::plutus::uplc {
                 case type_tag::array: return { _alloc, _decode_array_value(std::move(typ)) };
                 case type_tag::pair: return { _alloc, _decode_pair_value(std::move(typ)) };
                 case type_tag::value: return { _alloc, _decode_value() };
-                [[unlikely]] default: throw error(fmt::format("unexpected type: {}", tag));
+                [[unlikely]] default: throw error{"unexpected type: {}", tag};
             }
         }
 
@@ -645,7 +645,7 @@ namespace turbo::plutus::uplc {
             _vars.emplace_back(name);
             const auto body = _decode_term();
             if (_vars.empty() || _vars.back() != name) [[unlikely]]
-                throw error(fmt::format("internal error: expected variable {} is missing!", name));
+                throw error{"internal error: expected variable {} is missing!", name};
             _vars.pop_back();
             return { _alloc, t_lambda { body } };
         }
@@ -670,7 +670,7 @@ namespace turbo::plutus::uplc {
             switch (tag[0]) {
                 case 'b':
                     if (tag != "builtin") [[unlikely]]
-                        throw error(fmt::format("unexpected token '{}' at pos: {}", tag, _pos));
+                        throw error{"unexpected token '{}' at pos: {}", tag, _pos};
                     return _decode_builtin();
                 case 'c':
                     if (tag == "con") [[likely]]
@@ -679,25 +679,25 @@ namespace turbo::plutus::uplc {
                         return _decode_constr();
                     if (tag == "case")
                         return _decode_case();
-                    throw error(fmt::format("unexpected token '{}' at pos: {}", tag, _pos));
+                    throw error{"unexpected token '{}' at pos: {}", tag, _pos};
                 case 'd':
                     if (tag != "delay") [[unlikely]]
-                        throw error(fmt::format("unexpected token '{}' at pos: {}", tag, _pos));
+                        throw error{"unexpected token '{}' at pos: {}", tag, _pos};
                     return _decode_delay();
                 case 'e':
                     if (tag != "error") [[unlikely]]
-                        throw error(fmt::format("unexpected token '{}' at pos: {}", tag, _pos));
+                        throw error{"unexpected token '{}' at pos: {}", tag, _pos};
                     return _decode_error();
                 case 'f':
                     if (tag != "force") [[unlikely]]
-                        throw error(fmt::format("unexpected token '{}' at pos: {}", tag, _pos));
+                        throw error{"unexpected token '{}' at pos: {}", tag, _pos};
                     return _decode_force();
                 case 'l':
                     if (tag != "lam") [[unlikely]]
-                        throw error(fmt::format("unexpected token '{}' at pos: {}", tag, _pos));
+                        throw error{"unexpected token '{}' at pos: {}", tag, _pos};
                     return _decode_lambda();
                 [[unlikely]] default:
-                    throw error(fmt::format("unexpected token '{}' at pos: {}", tag, _pos));
+                    throw error{"unexpected token '{}' at pos: {}", tag, _pos};
             }
         }
 

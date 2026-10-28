@@ -21,7 +21,7 @@ namespace turbo::parallel {
         void put(const index_type item_idx)
         {
             if (item_idx == std::numeric_limits<index_type>::max()) [[unlikely]]
-                throw error(fmt::format("the index is too large: {}", item_idx));
+                throw error{"the index is too large: {}", item_idx};
             mutex::scoped_lock lk { _put_mutex };
             _unordered.emplace(item_idx);
             index_type proposed_next = _next_ordered.load(std::memory_order_relaxed);

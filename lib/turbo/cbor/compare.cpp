@@ -13,7 +13,7 @@ namespace turbo::cbor {
     {
         emplace_back(std::move(d));
         if (size() >= 100) [[unlikely]]
-            throw error(fmt::format("terminating the comparison early - too many differences: {}", *this));
+            throw error{"terminating the comparison early - too many differences: {}", *this};
     }
 
     static diff_list compare_uint(const uint64_t v1, const uint64_t v2, path_t &path)
@@ -219,7 +219,7 @@ namespace turbo::cbor {
             case major_type::map: return compare_map(v1, v2, path, first);
             case major_type::tag: return compare_tag(v1, v2, path, first);
             case major_type::simple: return compare_simple(v1, v2, path);
-            [[unlikely]] default: throw error(fmt::format("can't compare cbor type: {}", typ));
+            [[unlikely]] default: throw error{"can't compare cbor type: {}", typ};
         }
     }
 

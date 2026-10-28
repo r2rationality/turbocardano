@@ -63,8 +63,8 @@
         if (credential_drep)
             new_drep_it = _drep_state.find(std::get<credential_t>(drep.val));
         if (credential_drep && new_drep_it == _drep_state.end() && !preserve_incorrect_delegation) [[unlikely]]
-            throw error(fmt::format("delegate_vote: {} delegating to an unknown drep credential: {}",
-                stake_id, std::get<credential_t>(drep.val)));
+            throw error{"delegate_vote: {} delegating to an unknown drep credential: {}",
+                stake_id, std::get<credential_t>(drep.val)};
         auto &acc = detail::map_nice_at(_accounts, stake_id);
         if (acc.vote_deleg && std::holds_alternative<credential_t>(acc.vote_deleg->val)) {
             const auto &old_cred = std::get<credential_t>(acc.vote_deleg->val);

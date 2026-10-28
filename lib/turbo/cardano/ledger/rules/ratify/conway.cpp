@@ -197,7 +197,7 @@ namespace turbo::cardano::ledger::conway {
                 return voting_threshold_t { voting_threshold_t::no_voting_allowed_t {} };
             if constexpr (std::is_same_v<T, gov_action_t::info_action_t>)
                 return voting_threshold_t { voting_threshold_t::no_voting_threshold_t {} };
-            throw error(fmt::format("unsupported governance action type: {}", typeid(T).name()));
+            throw error{"unsupported governance action type: {}", typeid(T).name()};
         }, ga.val);
     }
 
@@ -211,7 +211,7 @@ namespace turbo::cardano::ledger::conway {
                 return false;
             if constexpr (std::is_same_v<T, voting_threshold_t::no_voting_allowed_t>)
                 return true;
-            throw error(fmt::format("unsupported voting threshold type: {}", typeid(T).name()));
+            throw error{"unsupported voting threshold type: {}", typeid(T).name()};
         }, threshold.val);
     }
 
@@ -227,9 +227,9 @@ namespace turbo::cardano::ledger::conway {
                     case vote_t::no: break;
                     case vote_t::yes: yes += stake; break;
                     [[unlikely]] default:
-                        throw error(fmt::format(
+                        throw error{
                             "unsupported vote value: {}",
-                            static_cast<int>(vote_it->second.vote)));
+                            static_cast<int>(vote_it->second.vote)};
                 }
             } else if (std::holds_alternative<gov_action_t::hard_fork_init_t>(
                     ga.proposal.action.val)) {
@@ -309,7 +309,7 @@ namespace turbo::cardano::ledger::conway {
                 return voting_threshold_t { thresholds.treasury_withdrawal };
             if constexpr (std::is_same_v<T, gov_action_t::info_action_t>)
                 return voting_threshold_t { voting_threshold_t::no_voting_threshold_t {} };
-            throw error(fmt::format("unsupported governance action type: {}", typeid(T).name()));
+            throw error{"unsupported governance action type: {}", typeid(T).name()};
         }, ga.val);
     }
 
@@ -345,9 +345,9 @@ namespace turbo::cardano::ledger::conway {
                                 case vote_t::abstain:
                                     break;
                                 [[unlikely]] default:
-                                    throw error(fmt::format(
+                                    throw error{
                                         "unsupported vote value: {}",
-                                        static_cast<int>(vote_it->second.vote)));
+                                        static_cast<int>(vote_it->second.vote)};
                             }
                         } else {
                             total_without_abstain += stake;

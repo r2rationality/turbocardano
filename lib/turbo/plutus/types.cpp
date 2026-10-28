@@ -24,7 +24,7 @@ namespace turbo::plutus {
             if (builtins::descriptors[i].name == name)
                 return static_cast<builtin_tag>(i);
         }
-        throw error(fmt::format("unknown builtin: {}", name));
+        throw error{"unknown builtin: {}", name};
     }
 
     size_t t_builtin::num_args() const
@@ -413,7 +413,7 @@ namespace turbo::plutus {
             } else if constexpr (std::is_same_v<T, constant_pair>) {
                 return constant_type { alloc, type_tag::pair, { alloc, { from_val(alloc, v->first), from_val(alloc, v->second) } } };
             } else {
-                throw error(fmt::format("unsupported constant value: {}!", typeid(T).name()));
+                throw error{"unsupported constant value: {}!", typeid(T).name()};
                 // Noop to make Visual C++ happy
                 return constant_type { alloc, type_tag::unit };
             }
@@ -598,7 +598,7 @@ namespace turbo::plutus {
                 return fmt::format_to(out_it, "I {}", v);
             if constexpr (std::is_same_v<T, data::bstr_type>)
                 return fmt::format_to(out_it, "B #{}", v);
-            throw error(fmt::format("unsupported data type: {}", typeid(T).name()));
+            throw error{"unsupported data type: {}", typeid(T).name()};
         }, *vv);
     }
 
@@ -768,14 +768,14 @@ namespace turbo::plutus {
     constant value::as_const() const
     {
         if (_tag() != storage_tag::constant) [[unlikely]]
-            throw error(fmt::format("expected a constant runtime value but got tag {}", static_cast<size_t>(_tag())));
+            throw error{"expected a constant runtime value but got tag {}", static_cast<size_t>(_tag())};
         return constant { static_cast<const constant::value_type *>(_payload()) };
     }
 
     const v_constr &value::as_constr() const
     {
         if (_tag() != storage_tag::constr) [[unlikely]]
-            throw error(fmt::format("expected a constructor runtime value but got tag {}", static_cast<size_t>(_tag())));
+            throw error{"expected a constructor runtime value but got tag {}", static_cast<size_t>(_tag())};
         return _payload_as<v_constr>();
     }
 
@@ -783,7 +783,7 @@ namespace turbo::plutus {
     {
         const auto &c = as_const();
         if (!std::holds_alternative<std::monostate>(*c)) [[unlikely]]
-            throw error(fmt::format("expected a unit but got: {}", c));
+            throw error{"expected a unit but got: {}", c};
     }
 
     bool value::as_bool() const
@@ -955,11 +955,11 @@ namespace turbo::plutus {
     static uint64_t uint_from_string_strict(const std::string &s)
     {
         if (s.empty() || !std::isdigit(s[0])) [[unlikely]]
-            throw error(fmt::format("invalid unsigned integer: '{}'", s));
+            throw error{"invalid unsigned integer: '{}'", s};
         std::size_t consumed = 0;
         const auto u = std::stoull(s, &consumed);
         if (consumed != s.size()) [[unlikely]]
-            throw error(fmt::format("invalid unsigned integer: '{}'", s));
+            throw error{"invalid unsigned integer: '{}'", s};
         return u;
     }
 
@@ -977,7 +977,7 @@ namespace turbo::plutus {
             const auto patch = uint_from_string_strict(s.substr(p2 + 1));
             return { major, minor, patch };
         } catch (const std::exception &ex) {
-            throw error(fmt::format("invalid version: '{}': {}", s, ex.what()));
+            throw error{"invalid version: '{}': {}", s, ex.what()};
         }
     }
 
@@ -1013,12 +1013,12 @@ namespace turbo::plutus {
     blst_p1 bls_g1_decompress(const buffer bytes)
     {
         if (bytes.size() != 48) [[unlikely]]
-            throw error(fmt::format("bls12_381_g1 elements must provide 48 bytes but got: {}", bytes.size()));
+            throw error{"bls12_381_g1 elements must provide 48 bytes but got: {}", bytes.size()};
         blst_p1_affine out_a;
         if (const auto err = blst_p1_uncompress(&out_a, reinterpret_cast<const ::byte *>(bytes.data())); err != BLST_SUCCESS) [[unlikely]]
-            throw error(fmt::format("blst12_381_g1 element decoding failed for 0x{}", bytes));
+            throw error{"blst12_381_g1 element decoding failed for 0x{}", bytes};
         if (!blst_p1_affine_in_g1(&out_a)) [[unlikely]]
-            throw error(fmt::format("blst12_381_g1 element is invalid 0x{}", bytes));
+            throw error{"blst12_381_g1 element is invalid 0x{}", bytes};
         blst_p1 out {};
         blst_p1_from_affine(&out, &out_a);
         return out;
@@ -1027,12 +1027,12 @@ namespace turbo::plutus {
     blst_p2 bls_g2_decompress(const buffer bytes)
     {
         if (bytes.size() != 96) [[unlikely]]
-            throw error(fmt::format("bls12_381_g2 elements must provide 96 bytes but got: {}", bytes.size()));
+            throw error{"bls12_381_g2 elements must provide 96 bytes but got: {}", bytes.size()};
         blst_p2_affine out_a;
         if (const auto err = blst_p2_uncompress(&out_a, reinterpret_cast<const ::byte *>(bytes.data())); err != BLST_SUCCESS) [[unlikely]]
-            throw error(fmt::format("blst12_381_g2 element decoding failed at for 0x{}", bytes));
+            throw error{"blst12_381_g2 element decoding failed at for 0x{}", bytes};
         if (!blst_p2_affine_in_g2(&out_a)) [[unlikely]]
-            throw error(fmt::format("blst12_381_g2 element is invalid 0x{}", bytes));
+            throw error{"blst12_381_g2 element is invalid 0x{}", bytes};
         blst_p2 out {};
         blst_p2_from_affine(&out, &out_a);
         return out;

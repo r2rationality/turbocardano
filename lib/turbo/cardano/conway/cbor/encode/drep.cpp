@@ -18,7 +18,7 @@ namespace turbo::cardano {
             } else if constexpr (std::is_same_v<T, no_confidence_t>) {
                 enc.array(1).uint(3);
             } else {
-                throw error(fmt::format("unsupported drep type: {}", typeid(T).name()));
+                throw error{"unsupported drep type: {}", typeid(T).name()};
             }
         }, val);
     }

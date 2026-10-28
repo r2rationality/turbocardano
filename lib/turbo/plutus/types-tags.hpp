@@ -226,7 +226,7 @@ namespace fmt {
                 case type::bls12_381_ml_result: return fmt::format_to(ctx.out(), "bls12_381_ml_result");
                 case type::array: return fmt::format_to(ctx.out(), "array");
                 case type::value: return fmt::format_to(ctx.out(), "value");
-                [[unlikely]] default: throw turbo::error(fmt::format("unknown type: {}", static_cast<int>(v)));
+                [[unlikely]] default: throw turbo::error{"unknown type: {}", static_cast<int>(v)};
             }
         }
     };

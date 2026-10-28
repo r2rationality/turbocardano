@@ -29,7 +29,7 @@ suite zpp_stream_bench_suite = [] {
                     const auto data = rs.read<data_type>();
                     for (const auto act_i: data)
                         if (act_i != i) [[unlikely]]
-                            throw error(fmt::format("unexpected value: {} when waiting for {}", act_i, i));
+                            throw error{"unexpected value: {} when waiting for {}", act_i, i};
                 }
             }
         }, num_items * sizeof(data_type) * 2);

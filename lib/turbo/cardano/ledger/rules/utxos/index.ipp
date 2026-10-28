@@ -25,7 +25,7 @@
                 if (!it->second.address_raw.empty()) [[likely]] {
                     idx.erase(it);
                 } else {
-                    throw error(fmt::format("found a non-unique TXO in the same chunk {}", txo_id));
+                    throw error{"found a non-unique TXO in the same chunk {}", txo_id};
                 }
             }
         }
@@ -33,5 +33,5 @@
         static void _add_utxo(data_type &idx, const cardano::tx_base &tx, const cardano::tx_output &tx_out, const size_t txo_idx)
         {
             if (const auto [it, created] = idx.try_emplace(cardano::tx_out_ref { tx.hash(), txo_idx }, tx_out ); !created) [[unlikely]]
-                throw error(fmt::format("found a non-unique TXO {}#{}", tx.hash(), txo_idx));
+                throw error{"found a non-unique TXO {}#{}", tx.hash(), txo_idx};
         }

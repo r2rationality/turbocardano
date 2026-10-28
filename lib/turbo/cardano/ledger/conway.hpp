@@ -143,7 +143,7 @@ namespace turbo::cardano::ledger::conway {
                 if (gid == id)
                     return gas;
             }
-            throw error(fmt::format("unknown gov_action_id_t: {}", id));
+            throw error{"unknown gov_action_id_t: {}", id};
         }
     };
 

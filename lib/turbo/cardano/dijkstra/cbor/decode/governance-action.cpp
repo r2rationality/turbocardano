@@ -46,7 +46,7 @@ namespace turbo::cardano::dijkstra {
             decltype(gov_action_t::hard_fork_init_t::protocol_ver) res { cardano::protocol_version::from_cbor(v) };
             res.minor = numeric_cast<uint32_t>(res.minor);
             if (res.major > 13) [[unlikely]]
-                throw error(fmt::format("unsupported Dijkstra protocol major version: {}", res.major));
+                throw error{"unsupported Dijkstra protocol major version: {}", res.major};
             return res;
         }
     }
@@ -82,11 +82,11 @@ namespace turbo::cardano::dijkstra {
                 } }};
                 case 6: return {{ gov_action_t::info_action_t::from_cbor(it) }};
                 [[unlikely]] default:
-                    throw error(fmt::format("unsupported Dijkstra governance action type: {}", type));
+                    throw error{"unsupported Dijkstra governance action type: {}", type};
             }
         }();
         if (!it.done()) [[unlikely]]
-            throw error(fmt::format("Dijkstra governance action type {} has trailing elements", type));
+            throw error{"Dijkstra governance action type {} has trailing elements", type};
         return { std::move(action) };
     }
 }

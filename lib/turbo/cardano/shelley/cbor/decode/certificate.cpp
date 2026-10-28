@@ -41,7 +41,7 @@ namespace turbo::cardano {
         switch (const auto source_raw = v.uint(); source_raw) {
             case 0: return reward_source::reserves;
             case 1: return reward_source::treasury;
-            [[unlikely]] default: throw error(fmt::format("unexpected value of reward source: {}!", source_raw));
+            [[unlikely]] default: throw error{"unexpected value of reward source: {}!", source_raw};
         }
     }
 
@@ -66,7 +66,7 @@ namespace turbo::cardano::shelley {
             case 5: return {{ genesis_deleg_cert::from_cbor(it) }};
             case 6: return {{ instant_reward_cert::from_cbor(it) }};
             [[unlikely]] default:
-                throw error(fmt::format("unsupported cert type: {}", typ));
+                throw error{"unsupported cert type: {}", typ};
         }
     }
 }

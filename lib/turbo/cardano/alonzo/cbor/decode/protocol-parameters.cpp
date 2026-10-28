@@ -22,7 +22,7 @@ namespace turbo::cardano::alonzo {
                     [](auto &cost_models) {
                         return std::move(cost_models_t::from_cbor(cost_models).value);
                     })) [[unlikely]]
-                throw error(fmt::format("unsupported Alonzo protocol parameter: {}", idx));
+                throw error{"unsupported Alonzo protocol parameter: {}", idx};
         }
         return res;
     }

@@ -254,7 +254,7 @@ namespace turbo::cardano {
         uint64_t be_slot = host_to_net<uint64_t>(slot);
         static_assert(8 == sizeof(be_slot), "uint64_t must be 8 bytes");
         memcpy(data.data(), &be_slot, sizeof(be_slot));
-        if (nonce.size() != 32) [[unlikely]] throw error(fmt::format("nonce must be of 32 bytes but got {}!", nonce.size()));
+        if (nonce.size() != 32) [[unlikely]] throw error{"nonce must be of 32 bytes but got {}!", nonce.size()};
         memcpy(data.data() + 8, nonce.data(), nonce.size());
         return crypto::blake2b::digest(data);
     }
@@ -265,10 +265,10 @@ namespace turbo::cardano {
         uint64_t be_slot = host_to_net<uint64_t>(slot);
         static_assert(8 == sizeof(be_slot), "uint64_t must be 8 bytes");
         memcpy(data.data(), &be_slot, sizeof(be_slot));
-        if (nonce.size() != 32) [[unlikely]] throw error(fmt::format("nonce must be of 32 bytes but got {}!", nonce.size()));
+        if (nonce.size() != 32) [[unlikely]] throw error{"nonce must be of 32 bytes but got {}!", nonce.size()};
         memcpy(data.data() + 8, nonce.data(), nonce.size());
         vrf_nonce seed_tmp = crypto::blake2b::digest(data);
-        if (uc_nonce.size() != seed_tmp.size()) [[unlikely]] throw error(fmt::format("uc_nonce must be of {} bytes but got {}!", seed_tmp.size(), uc_nonce.size()));
+        if (uc_nonce.size() != seed_tmp.size()) [[unlikely]] throw error{"uc_nonce must be of {} bytes but got {}!", seed_tmp.size(), uc_nonce.size()};
         for (size_t i = 0; i < seed_tmp.size(); ++i)
             seed_tmp[i] ^= uc_nonce[i];
         return seed_tmp;
@@ -277,7 +277,7 @@ namespace turbo::cardano {
     vrf_nonce vrf_extended_hash(const buffer &result, uint8_t extension)
     {
         byte_array<65> data;
-        if (result.size() != 64) [[unlikely]] throw error(fmt::format("result must be 64 bytes but got {}!", result.size()));
+        if (result.size() != 64) [[unlikely]] throw error{"result must be 64 bytes but got {}!", result.size()};
         data[0] = extension;
         memcpy(data.data() + 1, result.data(), result.size());
         return crypto::blake2b::digest(data);
@@ -305,8 +305,8 @@ namespace turbo::cardano {
 
     void vrf_nonce_accumulate(const std::span<uint8_t> &output, const buffer &nonce_prev, const buffer &nonce_new)
     {
-        if (nonce_prev.size() != 32) [[unlikely]] throw error(fmt::format("prev_nonce must be of 32 bytes but got {}!", nonce_prev.size()));
-        if (nonce_new.size() != 32) [[unlikely]] throw error(fmt::format("prev_nonce must be of 32 bytes but got {}!", nonce_new.size()));
+        if (nonce_prev.size() != 32) [[unlikely]] throw error{"prev_nonce must be of 32 bytes but got {}!", nonce_prev.size()};
+        if (nonce_new.size() != 32) [[unlikely]] throw error{"prev_nonce must be of 32 bytes but got {}!", nonce_new.size()};
         byte_array<64> data;
         static_assert(sizeof(data) == 32 + 32);
         memcpy(data.data(), nonce_prev.data(), nonce_prev.size());
@@ -324,11 +324,11 @@ namespace turbo::cardano {
     bool vrf03_verify(const buffer &exp_res, const buffer &vkey, const buffer &proof, const buffer &msg)
     {
         if (exp_res.size() != sizeof(vrf_result)) [[unlikely]]
-            throw error(fmt::format("result must be {} bytes but got {}!", sizeof(vrf_result), exp_res.size()));
+            throw error{"result must be {} bytes but got {}!", sizeof(vrf_result), exp_res.size()};
         if (vkey.size() != sizeof(vrf_vkey)) [[unlikely]]
-            throw error(fmt::format("vkey must be {} bytes but got {}!", sizeof(vrf_vkey), vkey.size()));
+            throw error{"vkey must be {} bytes but got {}!", sizeof(vrf_vkey), vkey.size()};
         if (proof.size() != sizeof(vrf_proof)) [[unlikely]]
-            throw error(fmt::format("proof must be {} bytes but got {}!", sizeof(vrf_proof), proof.size()));
+            throw error{"proof must be {} bytes but got {}!", sizeof(vrf_proof), proof.size()};
         vrf_result res;
         bool ok = crypto_vrf_ietfdraft03_verify(res.data(), vkey.data(), proof.data(), msg.data(), msg.size()) == 0;
         if (ok)
@@ -339,11 +339,11 @@ namespace turbo::cardano {
     void vrf03_prove(const write_buffer &proof, const write_buffer &result, const buffer &sk, const buffer &msg)
     {
         if (proof.size() != sizeof(vrf_proof)) [[unlikely]]
-            throw error(fmt::format("proof must be {} bytes but got {}!", sizeof(vrf_proof), proof.size()));
+            throw error{"proof must be {} bytes but got {}!", sizeof(vrf_proof), proof.size()};
         if (result.size() != sizeof(vrf_result)) [[unlikely]]
-            throw error(fmt::format("seed must be {} bytes but got {}!", sizeof(vrf_result), result.size()));
+            throw error{"seed must be {} bytes but got {}!", sizeof(vrf_result), result.size()};
         if (sk.size() != sizeof(vrf_skey)) [[unlikely]]
-            throw error(fmt::format("skey must be {} bytes but got {}!", sizeof(vrf_skey), sk.size()));
+            throw error{"skey must be {} bytes but got {}!", sizeof(vrf_skey), sk.size()};
         if (crypto_vrf_ietfdraft03_prove(proof.data(), sk.data(), msg.data(), msg.size()) != 0) [[unlikely]]
             throw error("VRF prove failed!");
         if (crypto_vrf_ietfdraft03_proof_to_hash(result.data(), proof.data()) != 0) [[unlikely]]
@@ -353,9 +353,9 @@ namespace turbo::cardano {
     void vrf03_create(const write_buffer &sk, const write_buffer &vk)
     {
         if (vk.size() != sizeof(vrf_vkey)) [[unlikely]]
-            throw error(fmt::format("vkey must be {} bytes but got {}!", sizeof(vrf_vkey), vk.size()));
+            throw error{"vkey must be {} bytes but got {}!", sizeof(vrf_vkey), vk.size()};
         if (sk.size() != sizeof(vrf_skey)) [[unlikely]]
-            throw error(fmt::format("skey must be {} bytes but got {}!", sizeof(vrf_skey), sk.size()));
+            throw error{"skey must be {} bytes but got {}!", sizeof(vrf_skey), sk.size()};
         if (crypto_vrf_ietfdraft03_keypair(vk.data(), sk.data()) != 0) [[unlikely]]
             throw error("VRF keypair generation failed!");
     }
@@ -363,11 +363,11 @@ namespace turbo::cardano {
     void vrf03_create_from_seed(const write_buffer &sk, const write_buffer &vk, const buffer &seed)
     {
         if (vk.size() != sizeof(vrf_vkey)) [[unlikely]]
-            throw error(fmt::format("vkey must be {} bytes but got {}!", sizeof(vrf_vkey), vk.size()));
+            throw error{"vkey must be {} bytes but got {}!", sizeof(vrf_vkey), vk.size()};
         if (sk.size() != sizeof(vrf_skey)) [[unlikely]]
-            throw error(fmt::format("skey must be {} bytes but got {}!", sizeof(vrf_skey), sk.size()));
+            throw error{"skey must be {} bytes but got {}!", sizeof(vrf_skey), sk.size()};
         if (seed.size() != sizeof(vrf_seed)) [[unlikely]]
-            throw error(fmt::format("seed must be {} bytes but got {}!", sizeof(vrf_seed), seed.size()));
+            throw error{"seed must be {} bytes but got {}!", sizeof(vrf_seed), seed.size()};
         if (crypto_vrf_ietfdraft03_keypair_from_seed(vk.data(), sk.data(), seed.data()) != 0) [[unlikely]]
             throw error("VRF keypair generation failed!");
     }
@@ -375,9 +375,9 @@ namespace turbo::cardano {
     void vrf03_extract_vk(const write_buffer &vk, const buffer &sk)
     {
         if (vk.size() != sizeof(vrf_vkey)) [[unlikely]]
-            throw error(fmt::format("vkey must be {} bytes but got {}!", sizeof(vrf_vkey), vk.size()));
+            throw error{"vkey must be {} bytes but got {}!", sizeof(vrf_vkey), vk.size()};
         if (sk.size() != sizeof(vrf_skey)) [[unlikely]]
-            throw error(fmt::format("skey must be {} bytes but got {}!", sizeof(vrf_skey), sk.size()));
+            throw error{"skey must be {} bytes but got {}!", sizeof(vrf_skey), sk.size()};
         // cannot fail
         crypto_vrf_ietfdraft03_sk_to_pk(vk.data(), sk.data());
     }
@@ -400,7 +400,7 @@ namespace turbo::cardano {
     bool vrf_leader_is_eligible(const buffer &result, const rational_u64 &f, const rational_u64 &leader_stake_rel)
     {
         if (result.size() != sizeof(vrf_result) && result.size() != sizeof(vrf_nonce)) [[unlikely]]
-            throw error(fmt::format("vrf result must have {} or {} bytes but got {}!", sizeof(vrf_result), sizeof(vrf_nonce), result.size()));
+            throw error{"vrf result must have {} or {} bytes but got {}!", sizeof(vrf_result), sizeof(vrf_nonce), result.size()};
         if (!f.denominator || !f.numerator || f.numerator > f.denominator || !leader_stake_rel.denominator
                 || leader_stake_rel.numerator > leader_stake_rel.denominator) [[unlikely]]
             throw error("invalid leader-eligibility probability");

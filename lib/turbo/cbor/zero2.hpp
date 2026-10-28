@@ -62,9 +62,9 @@ namespace turbo::cbor::zero2 {
 
         [[noreturn]] static void throw_chunk_limit_error()
         {
-            throw error(fmt::format(
+            throw error{
                 "CBOR chunked values may not have more than {} chunks!",
-                max_indefinite_string_chunks));
+                max_indefinite_string_chunks};
         }
     private:
         friend struct chunked_bytes_reader;
@@ -236,7 +236,7 @@ namespace turbo::cbor::zero2 {
             switch (const auto spec = _reader_cast<special_reader>().read(); spec) {
                 case special_val::s_true: return true;
                 case special_val::s_false: return false;
-                [[unlikely]] default: throw error(fmt::format("expected for a boolean but got: {}!", spec));
+                [[unlikely]] default: throw error{"expected for a boolean but got: {}!", spec};
             }
         }
 
@@ -260,7 +260,7 @@ namespace turbo::cbor::zero2 {
                         return std::numeric_limits<int64_t>::min();
                     return -numeric_cast<int64_t>(magnitude);
                 }
-                [[unlikely]] default: throw error(fmt::format("expected for an integer but got: {}!", type()));
+                [[unlikely]] default: throw error{"expected for an integer but got: {}!", type()};
             }
         }
 
@@ -365,7 +365,7 @@ namespace turbo::cbor::zero2 {
                 case major_type::map:
                     return special_tag() == special_val::s_break;
                 [[unlikely]] default:
-                    throw error(fmt::format("indefinite is supported only for bytes, text, array, and map but got {}", type()));
+                    throw error{"indefinite is supported only for bytes, text, array, and map but got {}", type()};
             }
         }
 
@@ -438,7 +438,7 @@ namespace turbo::cbor::zero2 {
             auto &reader = _reader_base();
             if (auto *ptr = dynamic_cast<T *>(&reader); ptr) [[likely]]
                 return *ptr;
-            throw error(fmt::format("expected {} but got {}", typeid(T).name(), typeid(reader).name()));
+            throw error{"expected {} but got {}", typeid(T).name(), typeid(reader).name()};
         }
 
         static size_t special_bytes(const special_val sv)
@@ -531,7 +531,7 @@ namespace turbo::cbor::zero2 {
             ++_current;
             // ensures that the values are never reallocated since value::readers keep references to them!
             if (_current >= &_val_at(max_depth)) [[unlikely]]
-                throw error(fmt::format("the cbor structure has more than {} levels!", max_depth));
+                throw error{"the cbor structure has more than {} levels!", max_depth};
             return *_current;
         }
 
@@ -948,7 +948,7 @@ namespace turbo::cbor::zero2 {
                 _dec.step1();
                 break;
             case 0xF8:
-                throw error(fmt::format("throw: one-byte simple values are not supported!"));
+                throw error{"throw: one-byte simple values are not supported!"};
             case 0xF9:
                 // Preserve the float16 payload for raw access and normalization.
                 if (_dec.end() - _data_begin < 3) [[unlikely]]
@@ -961,13 +961,13 @@ namespace turbo::cbor::zero2 {
                 _dec.step(5);
                 break;
             case 0xFB:
-                throw error(fmt::format("throw: eight-byte simple values are not supported!"));
+                throw error{"throw: eight-byte simple values are not supported!"};
             case 0xFF:
                 new (&_reader_base()) special_reader {};
                 _dec.step1();
                 break;
             [[unlikely]] default:
-                throw error(fmt::format("an unsupported first byte of a CBOR value: #{:02X}!", _data_begin[0]));
+                throw error{"an unsupported first byte of a CBOR value: #{:02X}!", _data_begin[0]};
         }
     }
 
@@ -1458,7 +1458,7 @@ namespace turbo::cbor::zero2 {
                     return fmt::format_to(out_it, "F32 {}", v.float32());
                 return fmt::format_to(out_it, "{}", v.special());
             [[unlikely]] default:
-                throw error(fmt::format("unsupported CBOR type {}", v.type()));
+                throw error{"unsupported CBOR type {}", v.type()};
         }
     }
 
@@ -1511,7 +1511,7 @@ namespace turbo::cbor::zero2 {
                     return extract(next_v, path, idx + 1);
                 }
                 [[unlikely]] default:
-                    throw error(fmt::format("an unexpected element type in the extract path: {}", typ));
+                    throw error{"an unexpected element type in the extract path: {}", typ};
             }
         }
         return v;

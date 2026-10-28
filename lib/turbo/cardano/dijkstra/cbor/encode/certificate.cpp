@@ -81,7 +81,7 @@ namespace turbo::cardano::dijkstra {
                 cert.drep_id.to_cbor(enc);
                 cert.anchor.to_cbor(enc);
             } else {
-                throw error(fmt::format("certificate type is not supported in Dijkstra: {}", typeid(T).name()));
+                throw error{"certificate type is not supported in Dijkstra: {}", typeid(T).name()};
             }
         }, value.val);
     }

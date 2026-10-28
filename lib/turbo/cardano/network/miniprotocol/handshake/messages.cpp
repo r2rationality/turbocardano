@@ -40,7 +40,7 @@ namespace turbo::cardano::network::miniprotocol::handshake {
             case 0: return { version_mismatch_t::from_cbor(it2) };
             case 1: return { decode_error_t::from_cbor(it2) };
             case 2: return { refused_t::from_cbor(it2) };
-            [[unlikely]] default: throw error(fmt::format("unsupported message refuse reason: {}", typ));
+            [[unlikely]] default: throw error{"unsupported message refuse reason: {}", typ};
         }
     }
 
@@ -57,7 +57,7 @@ namespace turbo::cardano::network::miniprotocol::handshake {
             case 1: return { msg_accept_version_t::from_cbor(it) };
             case 2: return { msg_refuse_t::from_cbor(it) };
             case 3: return { msg_query_reply_t::from_cbor(it) };
-            [[unlikely]] default: throw error(fmt::format("an unsupported type for a handshake::msg_t: {}", typ));
+            [[unlikely]] default: throw error{"an unsupported type for a handshake::msg_t: {}", typ};
         }
     }
 

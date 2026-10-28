@@ -84,7 +84,7 @@ namespace turbo::cardano::network {
         void _reserve(size_t size)
         {
             if (size > _max_bytes)
-                throw error(fmt::format("chunk of {} bytes exceeds the chunk cache limit of {} bytes", size, _max_bytes));
+                throw error{"chunk of {} bytes exceeds the chunk cache limit of {} bytes", size, _max_bytes};
             for (auto it = _lru.begin(); size > _max_bytes - _used_bytes && it != _lru.end();) {
                 const auto found = _entries.find(*it);
                 const auto &e = found->second;
@@ -98,8 +98,8 @@ namespace turbo::cardano::network {
                 }
             }
             if (size > _max_bytes - _used_bytes)
-                throw error(fmt::format("chunk cache is full: {} of {} bytes reserved; cannot admit {} bytes",
-                    _used_bytes, _max_bytes, size));
+                throw error{"chunk cache is full: {} of {} bytes reserved; cannot admit {} bytes",
+                    _used_bytes, _max_bytes, size};
         }
     };
 }

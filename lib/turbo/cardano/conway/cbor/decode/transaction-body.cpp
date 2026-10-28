@@ -18,10 +18,10 @@ namespace turbo::cardano::conway {
             auto &mk = it.read_key();
             const auto typ = mk.uint();
             if (typ > 22) [[unlikely]]
-                throw error(fmt::format("unsupported Conway transaction body key: {}", typ));
+                throw error{"unsupported Conway transaction body key: {}", typ};
             const auto mask = uint32_t { 1 } << typ;
             if (seen & mask) [[unlikely]]
-                throw error(fmt::format("duplicate Conway transaction body key: {}", typ));
+                throw error{"duplicate Conway transaction body key: {}", typ};
             seen |= mask;
             auto &mv = it.read_val(std::move(mk));
             switch (typ) {
@@ -93,7 +93,7 @@ namespace turbo::cardano::conway {
                     break;
                 case 21: res.current_treasury = mv.uint(); break;
                 case 22: res.donation = static_cast<uint64_t>(positive_coin_t { mv.uint() }); break;
-                [[unlikely]] default: throw error(fmt::format("unsupported Conway transaction body key: {}", typ));
+                [[unlikely]] default: throw error{"unsupported Conway transaction body key: {}", typ};
             }
         }
         constexpr uint32_t required =

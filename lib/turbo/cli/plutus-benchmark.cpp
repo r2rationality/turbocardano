@@ -58,7 +58,7 @@ namespace turbo::cli::plutus_benchmark {
                             const auto run_time = std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - start_time).count();
                             res.try_emplace(script_path, flat::encode_cbor(s.version(), s_res.expr), run_time);
                         } catch (const std::exception &ex) {
-                            throw error(fmt::format("script {} (size: {}) failed: {}", script_path, bytes.size(), ex.what()));
+                            throw error{"script {} (size: {}) failed: {}", script_path, bytes.size(), ex.what()};
                         }
                     }
                     {
@@ -100,7 +100,7 @@ namespace turbo::cli::plutus_benchmark {
                     return protocol;
             } catch (const std::exception &) {
             }
-            throw error(fmt::format("unsupported protocol version: {}", text));
+            throw error{"unsupported protocol version: {}", text};
         }
 
         static std::optional<uint64_t> parse_protocol_option(const std::string &text)
@@ -120,18 +120,18 @@ namespace turbo::cli::plutus_benchmark {
             } catch (const std::exception &) {
             }
             if (epoch_text.empty() || parsed != epoch_text.size()) [[unlikely]] {
-                throw error(fmt::format(
+                throw error{
                     "cannot infer the protocol version for legacy script {}: its parent directory '{}' is not a mainnet epoch; "
                     "use --protocol=N or re-extract the scripts",
-                    path.string(), epoch_text));
+                    path.string(), epoch_text};
             }
 
             // Mainnet protocol-version epoch boundaries through the last interval
             // that can be inferred unambiguously without metadata in the file name.
             if (epoch < 290) [[unlikely]] {
-                throw error(fmt::format(
+                throw error{
                     "cannot infer a Plutus protocol version for legacy script {} from pre-Alonzo mainnet epoch {}",
-                    path.string(), epoch));
+                    path.string(), epoch};
             }
             if (epoch < 298)
                 return 5;
@@ -143,10 +143,10 @@ namespace turbo::cli::plutus_benchmark {
                 return 8;
             if (epoch <= 536)
                 return 9;
-            throw error(fmt::format(
+            throw error{
                 "cannot safely infer the protocol version for legacy script {} from mainnet epoch {}; "
                 "use --protocol=N or re-extract the scripts",
-                path.string(), epoch));
+                path.string(), epoch};
         }
 
         static uint64_t resolve_protocol(const std::filesystem::path &path, const script_info &info,
@@ -180,11 +180,11 @@ namespace turbo::cli::plutus_benchmark {
                 items.emplace_back(item);
             }
             if (items.size() != 4 && items.size() != 5) [[unlikely]]
-                throw error(fmt::format("script name must encode 4 or 5 fields but got: {}", stem));
+                throw error{"script name must encode 4 or 5 fields but got: {}", stem};
             std::optional<uint64_t> protocol {};
             if (items.size() == 5) {
                 if (!items[4].starts_with('p')) [[unlikely]]
-                    throw error(fmt::format("invalid protocol field in script name: {}", stem));
+                    throw error{"invalid protocol field in script name: {}", stem};
                 protocol.emplace(parse_protocol(items[4].substr(1)));
             }
             return { tx_hash::from_hex(items[0]), script_hash::from_hex(items[2]),

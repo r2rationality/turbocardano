@@ -70,7 +70,7 @@ namespace turbo::cardano {
             case 0: return { relay_addr::from_cbor(it) };
             case 1: return { relay_host::from_cbor(it) };
             case 2: return { relay_dns::from_cbor(it) };
-            [[unlikely]] default: throw error(fmt::format("Unsupported relay address format {}!", typ));
+            [[unlikely]] default: throw error{"Unsupported relay address format {}!", typ};
         }
     }
 }

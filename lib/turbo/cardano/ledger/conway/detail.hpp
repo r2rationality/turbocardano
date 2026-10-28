@@ -11,7 +11,7 @@ namespace turbo::cardano::ledger::conway::detail {
     {
         const auto it = map.find(key);
         if (it == map.end()) [[unlikely]]
-            throw error(fmt::format("unable to find key {} in map of type {}", key, typeid(M).name()));
+            throw error{"unable to find key {} in map of type {}", key, typeid(M).name()};
         return it->second;
     }
 

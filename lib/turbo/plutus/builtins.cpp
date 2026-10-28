@@ -120,7 +120,7 @@ namespace turbo::plutus::builtins {
         bstr_type::value_type res { alloc };
         res.reserve(1 + s_val->size());
         if (*c_val < 0 || *c_val > 255) [[unlikely]]
-            throw error(fmt::format("cons_byte_string's first parameter must be between 0 and 255: {}!", c_val));
+            throw error{"cons_byte_string's first parameter must be between 0 and 255: {}!", c_val};
         res << static_cast<uint8_t>(*c_val) << *s_val;
         return { alloc, std::move(res) };
     }
@@ -152,10 +152,10 @@ namespace turbo::plutus::builtins {
         const auto &s = s_t.as_bstr();
         const auto &i_bi = i_t.as_int();
         if (*i_bi < 0 || *i_bi >= std::numeric_limits<size_t>::max()) [[unlikely]]
-            throw error(fmt::format("byte_string index out of the allowed range: {}", i_bi));
+            throw error{"byte_string index out of the allowed range: {}", i_bi};
         const auto i = static_cast<size_t>(*i_bi);
         if (i >= s->size()) [[unlikely]]
-            throw error(fmt::format("byte_string index too big: {}", i));
+            throw error{"byte_string index too big: {}", i};
         return { alloc, bint_type { alloc, (*s)[i] } };
     }
 
@@ -198,7 +198,7 @@ namespace turbo::plutus::builtins {
         const auto s = b.as_bstr()->str();
         if (const auto it = utf8::find_invalid(s.begin(), s.end()); it == s.end()) [[likely]]
             return { alloc, str_type { alloc, s } };
-        throw error(fmt::format("an invalid utf8 sequence: {}", b.as_bstr()));
+        throw error{"an invalid utf8 sequence: {}", b.as_bstr()};
     }
 
     value if_then_else(allocator &, const value &condition, const value &yes, const value &no)
@@ -277,7 +277,7 @@ namespace turbo::plutus::builtins {
         const auto &cl = l.as_list();
         const auto cx_typ = constant_type::from_val(alloc, cx);
         if (cx_typ != cl.typ()) [[unlikely]]
-            throw error(fmt::format("mkCons requires both arguments to be of the same type but got {} and {}", cx_typ, cl.typ()));
+            throw error{"mkCons requires both arguments to be of the same type but got {} and {}", cx_typ, cl.typ()};
         return { alloc, constant { alloc, cl.prepend(alloc, cx) } };
     }
 
@@ -323,7 +323,7 @@ namespace turbo::plutus::builtins {
             } else if constexpr (std::is_same_v<T, data_constr>) {
                 return c;
             } else {
-                throw error(fmt::format("unsupported data type: {}!", typeid(T).name()));
+                throw error{"unsupported data type: {}!", typeid(T).name()};
             }
         }, *d.as_data());
     }
@@ -383,7 +383,7 @@ namespace turbo::plutus::builtins {
             return { alloc, constant { alloc, constant_pair { alloc, constant { alloc, bint_type { c->first } },
                 constant { alloc, constant_list { alloc, constant_type { alloc, type_tag::data }, std::move(cl) } } } } };
         }
-        throw error(fmt::format("invalid input for un_constr_data: {}!", t));
+        throw error{"invalid input for un_constr_data: {}!", t};
     }
 
     value un_map_data(allocator &alloc, const value &t)
@@ -397,7 +397,7 @@ namespace turbo::plutus::builtins {
                 cl.emplace_back(alloc, constant_pair { alloc, constant { alloc, p->first }, constant { alloc, p->second } });
             return value::make_list(alloc, std::move(typ) , std::move(cl));
         }
-        throw error(fmt::format("invalid input for un_map_data: {}!", t));
+        throw error{"invalid input for un_map_data: {}!", t};
     }
 
     value un_list_data(allocator &alloc, const value &t) {
@@ -409,20 +409,20 @@ namespace turbo::plutus::builtins {
                 cl.emplace_back(alloc, d);
             return value::make_list(alloc, constant_type { alloc, type_tag::data }, std::move(cl));
         }
-        throw error(fmt::format("invalid input for un_list_data: {}!", t));
+        throw error{"invalid input for un_list_data: {}!", t};
     }
 
     value un_i_data(allocator &alloc, const value &t)
     {
         if (const auto &d = t.as_data(); std::holds_alternative<data::int_type>(*d))
             return { alloc, std::get<data::int_type>(*d) };
-        throw error(fmt::format("invalid input for un_i_data: {}!", t));
+        throw error{"invalid input for un_i_data: {}!", t};
     }
 
     value un_b_data(allocator &alloc, const value &t) {
         if (const auto &d = t.as_data(); std::holds_alternative<data::bstr_type>(*d))
             return { alloc, *std::get<data::bstr_type>(*d) };
-        throw error(fmt::format("invalid input for un_b_data: {}!", t));
+        throw error{"invalid input for un_b_data: {}!", t};
     }
 
     value equals_data(allocator &alloc, const value &d1, const value &d2)
@@ -471,17 +471,17 @@ namespace turbo::plutus::builtins {
         const auto w = static_cast<size_t>(*w_t.as_int());
         const auto &v = val.as_int();
         if (*v < 0) [[unlikely]]
-            throw error(fmt::format("integer_to_byte_string requires non-negative integers but got: {}", v));
+            throw error{"integer_to_byte_string requires non-negative integers but got: {}", v};
         if (*v >= max_val) [[unlikely]]
-            throw error(fmt::format("integer_to_byte_string allows only values less than 2^65536 but got: {}", v));
+            throw error{"integer_to_byte_string allows only values less than 2^65536 but got: {}", v};
         bstr_type::value_type::base_type bytes { alloc.resource() };
         if (*v > 0) [[likely]]
             boost::multiprecision::export_bits(*val.as_int(), std::back_inserter(bytes), 8, msb);
         if (w) {
             if (w > 8192) [[unlikely]]
-                throw error(fmt::format("maximum allowed width is 8192 but got {}!", w));
+                throw error{"maximum allowed width is 8192 but got {}!", w};
             if (bytes.size() > w) [[unlikely]]
-                throw error(fmt::format("expected {} bytes but got {}", bytes.size(), w));
+                throw error{"expected {} bytes but got {}", bytes.size(), w};
             if (bytes.size() < w) {
                 const auto orig_size = bytes.size();
                 const auto padding_size = w - orig_size;
@@ -532,7 +532,7 @@ namespace turbo::plutus::builtins {
         while (k_bytes.size() < 32)
             k_bytes.emplace_back(0);
         if (k_bytes.size() > 32) [[unlikely]]
-            throw error(fmt::format("expected {} scalar must be not more than 32 bytes but got {}!", k_bytes.size(), k));
+            throw error{"expected {} scalar must be not more than 32 bytes but got {}!", k_bytes.size(), k};
         blst_scalar k_s {};
         blst_scalar_from_lendian(&k_s, k_bytes.data());
         return k_s;
@@ -561,7 +561,7 @@ namespace turbo::plutus::builtins {
         const auto &msg = msg_t.as_bstr();
         const auto &dst = dst_t.as_bstr();
         if (dst->size() > 255) [[unlikely]]
-            throw error(fmt::format("dst must be less than 256 bytes but got {}!", dst->size()));
+            throw error{"dst must be less than 256 bytes but got {}!", dst->size()};
         blst_p1 out;
         blst_hash_to_g1(&out, msg->data(), msg->size(), dst->data(), dst->size());
         return { alloc, out };
@@ -609,7 +609,7 @@ namespace turbo::plutus::builtins {
         const auto &msg = msg_t.as_bstr();
         const auto &dst = dst_t.as_bstr();
         if (dst->size() > 255) [[unlikely]]
-            throw error(fmt::format("dst must be less than 256 bytes but got {}!", dst->size()));
+            throw error{"dst must be less than 256 bytes but got {}!", dst->size()};
         blst_p2 out;
         blst_hash_to_g2(&out, msg->data(), msg->size(), dst->data(), dst->size());
         return { alloc, out };
@@ -842,7 +842,7 @@ namespace turbo::plutus::builtins {
         const auto &pos = pos_v.as_int();
         const auto n_bits = b->size() << 3;
         if (*pos < 0 || *pos >= n_bits) [[unlikely]]
-            throw error(fmt::format("readBit: the bit position out of range: {}", *pos));
+            throw error{"readBit: the bit position out of range: {}", *pos};
         // convert into the position from the left
         const auto idx = static_cast<size_t>(*pos);
         const auto byte_idx = b->size() - (idx >> 3) - 1;
@@ -865,7 +865,7 @@ namespace turbo::plutus::builtins {
         indices.for_each([&](const auto &idx_v) {
             const auto &idx = idx_v.as_int();
             if (*idx < 0 || *idx >= n_bits) [[unlikely]]
-                throw error(fmt::format("writeBits: the bit position out of range: {}", *idx));
+                throw error{"writeBits: the bit position out of range: {}", *idx};
             const auto pos = static_cast<size_t>(*idx);
             const auto byte_idx = b->size() - (pos >> 3) - 1;
             uint8_t mask = 1;
@@ -884,10 +884,10 @@ namespace turbo::plutus::builtins {
     {
         const auto &len = len_v.as_int();
         if (*len < 0 || *len > 8192) [[unlikely]]
-            throw error(fmt::format("replicateByte: the length is out of range: {}", *len));
+            throw error{"replicateByte: the length is out of range: {}", *len};
         const auto &b = b_v.as_int();
         if (*b < 0 || *b > 255) [[unlikely]]
-            throw error(fmt::format("replicateByte: the byte is out of range: {}", *b));
+            throw error{"replicateByte: the byte is out of range: {}", *b};
         const auto k = static_cast<uint8_t>(*b);
         const auto sz = static_cast<size_t>(*len);
         bstr_type::value_type res { alloc };
@@ -936,7 +936,7 @@ namespace turbo::plutus::builtins {
         static const cpp_int min_integer = -(cpp_int { 1 } << 8191);
         static const cpp_int max_integer = (cpp_int { 1 } << 8191) - 1;
         if (*m <= 0 || *m > max_integer) [[unlikely]]
-            throw error(fmt::format("invalid modulus for expModInteger: {}", m));
+            throw error{"invalid modulus for expModInteger: {}", m};
         if (*m == 1)
             return { alloc, 0 };
         if (*a == 0 && *e < 0) [[unlikely]]
@@ -986,8 +986,8 @@ namespace turbo::plutus::builtins {
         const auto &src = array_v.as_array();
         const auto &index = *index_v.as_int();
         if (index < 0 || index >= src.size()) [[unlikely]]
-            throw error(fmt::format("array index {} is out of bounds for an array of size {}",
-                index_v.as_int(), src.size()));
+            throw error{"array index {} is out of bounds for an array of size {}",
+                index_v.as_int(), src.size()};
         return { alloc, src.at(index.convert_to<size_t>()) };
     }
 
@@ -1231,7 +1231,7 @@ namespace turbo::plutus::builtins {
                 [[unlikely]] default: break;
             }
         }
-        throw error(fmt::format("unsupported script type: {}", typ));
+        throw error{"unsupported script type: {}", typ};
     }
 
     static bool _ledger_language_available(const cardano::script_type typ, const uint64_t protocol_major)

@@ -69,7 +69,7 @@ namespace turbo::cardano {
         tx_size(size_t sz)
         {
             size_t packed_sz = sz >> 8;
-            if (packed_sz >= 256 || (packed_sz == 255 && sz & 0xFF)) [[unlikely]] throw error(fmt::format("tx size is too big: {}!", sz));
+            if (packed_sz >= 256 || (packed_sz == 255 && sz & 0xFF)) [[unlikely]] throw error{"tx size is too big: {}!", sz};
             if (sz & 0xFF) ++packed_sz;
             _size = (uint8_t)packed_sz;
         }
@@ -89,14 +89,14 @@ namespace turbo::cardano {
         cert_idx(size_t idx)
         {
             if (idx >= (1U << 16)) [[unlikely]]
-                throw error(fmt::format("tx out idx is too big: {}!", idx));
+                throw error{"tx out idx is too big: {}!", idx};
             _idx = idx;
         }
 
         cert_idx &operator=(size_t idx)
         {
             if (idx >= (1U << 16)) [[unlikely]]
-                throw error(fmt::format("tx out idx is too big: {}!", idx));
+                throw error{"tx out idx is too big: {}!", idx};
             _idx = idx;
             return *this;
         }
@@ -455,7 +455,7 @@ namespace turbo::cardano {
                 case script_type::plutus_v2: ++plutus_v2_script; break;
                 case script_type::plutus_v3: ++plutus_v3_script; break;
                 case script_type::plutus_v4: ++plutus_v4_script; break;
-                [[unlikely]] default: throw error(fmt::format("unsupported script type: {}", static_cast<int>(typ)));
+                [[unlikely]] default: throw error{"unsupported script type: {}", static_cast<int>(typ)};
             }
             return *this;
         }
@@ -713,14 +713,14 @@ namespace turbo::cardano {
         {
             if (_wits_raw) [[likely]]
                 return *_wits_raw;
-            throw error(fmt::format("transaction witnesses have not been parsed for TX #{}", hash()));
+            throw error{"transaction witnesses have not been parsed for TX #{}", hash()};
         }
 
         const tx_wit_list &witnesses() const
         {
             if (_wits_raw) [[likely]]
                 return _wits;
-            throw error(fmt::format("transaction witnesses have not been parsed for TX #{}", hash()));
+            throw error{"transaction witnesses have not been parsed for TX #{}", hash()};
         }
 
         const tx_redeemer_map &redeemers() const
@@ -731,14 +731,14 @@ namespace turbo::cardano {
                 static const tx_redeemer_map empty {};
                 return empty;
             }
-            throw error(fmt::format("transaction witnesses have not been parsed for TX #{}", hash()));
+            throw error{"transaction witnesses have not been parsed for TX #{}", hash()};
         }
 
         buffer redeemers_raw() const
         {
             if (_wits_raw) [[likely]]
                 return redeemer_bytes();
-            throw error(fmt::format("transaction witnesses have not been parsed for TX #{}", hash()));
+            throw error{"transaction witnesses have not been parsed for TX #{}", hash()};
         }
 
         json::object to_json(const tail_relative_stake_map &) const;
@@ -768,7 +768,7 @@ namespace turbo::cardano {
         {
             if (idx < (1 << 15)) [[likely]]
                 return idx;
-            throw error(fmt::format("transaction idx is too large: {}!", idx));
+            throw error{"transaction idx is too large: {}!", idx};
         }
 
         void mark_invalid()
@@ -892,7 +892,7 @@ namespace fmt {
                 case redeemer_tag::vote: return fmt::format_to(ctx.out(), "vote");
                 case redeemer_tag::propose: return fmt::format_to(ctx.out(), "propose");
                 case redeemer_tag::guard: return fmt::format_to(ctx.out(), "guard");
-                [[unlikely]] default: throw turbo::error(fmt::format("unsupported redeemer tag value {}", static_cast<int>(v)));
+                [[unlikely]] default: throw turbo::error{"unsupported redeemer tag value {}", static_cast<int>(v)};
             }
         }
     };

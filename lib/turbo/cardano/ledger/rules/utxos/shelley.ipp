@@ -18,7 +18,7 @@
     void state::utxo_del(const cardano::tx_out_ref &txo_id)
     {
         if (const size_t num_del = _utxo.erase(txo_id); num_del != 1) [[unlikely]]
-            throw error(fmt::format("request to remove an unknown TXO {}!", txo_id));
+            throw error{"request to remove an unknown TXO {}!", txo_id};
     }
 
     void state::_process_utxo_updates(utxo_update_list &&utxo_updates)
@@ -101,7 +101,7 @@
                                                 pointer_deltas[addr.pointer()] -= static_cast<int64_t>(it->second.coin);
                                             utxo_part.erase(it);
                                         } else {
-                                            throw error(fmt::format("request to remove an unknown TXO {}!", txo_id));
+                                            throw error{"request to remove an unknown TXO {}!", txo_id};
                                         }
                                     }
                                 }
@@ -168,8 +168,8 @@
                                 } else {
                                     const uint64_t dec = static_cast<uint64_t>(-delta);
                                     if (acc.stake < dec) [[unlikely]] {
-                                        throw error(fmt::format("trying to remove from account {} more stake {} than it has: {}",
-                                            stake_id, dec, acc.stake));
+                                        throw error{"trying to remove from account {} more stake {} than it has: {}",
+                                            stake_id, dec, acc.stake};
                                     }
                                     acc.stake -= dec;
                                 }
@@ -342,7 +342,7 @@
         for (const auto &txo_id: collected_collateral) {
             const auto txo_data = utxo_find(txo_id);
             if (!txo_data) [[unlikely]]
-                throw error(fmt::format("epoch {}: cannot find data about a TXO used as a collateral input: {}", _epoch, txo_id));
+                throw error{"epoch {}: cannot find data about a TXO used as a collateral input: {}", _epoch, txo_id};
             add_fees(txo_data->coin);
             if (const auto addr = txo_data->addr(); addr.has_stake_id_hybrid()) [[likely]]
                 update_stake_id_hybrid(addr.stake_id_hybrid(), -static_cast<int64_t>(txo_data->coin));
@@ -360,7 +360,7 @@
         } else {
             const uint64_t dec = static_cast<uint64_t>(-delta);
             if (acc.stake < dec) [[unlikely]]
-                throw error(fmt::format("trying to remove from account {} more stake {} than it has: {}", stake_id, dec, acc.stake));
+                throw error{"trying to remove from account {} more stake {} than it has: {}", stake_id, dec, acc.stake};
             acc.stake -= dec;
             if (acc.deleg && _active_pool_params.contains(*acc.deleg))
                 _active_pool_dist.sub(*acc.deleg, static_cast<uint64_t>(-delta));
@@ -400,11 +400,11 @@
         if (_fees_next_reward >= refund) [[likely]]
             _fees_next_reward -= refund;
         else
-            throw error(fmt::format("insufficient fees_next_reward: {} to refund {}", _fees_next_reward, refund));
+            throw error{"insufficient fees_next_reward: {} to refund {}", _fees_next_reward, refund};
         if (_fees_utxo >= refund) [[likely]]
             _fees_utxo -= refund;
         else
-            throw error(fmt::format("insufficient fees_utxo: {} to refund {}", _fees_utxo, refund));
+            throw error{"insufficient fees_utxo: {} to refund {}", _fees_utxo, refund};
     }
 
     void state::add_fees(const uint64_t amount)

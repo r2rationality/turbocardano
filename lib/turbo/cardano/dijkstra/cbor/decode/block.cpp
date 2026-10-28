@@ -12,7 +12,7 @@ namespace turbo::cardano::dijkstra {
             if (v.type() == cbor::major_type::tag) {
                 auto &tag = v.tag();
                 if (tag.id() != 258) [[unlikely]]
-                    throw error(fmt::format("expected invalid transaction set tag 258 but got: {}", tag.id()));
+                    throw error{"expected invalid transaction set tag 258 but got: {}", tag.id()};
                 items = &tag.read();
             }
             invalid_tx_set result {};
@@ -112,7 +112,7 @@ namespace turbo::cardano::dijkstra {
             throw error("Dijkstra header/body Leios certificate presence mismatch");
         for (const auto tx_idx: _invalid_transactions) {
             if (tx_idx >= _transactions->txs.size()) [[unlikely]]
-                throw error(fmt::format("Dijkstra invalid transaction index {} is out of range", tx_idx));
+                throw error{"Dijkstra invalid transaction index {} is out of range", tx_idx};
             mark_invalid_tx(tx_idx);
         }
     }

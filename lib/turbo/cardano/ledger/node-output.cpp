@@ -18,7 +18,7 @@ namespace turbo::cardano::ledger::node_snapshot {
             buffer take(const size_t n)
             {
                 if (n > data.size() - pos)
-                    throw error(fmt::format("truncated MemPack record at byte {} (need {})", pos, n));
+                    throw error{"truncated MemPack record at byte {} (need {})", pos, n};
                 const auto b = data.subbuf(pos, n);
                 pos += n;
                 return b;
@@ -40,7 +40,7 @@ namespace turbo::cardano::ledger::node_snapshot {
             void end() const
             {
                 if (pos != data.size())
-                    throw error(fmt::format("trailing MemPack data at byte {}", pos));
+                    throw error{"trailing MemPack data at byte {}", pos};
             }
         };
 

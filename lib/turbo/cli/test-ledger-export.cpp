@@ -34,7 +34,7 @@ namespace turbo::cli::test_ledger_export {
                 const auto &s = *it->second;
                 const auto [end, ec] = std::from_chars(s.data(), s.data() + s.size(), fallback);
                 if (ec != std::errc {} || end != s.data() + s.size())
-                    throw error(fmt::format("--{} must be a nonnegative epoch integer", name));
+                    throw error{"--{} must be a nonnegative epoch integer", name};
                 return fallback;
             };
             const auto refs = node_snapshot::discover(orig_dir, epoch_option("from", 0),
@@ -50,7 +50,7 @@ namespace turbo::cli::test_ledger_export {
                 const node_snapshot::reader expected { ref.path };
                 const auto &target = expected.info().tip;
                 if (target.slot != ref.slot || expected.info().epoch != ref.epoch)
-                    throw error(fmt::format("{}: snapshot name disagrees with its state", ref.path.string()));
+                    throw error{"{}: snapshot name disagrees with its state", ref.path.string()};
                 logger::info("testing epoch {} at slot {} hash {}", ref.epoch, target.slot, target.hash);
                 cardano::optional_point point;
                 if (cr.tip() && cr.max_slot() >= target.slot) {
@@ -65,7 +65,7 @@ namespace turbo::cli::test_ledger_export {
                         syncr.sync(syncr.find_peer(addr), target.slot, sync::validation_mode_t::none);
                     point = cr.tip();
                     if (!point || point->slot != target.slot || point->hash != target.hash || point->height != target.height)
-                        throw error(fmt::format("could not reach the reference chain point for epoch {}", ref.epoch));
+                        throw error{"could not reach the reference chain point for epoch {}", ref.epoch};
                     if (!cr.validator().snapshots().best_exportable(point, true)) cr.save_state();
                 }
                 cr.validator().visit_exportable_state(point, true, [&](auto &state, const auto &tip) {
@@ -81,11 +81,11 @@ namespace turbo::cli::test_ledger_export {
                             std::filesystem::create_directories(output_dir);
                             state.save_node(generated.string(), tip, 1000, node_format::v11_1_3);
                         } catch (const std::exception &save_error) {
-                            throw error(fmt::format("epoch {} slot {}: {}; could not save diagnostic snapshot at {}: {}",
-                                ref.epoch, target.slot, ex.what(), generated.string(), save_error.what()));
+                            throw error{"epoch {} slot {}: {}; could not save diagnostic snapshot at {}: {}",
+                                ref.epoch, target.slot, ex.what(), generated.string(), save_error.what()};
                         }
-                        throw error(fmt::format("epoch {} slot {}: {}; generated snapshot retained at {}",
-                            ref.epoch, target.slot, ex.what(), generated.string()));
+                        throw error{"epoch {} slot {}: {}; generated snapshot retained at {}",
+                            ref.epoch, target.slot, ex.what(), generated.string()};
                     }
                 });
                 logger::info("the exported ledger for epoch {} is the same", ref.epoch);

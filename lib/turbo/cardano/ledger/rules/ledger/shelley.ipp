@@ -29,7 +29,7 @@
                 || std::is_same_v<T, instant_reward_cert>) {
                 process_cert(cert_t { u }, upd.loc);
             } else {
-                throw error(fmt::format("unsupported timed update: {}", typeid(u).name()));
+                throw error{"unsupported timed update: {}", typeid(u).name()};
             }
         }, upd.update);
     }

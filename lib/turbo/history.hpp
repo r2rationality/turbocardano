@@ -246,7 +246,7 @@ namespace turbo {
                             const auto [ use_count, use_item ] = txo_use_idx.find(search_item, txo_use_data);
                             if (use_count > 0) {
                                 if (use_count > 1) [[unlikely]]
-                                    throw error(fmt::format("internal error: multiple txo-use entries for the same tx offset {}!", txo_tasks[j]));
+                                    throw error{"internal error: multiple txo-use entries for the same tx offset {}!", txo_tasks[j]};
                                 out.use_offset = use_item.offset;
                                 out.use_size = use_item.size;
                             }
@@ -333,7 +333,7 @@ namespace turbo {
                 return _history(_stake_ref_idx, id);
             if constexpr (std::is_same_v<T, cardano::pay_ident>)
                return _history(_pay_ref_idx, id);;
-            throw error(fmt::format("unsupported type for find_history: {}", typeid(T).name()));
+            throw error{"unsupported type for find_history: {}", typeid(T).name()};
         }
 
         storage::block_info find_block(uint64_t tx_offset) const
@@ -397,7 +397,7 @@ namespace turbo {
                     for (auto tx_ptr: chunk_info.tasks) {
                         auto &[tx_offset, tx_item] = *tx_ptr;
                         if (tx_offset < chunk_offset) [[unlikely]]
-                            throw error(fmt::format("task offset: {} < chunk_offset: {}!", tx_offset, chunk_offset));
+                            throw error{"task offset: {} < chunk_offset: {}!", tx_offset, chunk_offset};
                         auto tx_size = static_cast<size_t>(tx_item.size);
                         const size_t tx_chunk_offset = tx_offset - chunk_offset;
                         // tx_size is imprecise so bound it down to the chunk size
@@ -420,7 +420,7 @@ namespace turbo {
                                 }
                             }
                         } catch (const std::exception &ex) {
-                            throw error(fmt::format("cannot parse tx at offset {} size {}: {}", tx_offset, static_cast<size_t>(tx_item.size), ex.what()));
+                            throw error{"cannot parse tx at offset {} size {}: {}", tx_offset, static_cast<size_t>(tx_item.size), ex.what()};
                         }
                     }
                     const auto new_num_ready = num_ready.fetch_add(1, std::memory_order_relaxed) + 1;

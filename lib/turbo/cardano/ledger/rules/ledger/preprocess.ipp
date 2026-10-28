@@ -142,13 +142,13 @@
                     const auto num_redeemers = tx.redeemers().size();
                     if (const auto start_slot = tx.validity_start(); start_slot) {
                         if (*start_slot > blk->slot()) [[unlikely]]
-                            throw error(fmt::format("tx {} validity start interval: {} starts after the block's slot: {}",
-                                tx.hash(), *start_slot, blk->slot()));
+                            throw error{"tx {} validity start interval: {} starts after the block's slot: {}",
+                                tx.hash(), *start_slot, blk->slot()};
                     }
                     // Utxo.inInterval uses an inclusive upper bound, with or without a lower bound.
                     if (const auto end_slot = tx.validity_end(); end_slot && *end_slot < blk->slot()) [[unlikely]]
-                        throw error(fmt::format("tx {} validity end interval: {} ends before the block's slot: {}",
-                            tx.hash(), *end_slot, blk->slot()));
+                        throw error{"tx {} validity end interval: {} ends before the block's slot: {}",
+                            tx.hash(), *end_slot, blk->slot()};
                     if (num_redeemers) {
                         tx_checks.plutus_ctx.emplace(stored_tx_context {
                             .tx_id=tx.hash(),
@@ -221,7 +221,7 @@
                         tx_checks.balances.out_coin += txo.coin;
                         if (const auto addr = txo.addr(); !addr.is_byron()) {
                             if (addr.network() != blk->config().shelley_network_id) [[unlikely]]
-                                throw error(fmt::format("the network id of a shelley address: {} does not match the config: {}", addr, blk->config().shelley_network_id));
+                                throw error{"the network id of a shelley address: {} does not match the config: {}", addr, blk->config().shelley_network_id};
                         }
                         for (const auto &[policy_id, p_assets]: txo.assets) {
                             for (const auto &[name, coin]: p_assets) {
@@ -253,7 +253,7 @@
                         ++num_inputs;
                     });
                     if (!num_inputs) [[unlikely]]
-                        throw error(fmt::format("tx {} does not have any inputs!", tx.hash()));
+                        throw error{"tx {} does not have any inputs!", tx.hash()};
                     const auto donation = tx.donation();
                     if (!tx.invalid())
                         donations += donation;
@@ -312,7 +312,7 @@
                     tx.foreach_witness_shelley_bootstrap([&](const auto &w) {
                         crypto::ed25519::vkey_full vk_full {};
                         if (sizeof(vk_full) != sizeof(w.vkey) + w.chain_code.size()) [[unlikely]]
-                            throw error(fmt::format("invalid chain code size: {} (expected: {})", w.chain_code.size(), sizeof(vk_full) - sizeof(w.vkey)));
+                            throw error{"invalid chain code size: {} (expected: {})", w.chain_code.size(), sizeof(vk_full) - sizeof(w.vkey)};
                         memcpy(vk_full.data(), w.vkey.data(), w.vkey.size());
                         memcpy(vk_full.data() + w.vkey.size(), w.chain_code.data(), w.chain_code.size());
                         tx_checks.signers.emplace(bootstrap_signer_t { byron_addr_root_hash(0, vk_full, w.attrs) });

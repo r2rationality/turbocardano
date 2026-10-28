@@ -38,7 +38,7 @@ namespace turbo::cardano::conway {
                             : -numeric_cast<int64_t>(magnitude));
                         break;
                     }
-                    [[unlikely]] default: throw error(fmt::format("unsupported cost model value type: {}", value.type()));
+                    [[unlikely]] default: throw error{"unsupported cost model value type: {}", value.type()};
                 }
             }
             return { std::move(values), cost_model_names(language) };
@@ -55,12 +55,12 @@ namespace turbo::cardano::conway {
             auto &key_v = it.read_key();
             const auto key = key_v.uint();
             if (key > 255) [[unlikely]]
-                throw error(fmt::format("unsupported Conway language: {}", key));
+                throw error{"unsupported Conway language: {}", key};
             auto &value_v = it.read_val(std::move(key_v));
             const auto before = res.value.items.size();
             res.value.items.emplace_hint(res.value.items.end(), key, cost_model_from_cbor(key, value_v));
             if (res.value.items.size() == before) [[unlikely]]
-                throw error(fmt::format("duplicate cost model language: {}", key));
+                throw error{"duplicate cost model language: {}", key};
         }
         return res;
     }

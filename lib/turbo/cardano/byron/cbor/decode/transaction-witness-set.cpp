@@ -16,7 +16,7 @@ namespace turbo::cardano::byron {
             switch (const auto typ = w_it.read().uint(); typ) {
                 case 0: res.items.emplace_back(tx_wit_byron_vkey::from_cbor(w_it.read())); break;
                 case 2: res.items.emplace_back(tx_wit_byron_redeemer::from_cbor(w_it.read())); break;
-                [[unlikely]] default: throw error(fmt::format("unsupported byron witness type: {}", typ));
+                [[unlikely]] default: throw error{"unsupported byron witness type: {}", typ};
             }
         }
         res.raw = v.data_raw();

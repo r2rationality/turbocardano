@@ -10,9 +10,9 @@
             {
                 const auto &max = part.max_stats;
                 if (max.max_block_body_size && *max.max_block_body_size > _st.params().max_block_body_size) [[unlikely]]
-                    throw error(fmt::format("block body size of {} exceeded the limit of {}", *max.max_block_body_size, _st.params().max_block_body_size));
+                    throw error{"block body size of {} exceeded the limit of {}", *max.max_block_body_size, _st.params().max_block_body_size};
                 if (max.max_block_header_size && *max.max_block_header_size > _st.params().max_block_header_size) [[unlikely]]
-                    throw error(fmt::format("block header size of {} exceeded the limit of {}", *max.max_block_header_size, _st.params().max_block_header_size));
+                    throw error{"block header size of {} exceeded the limit of {}", *max.max_block_header_size, _st.params().max_block_header_size};
                 if (max.max_tx_size && *max.max_tx_size > _st.params().max_transaction_size) [[unlikely]]
-                    throw error(fmt::format("tx size of {} exceeded the limit of {}", *max.max_tx_size, _st.params().max_transaction_size));
+                    throw error{"tx size of {} exceeded the limit of {}", *max.max_tx_size, _st.params().max_transaction_size};
             }

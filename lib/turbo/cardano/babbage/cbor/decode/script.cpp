@@ -17,7 +17,7 @@ namespace turbo::cardano::babbage {
             case 0: decoded_type = script_type::native; break;
             case 1: decoded_type = script_type::plutus_v1; break;
             case 2: decoded_type = script_type::plutus_v2; break;
-            [[unlikely]] default: throw error(fmt::format("unsupported script_type: {}", type));
+            [[unlikely]] default: throw error{"unsupported script_type: {}", type};
         }
         auto &script = it.read();
         script_t res { ::turbo::cardano::detail::script_info_from_cbor(

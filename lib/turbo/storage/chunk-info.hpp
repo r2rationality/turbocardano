@@ -111,7 +111,7 @@ namespace turbo::storage {
                 const auto last_era = blocks.back().era;
                 if (first_era == last_era || (first_era == 0 && last_era == 1)) [[likely]]
                     return last_era;
-                throw error(fmt::format("chunk {} has blocks from different eras {} and {}", rel_path(), first_era, last_era));
+                throw error{"chunk {} has blocks from different eras {} and {}", rel_path(), first_era, last_era};
             }
             throw error("chunk cannot be empty!");
         }

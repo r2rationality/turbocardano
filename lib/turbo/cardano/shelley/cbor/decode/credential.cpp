@@ -14,7 +14,7 @@ namespace turbo::cardano {
         auto &it = v.array();
         const auto type = it.read().uint();
         if (type > 1) [[unlikely]]
-            throw error(fmt::format("unsupported credential type: {}", type));
+            throw error{"unsupported credential type: {}", type};
         credential_t res { it.read().bytes(), type == 1 };
         if (!it.done()) [[unlikely]]
             throw error("unexpected trailing credential elements");

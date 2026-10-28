@@ -539,7 +539,7 @@ namespace turbo::plutus {
         static bstr_type from_hex(allocator &alloc, const std::string_view hex)
         {
             if (hex.size() % 2 != 0) [[unlikely]]
-                throw error(fmt::format("hex string must have an even number of characters but got {}!", hex.size()));
+                throw error{"hex string must have an even number of characters but got {}!", hex.size()};
             bstr_type::value_type data { alloc, hex.size() / 2 };
             init_from_hex(data, hex);
             return { alloc, std::move(data) };
@@ -1082,7 +1082,7 @@ namespace turbo::plutus {
     inline term::term(allocator &, variable &&v): _storage {}
     {
         if (v.idx > _max_immediate) [[unlikely]]
-            throw error(fmt::format("variable index {} exceeds the compact term limit {}", v.idx, _max_immediate));
+            throw error{"variable index {} exceeds the compact term limit {}", v.idx, _max_immediate};
         _storage = _encode_immediate(v.idx, storage_tag::variable);
     }
 
@@ -1135,7 +1135,7 @@ namespace turbo::plutus {
             const std::span<const term> args)
     {
         if (args.empty() || args.size() > 6) [[unlikely]]
-            throw error(fmt::format("a builtin spine requires between one and six arguments but got {}", args.size()));
+            throw error{"a builtin spine requires between one and six arguments but got {}", args.size()};
         const auto bytes = sizeof(term_builtin_spine_storage) + args.size() * sizeof(term);
         auto *storage = static_cast<term_builtin_spine_storage *>(
             alloc.resource()->allocate(bytes, alignof(term_builtin_spine_storage)));
@@ -1165,7 +1165,7 @@ namespace turbo::plutus {
                     case term_tag::delay: return visitor(t_delay { v.expr });
                     case term_tag::force: return visitor(force { v.expr });
                     case term_tag::lambda: return visitor(t_lambda { v.expr });
-                    [[unlikely]] default: throw error(fmt::format("invalid unary term tag: {}", v.tag));
+                    [[unlikely]] default: throw error{"invalid unary term tag: {}", v.tag};
                 }
             }
             case storage_tag::apply:

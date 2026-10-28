@@ -12,10 +12,10 @@
         for (const auto &[id, redeemer]: redeemers) {
             if (redeemer.budget.mem > limit.mem - total.mem
                     || redeemer.budget.steps > limit.steps - total.steps) [[unlikely]] {
-                throw error(fmt::format(
+                throw error{
                     "the total redeemer execution-unit budget exceeds maxTxExUnits {} at {}#{}: "
                     "accumulated {{ mem: {}, steps: {} }}, next {}",
-                    limit, id.tag, id.ref_idx, total.mem, total.steps, redeemer.budget));
+                    limit, id.tag, id.ref_idx, total.mem, total.steps, redeemer.budget};
             }
             total.mem += redeemer.budget.mem;
             total.steps += redeemer.budget.steps;

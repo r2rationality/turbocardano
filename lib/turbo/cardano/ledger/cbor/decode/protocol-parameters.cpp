@@ -21,7 +21,7 @@ namespace turbo::cardano {
                     [](auto &cost_models) {
                         return plutus_cost_models::from_cbor(cost_models);
                     })) [[unlikely]]
-                throw error(fmt::format("unsupported ledger protocol parameter: {}", id));
+                throw error{"unsupported ledger protocol parameter: {}", id};
         }
         return res;
     }

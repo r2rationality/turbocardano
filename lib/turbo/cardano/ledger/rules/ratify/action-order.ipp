@@ -24,7 +24,7 @@
                 return false;
             if constexpr (std::is_same_v<T, info_action_t>)
                 return false;
-            throw error(fmt::format("unsupported gov_action: {}", typeid(T).name()));
+            throw error{"unsupported gov_action: {}", typeid(T).name()};
             return false;
         }, val);
     }
@@ -47,7 +47,7 @@
                 return 5;
             if constexpr (std::is_same_v<T, info_action_t>)
                 return 6;
-            throw error(fmt::format("unsupported gov_action: {}", typeid(T).name()));
+            throw error{"unsupported gov_action: {}", typeid(T).name()};
             return std::numeric_limits<int>::max();
         }, val);
     }

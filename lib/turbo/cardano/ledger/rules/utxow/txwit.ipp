@@ -13,7 +13,7 @@
                     tx.balances.out_coin += it->second.out_coin;
                 }
                 if (!tx.balances.match()) [[unlikely]]
-                    throw error(fmt::format("tx {}: consumed != produced: {}", tx.tx_id, tx.balances));
+                    throw error{"tx {}: consumed != produced: {}", tx.tx_id, tx.balances};
                 if (plutus_ctx && tx.era != 7) {
                     // UTXO checked the budgets once, while computing minimum fees.
                     for (const auto &[rid, rdata]: plutus_ctx->redeemers())
@@ -47,11 +47,11 @@
                         throw error("script witness domain differs from needed minus reference scripts");
                     for (const auto &hash: needed.keys)
                         if (!has_key_witness(tx.signers, hash)) [[unlikely]]
-                            throw error(fmt::format("missing required key witness: {}", hash));
+                            throw error{"missing required key witness: {}", hash};
                     for (const auto &hash: needed.scripts) {
                         if (tx.conway.scripts.at(hash) == script_type::native) {
                             if (!native_available(hash)) [[unlikely]]
-                                throw error(fmt::format("missing required native script: {}", hash));
+                                throw error{"missing required native script: {}", hash};
                         } else if (tx.conway.redeemers.empty()) {
                             // A collateral credential has no rdptr. With redeemers,
                             // collateral validation already requires key addresses.
@@ -70,7 +70,7 @@
                 }
                 const auto *missing = missing_required_witness(tx.required_signers, tx.signers, native_available);
                 if (missing) [[unlikely]]
-                    throw error(fmt::format("epoch: {} tx {} missing a required_signer: {}", part.epoch, tx.tx_id, *missing));
+                    throw error{"epoch: {} tx {} missing a required_signer: {}", part.epoch, tx.tx_id, *missing};
                 if (tx.reqires_genesis_delegs_quorum) [[unlikely]] {
                     size_t num_signers = 0;
                     for (const auto &vk_hash: _cr.config().byron_delegate_hashes) {
@@ -79,7 +79,7 @@
                     }
                     const auto quorum = _cr.config().shelley_update_quorum;
                     if (num_signers < quorum) [[unlikely]]
-                        throw error(fmt::format("a quorum of {} genesis delegates is required but got only: {}", quorum, num_signers));
+                        throw error{"a quorum of {} genesis delegates is required but got only: {}", quorum, num_signers};
                     logger::debug("epoch: {} tx: {} requires a quorum of {} genesis delegates and got {}",
                         part.epoch, tx.tx_id, quorum, num_signers);
                 }

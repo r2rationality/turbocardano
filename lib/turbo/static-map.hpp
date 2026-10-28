@@ -141,7 +141,7 @@ namespace turbo {
         {
             if (auto it = find(k); it != end())
                 return it->second;
-            throw error(fmt::format("unknown key: {}", k));
+            throw error{"unknown key: {}", k};
         }
 
         const V get(const K &k) const

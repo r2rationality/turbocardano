@@ -133,7 +133,7 @@ namespace turbo::cardano::ledger::conway {
         } else if (present == 0) {
             _ratify_state.new_state.params = _params;
         } else {
-            throw error(fmt::format("unsupported future protocol-parameter discriminator: {}", present));
+            throw error{"unsupported future protocol-parameter discriminator: {}", present};
         }
     }
 

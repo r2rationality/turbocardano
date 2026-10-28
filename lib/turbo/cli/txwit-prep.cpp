@@ -238,7 +238,7 @@ namespace turbo::cli::txwit_prep {
             {
                 auto exp = epoch;
                 if (!_next_epoch.compare_exchange_strong(exp, epoch + 1, std::memory_order_acq_rel, std::memory_order_relaxed)) [[unlikely]]
-                    throw error(fmt::format("failed to progress utxo epoch from: {} to {}", epoch, epoch + 1));
+                    throw error{"failed to progress utxo epoch from: {} to {}", epoch, epoch + 1};
                 timer t { fmt::format("apply epoch {}", epoch), logger::level::info };
                 txo_map e_utxos {};
 
@@ -272,7 +272,7 @@ namespace turbo::cli::txwit_prep {
                                     if (txi.data.empty()) {
                                         const auto txo_it = _utxos.find(txi.id);
                                         if (txo_it == _utxos.end()) [[unlikely]]
-                                            throw error(fmt::format("failed to resolve TXO {}", txi.id));
+                                            throw error{"failed to resolve TXO {}", txi.id};
                                         txi.data = txo_it->second;
                                     }
                                 }
@@ -280,7 +280,7 @@ namespace turbo::cli::txwit_prep {
                                     if (txi.data.empty()) {
                                         const auto txo_it = _utxos.find(txi.id);
                                         if (txo_it == _utxos.end()) [[unlikely]]
-                                            throw error(fmt::format("failed to resolve TXO {}", txi.id));
+                                            throw error{"failed to resolve TXO {}", txi.id};
                                         txi.data = txo_it->second;
                                     }
                                 }
@@ -309,7 +309,7 @@ namespace turbo::cli::txwit_prep {
                                     if (auto it = utxo_part.find(txo_id); it != utxo_part.end()) [[likely]] {
                                         utxo_part.erase(it);
                                     } else {
-                                        throw error(fmt::format("epoch: {} part: {:02X} request to remove an unknown TXO {}!", epoch, pi, txo_id));
+                                        throw error{"epoch: {} part: {:02X} request to remove an unknown TXO {}!", epoch, pi, txo_id};
                                     }
                                 }
                             }
@@ -343,7 +343,7 @@ namespace turbo::cli::txwit_prep {
                             //std::cout << fmt::format("update vote slot: {} data: {}\n", e.slot, std::get<cardano::param_update_vote>(e.update));
                             st.proposal_vote(updates_it->slot, u);
                         } else {
-                            throw error(fmt::format("unsupported parameter update type: {}", typeid(T).name()));
+                            throw error{"unsupported parameter update type: {}", typeid(T).name()};
                         }
                     }, updates_it->update);
                 }
@@ -361,7 +361,7 @@ namespace turbo::cli::txwit_prep {
                 if (!it->second.address_raw.empty()) [[likely]] {
                     idx.erase(it);
                 } else {
-                    throw error(fmt::format("found a non-unique TXO in the same chunk {}", txo_id));
+                    throw error{"found a non-unique TXO in the same chunk {}", txo_id};
                 }
             }
         }
@@ -369,7 +369,7 @@ namespace turbo::cli::txwit_prep {
         static void _add_utxo(txo_map &idx, const cardano::tx_base &tx, const tx_output &txo, const size_t txo_idx)
         {
             if (const auto [it, created] = idx.try_emplace(tx_out_ref { tx.hash(), txo_idx }, txo); !created) [[unlikely]]
-                throw error(fmt::format("found a non-unique TXO {}#{}", tx.hash(), txo_idx));
+                throw error{"found a non-unique TXO {}#{}", tx.hash(), txo_idx};
         }
     };
     static auto instance = command::reg(std::make_shared<cmd>());

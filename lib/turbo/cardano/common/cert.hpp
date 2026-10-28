@@ -697,7 +697,7 @@ namespace fmt {
                     return fmt::format_to(ctx.out(), "reward_source::treasury");
 
                 [[unlikely]] default:
-                    throw turbo::error(fmt::format("unsupported reward_source value: {}", static_cast<int>(v)));
+                    throw turbo::error{"unsupported reward_source value: {}", static_cast<int>(v)};
                 break;
             }
         }
@@ -746,7 +746,7 @@ namespace fmt {
                 case type_t::drep_key: return fmt::format_to(ctx.out(), "drep-key");
                 case type_t::drep_script: return fmt::format_to(ctx.out(), "drep-script");
                 case type_t::pool_key: return fmt::format_to(ctx.out(), "pool-key");
-                [[unlikely]] default: throw turbo::error(fmt::format("unsupported voter_t::type_t value: {}", static_cast<int>(v)));
+                [[unlikely]] default: throw turbo::error{"unsupported voter_t::type_t value: {}", static_cast<int>(v)};
             }
         }
     };
@@ -768,7 +768,7 @@ namespace fmt {
                 case vote_t::yes: return fmt::format_to(ctx.out(), "yes");
                 case vote_t::no: return fmt::format_to(ctx.out(), "no");
                 case vote_t::abstain: return fmt::format_to(ctx.out(), "abstain");
-                [[unlikely]] default: throw turbo::error(fmt::format("unsupported vote_t value: {}", static_cast<int>(v)));
+                [[unlikely]] default: throw turbo::error{"unsupported vote_t value: {}", static_cast<int>(v)};
             }
         }
     };

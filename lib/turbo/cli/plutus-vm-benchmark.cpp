@@ -59,7 +59,7 @@ namespace turbo::cli::plutus_vm_benchmark {
             auto paths = file::files_with_ext_path(args.at(0), ".flat");
             std::ranges::sort(paths);
             if (paths.empty()) [[unlikely]]
-                throw error(fmt::format("no .flat scripts found in {}", args.at(0)));
+                throw error{"no .flat scripts found in {}", args.at(0)};
 
             std::string csv { "vm,script,mean_ns,median_ns,min_ns,max_ns,stddev_ns,iterations\n" };
             auto out = std::back_inserter(csv);
@@ -99,7 +99,7 @@ namespace turbo::cli::plutus_vm_benchmark {
         {
             const auto value = from_str<size_t>(opts.at(std::string { name }).value());
             if (value == 0) [[unlikely]]
-                throw error(fmt::format("--{} must be greater than zero", name));
+                throw error{"--{} must be greater than zero", name};
             return value;
         }
 
@@ -121,18 +121,18 @@ namespace turbo::cli::plutus_vm_benchmark {
                 try {
                     value = std::stod(std::string { number }, &parsed);
                 } catch (const std::exception &) {
-                    throw error(fmt::format("invalid --min-time value: {}", text));
+                    throw error{"invalid --min-time value: {}", text};
                 }
                 if (parsed != number.size() || !std::isfinite(value) || value <= 0.0) [[unlikely]]
-                    throw error(fmt::format("invalid --min-time value: {}", text));
+                    throw error{"invalid --min-time value: {}", text};
                 const auto nanos = value * multiplier;
                 if (!std::isfinite(nanos) || nanos > static_cast<double>(std::numeric_limits<int64_t>::max())) [[unlikely]]
-                    throw error(fmt::format("--min-time value is too large: {}", text));
+                    throw error{"--min-time value is too large: {}", text};
                 if (nanos < 1.0) [[unlikely]]
-                    throw error(fmt::format("--min-time must be at least 1ns: {}", text));
+                    throw error{"--min-time must be at least 1ns: {}", text};
                 return std::chrono::nanoseconds { numeric_cast<int64_t>(std::llround(nanos)) };
             }
-            throw error(fmt::format("invalid --min-time value '{}': expected ns, us, ms, or s", text));
+            throw error{"invalid --min-time value '{}': expected ns, us, ms, or s", text};
         }
 
         static void evaluate(const uint8_vector &bytes)

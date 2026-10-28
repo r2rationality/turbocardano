@@ -24,7 +24,7 @@ namespace turbo::cardano::ledger::node_snapshot {
         void array_size(cbor::zero2::value &v, const size_t size)
         {
             if (v.type() != cbor::major_type::array || v.indefinite() || v.special_uint() != size)
-                throw error(fmt::format("expected a {}-element snapshot array", size));
+                throw error{"expected a {}-element snapshot array", size};
         }
         uint32_t file_crc(const std::filesystem::path &path)
         {
@@ -34,7 +34,7 @@ namespace turbo::cardano::ledger::node_snapshot {
             for (;;) {
                 const auto n = in.try_read(buf);
                 if (!n) {
-                    if (!in.eof()) throw error(fmt::format("cannot read {}", path.string()));
+                    if (!in.eof()) throw error{"cannot read {}", path.string()};
                     break;
                 }
                 crc.add(buf.data(), n);
@@ -54,7 +54,7 @@ namespace turbo::cardano::ledger::node_snapshot {
             const auto &meta = value.as_object();
             if (meta.size() != 3 || meta.at("backend").as_string() != "utxohd-mem"
                 || meta.at("tablesCodecVersion").to_number<uint64_t>() != 1)
-                throw error(fmt::format("{}: expected V2InMemory tables codec 1 metadata", dir.string()));
+                throw error{"{}: expected V2InMemory tables codec 1 metadata", dir.string()};
             return meta.at("checksum").to_number<uint32_t>();
         }
         // Read only the small tables envelope and one packed entry at a time.
@@ -158,18 +158,18 @@ namespace turbo::cardano::ledger::node_snapshot {
         void compare_state(const buffer expected, const buffer actual)
         {
             if (const auto diff = cbor::compare(expected, actual, true); !diff.empty())
-                throw error(fmt::format("state {}", diff));
+                throw error{"state {}", diff};
         }
         void compare_entry(const size_t i, const table_reader &expected,
             const tx_out_ref &key, const buffer value, const uint64_t era)
         {
             if (expected.key() != key)
-                throw error(fmt::format("tables[{}].key: expected {} actual {}", i, expected.key(), key));
+                throw error{"tables[{}].key: expected {} actual {}", i, expected.key(), key};
             try {
                 if (const auto diff = compare_outputs(expected.value(), value, era); !diff.empty())
-                    throw error(fmt::format("value {} (fields: 0 address, 1 coin, 2 assets, 3 datum, 4 script)", diff));
+                    throw error{"value {} (fields: 0 address, 1 coin, 2 assets, 3 datum, 4 script)", diff};
             } catch (const std::exception &ex) {
-                throw error(fmt::format("tables[{}] {}: {}", i, key, ex.what()));
+                throw error{"tables[{}] {}: {}", i, key, ex.what()};
             }
         }
     }
@@ -183,13 +183,13 @@ namespace turbo::cardano::ledger::node_snapshot {
             if (name == "epochs.json" || name == "epochs.json.tmp") continue;
             const auto split = name.find("_epoch-");
             if (split == std::string::npos || !entry.is_directory())
-                throw error(fmt::format("unexpected entry in snapshot directory: {}", name));
+                throw error{"unexpected entry in snapshot directory: {}", name};
             const auto slot = number(std::string_view { name }.substr(0, split));
             const auto epoch = number(std::string_view { name }.substr(split + 7));
             if (epoch < from || epoch > to) continue;
             for (const auto *part: { "state", "tables", "meta" })
                 if (!std::filesystem::is_regular_file(entry.path() / part))
-                    throw error(fmt::format("incomplete snapshot: {} is missing {}", name, part));
+                    throw error{"incomplete snapshot: {} is missing {}", name, part};
             refs.push_back({ entry.path(), epoch, slot });
         }
         std::sort(refs.begin(), refs.end(), [](const auto &a, const auto &b) { return a.slot < b.slot; });
@@ -255,7 +255,7 @@ namespace turbo::cardano::ledger::node_snapshot {
     void verify(const std::filesystem::path &dir)
     {
         if (metadata_checksum(dir) != checksum(dir))
-            throw error(fmt::format("{}: snapshot checksum mismatch", dir.string()));
+            throw error{"{}: snapshot checksum mismatch", dir.string()};
     }
 
     reader::reader(const std::filesystem::path &path)
@@ -267,7 +267,7 @@ namespace turbo::cardano::ledger::node_snapshot {
     void reader::verify_tables(const uint32_t crc) const
     {
         if (combined_crc(crypto::crc32::digest(_state), crc) != _checksum)
-            throw error(fmt::format("{}: snapshot checksum mismatch", _path.string()));
+            throw error{"{}: snapshot checksum mismatch", _path.string()};
     }
 
     void reader::compare(const buffer state, const txo_map &outputs) const
@@ -276,10 +276,10 @@ namespace turbo::cardano::ledger::node_snapshot {
         table_reader tables { _path / "tables" };
         size_t i = 0;
         encode_outputs(outputs, [&](const buffer key, const buffer value) {
-            if (!tables.next()) throw error(fmt::format("tables[{}]: extra output", i));
+            if (!tables.next()) throw error{"tables[{}]: extra output", i};
             compare_entry(i++, tables, unpack_input(key), value, _info.era);
         });
-        if (tables.next()) throw error(fmt::format("tables[{}]: missing output", i));
+        if (tables.next()) throw error{"tables[{}]: missing output", i};
         verify_tables(tables.checksum());
     }
 
@@ -289,10 +289,10 @@ namespace turbo::cardano::ledger::node_snapshot {
         table_reader a { _path / "tables" }, b { actual._path / "tables" };
         size_t i = 0;
         while (a.next()) {
-            if (!b.next()) throw error(fmt::format("tables[{}]: missing output", i));
+            if (!b.next()) throw error{"tables[{}]: missing output", i};
             compare_entry(i++, a, b.key(), b.value(), _info.era);
         }
-        if (b.next()) throw error(fmt::format("tables[{}]: extra output", i));
+        if (b.next()) throw error{"tables[{}]: extra output", i};
         verify_tables(a.checksum());
         actual.verify_tables(b.checksum());
     }

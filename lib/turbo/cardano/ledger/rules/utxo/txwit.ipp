@@ -29,11 +29,11 @@
                         declared_ex_units,
                         ref_script_size);
                     if (cpp_int { tx.fee } < min_fee) [[unlikely]]
-                        throw error(fmt::format("epoch: {} tx {} an insufficient fee for a tx of size {}: {} < {}",
-                            part.epoch, tx.tx_id, static_cast<size_t>(tx.tx_size), tx.fee, min_fee));
+                        throw error{"epoch: {} tx {} an insufficient fee for a tx of size {}: {} < {}",
+                            part.epoch, tx.tx_id, static_cast<size_t>(tx.tx_size), tx.fee, min_fee};
                     switch (tx.era) {
                         case 0:
-                            throw error(fmt::format("transaction {} in era 0!", tx.tx_id));
+                            throw error{"transaction {} in era 0!", tx.tx_id};
                         case 1:
                             _validate_byron_tx_invariants(part, tx);
                             break;

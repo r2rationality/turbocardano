@@ -26,7 +26,7 @@ namespace turbo::cardano::ledger::conway::rules::utxow {
             collect_signers(*vkeys);
         }
         if (const auto err = native_script::validate(cbor::zero2::parse(script->script()).get(), slot, *vkeys); err) [[unlikely]]
-            throw error(fmt::format("native script: {} failed to validate tx {}: {}", script->hash(), tx_id, err));
+            throw error{"native script: {} failed to validate tx {}: {}", script->hash(), tx_id, err};
         // Cache success only. A failing script must remain pending.
         script.reset();
     }

@@ -12,7 +12,7 @@ namespace turbo::cardano::babbage::detail {
     {
         auto &tag = v.tag();
         if (tag.id() != 24) [[unlikely]]
-            throw error(fmt::format("expected a tag with id 24 but got: {}", tag.id()));
+            throw error{"expected a tag with id 24 but got: {}", tag.id()};
         const auto script_data = tag.read().bytes();
         // The embedded CBOR has its own decoder; the returned script owns its payload.
         cbor::zero2::decoder dec { script_data, cbor::zero2::decoder::create_chunk_storage(256) };
@@ -38,10 +38,10 @@ namespace turbo::cardano::babbage::detail {
             auto &key = it.read_key();
             const auto id = key.uint();
             if (id > 3) [[unlikely]]
-                throw error(fmt::format("unsupported transaction_output key: {}", id));
+                throw error{"unsupported transaction_output key: {}", id};
             const auto mask = static_cast<uint8_t>(1U << id);
             if (seen & mask) [[unlikely]]
-                throw error(fmt::format("duplicate transaction_output key: {}", id));
+                throw error{"duplicate transaction_output key: {}", id};
             seen |= mask;
             auto &item = it.read_val(std::move(key));
             switch (id) {

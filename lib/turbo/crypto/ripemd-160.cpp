@@ -11,7 +11,7 @@ namespace turbo::crypto::ripemd_160 {
     {
         const auto h = Botan::HashFunction::create_or_throw("RIPEMD-160");
         if (h->output_length() != out.size()) [[unlikely]]
-            throw error(fmt::format("RIPEMD-160: expects an output buffer of size: {} but got: {}", h->output_length(), out.size()));
+            throw error{"RIPEMD-160: expects an output buffer of size: {} but got: {}", h->output_length(), out.size()};
         h->update(in.data(), in.size());
         h->final(out.data());
     }

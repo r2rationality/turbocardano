@@ -15,7 +15,7 @@
         const auto new_pv = _state->_params.protocol_ver;
         if (new_pv != prev_pv) {
             if (new_pv < prev_pv) [[unlikely]]
-                throw error(fmt::format("protocol downgrades are not supported: went from {} to {}", prev_pv, new_pv));
+                throw error{"protocol downgrades are not supported: went from {} to {}", prev_pv, new_pv};
             _transition_era(prev_pv.era(), new_pv.era());
             const auto tip_slot = slot::from_epoch(_state->_epoch, _state->_epoch_slot, _cfg);
             track_era(new_pv.era(), tip_slot);

@@ -427,7 +427,7 @@ namespace turbo::plutus::costs {
             return startup_tag {};
         if (name == "cekVarCost")
             return term_tag::variable;
-        throw error(fmt::format("unsupported CEK cost item: {}", name));
+        throw error{"unsupported CEK cost item: {}", name};
     }
 
     static runtime_cost runtime_cost_from_args(const arg_map &args, uint64_t &diagonal_constant)
@@ -458,7 +458,7 @@ namespace turbo::plutus::costs {
                 if (key.starts_with(prefix)) {
                     const auto [it, created] = nested_args.try_emplace(key.substr(prefix.size()), val);
                     if (!created) [[unlikely]]
-                        throw error(fmt::format("duplicate argument {}", key));
+                        throw error{"duplicate argument {}", key};
                 }
             }
             uint64_t nested_diagonal_constant = 0;
@@ -547,7 +547,7 @@ namespace turbo::plutus::costs {
                 value("arguments-coefficient00"), value("arguments-coefficient11"),
                 value("arguments-coefficient12")
             });
-        throw error(fmt::format("unsupported cost model type: {}", type));
+        throw error{"unsupported cost model type: {}", type};
     }
 
     static cardano::ex_units ex_units_from_args(const arg_map &args)
@@ -561,14 +561,14 @@ namespace turbo::plutus::costs {
                 } else if (k == "exBudgetMemory") {
                     c.mem = std::stoull(v);
                 } else {
-                    throw error(fmt::format("unsupported cost argument name: {}", k));
+                    throw error{"unsupported cost argument name: {}", k};
                 }
             } else {
-                throw error(fmt::format("unsupported cost argument category: {}", k));
+                throw error{"unsupported cost argument category: {}", k};
             }
         }
         if (!c.steps || !c.mem) [[unlikely]]
-            throw error(fmt::format("partially initialized constant cost {}", args));
+            throw error{"partially initialized constant cost {}", args};
         return c;
     }
 
@@ -588,7 +588,7 @@ namespace turbo::plutus::costs {
                     mem_args.emplace("arguments", v);
                     mem_args.emplace("type", "constant_cost");
                 } else {
-                    throw error(fmt::format("unsupported cost argument name: {}", k));
+                    throw error{"unsupported cost argument name: {}", k};
                 }
             } else {
                 const auto cat_name = k.substr(0, pos);
@@ -598,7 +598,7 @@ namespace turbo::plutus::costs {
                 } else if (cat_name == "memory") {
                     mem_args.emplace(sub_name, v);
                 } else {
-                    throw error(fmt::format("unsupported cost argument category: {}", cat_name));
+                    throw error{"unsupported cost argument category: {}", cat_name};
                 }
             }
         }
@@ -626,7 +626,7 @@ namespace turbo::plutus::costs {
                 case json::kind::string:
                     args.try_emplace(fmt::format("{}{}", prefix, static_cast<std::string_view>(k)), fmt::format("{}", json::value_to<std::string>(v)));
                     break;
-                [[unlikely]] default: throw error(fmt::format("unsupported json kind at {}{}: {}", prefix, static_cast<std::string_view>(k), static_cast<int>(v.kind())));
+                [[unlikely]] default: throw error{"unsupported json kind at {}{}: {}", prefix, static_cast<std::string_view>(k), static_cast<int>(v.kind())};
             }
         }
         return args;
@@ -704,7 +704,7 @@ namespace turbo::plutus::costs {
         for (const auto &[k, v]: model) {
             const auto pos = k.find('-');
             if (pos == 0 || pos == k.npos) [[unlikely]]
-                throw error(fmt::format("invalid cost model item: {}", k));
+                throw error{"invalid cost model item: {}", k};
             auto op_name = canonical_arg_name(k.substr(0, pos));
             // A cost-model update may install parameters for builtins that only become
             // available under a later semantics variant. Historical variants do not have
@@ -731,17 +731,17 @@ namespace turbo::plutus::costs {
         for (const auto &[k, v]: args) {
             const auto pos = k.find('-');
             if (pos == k.npos) [[unlikely]]
-                throw error(fmt::format("invalid cost model item: {}", k));
+                throw error{"invalid cost model item: {}", k};
             const auto op_name = k.substr(0, pos);
             const auto arg_name = k.substr(pos + 1);
             if (op_name.starts_with("cek")) {
                 const auto [it, created] = tmp[op_tag_from_cek_name(op_name)].try_emplace(arg_name, v);
                 if (!created) [[unlikely]]
-                            throw error(fmt::format("duplicate argument {} for op {}", arg_name, op_name));
+                            throw error{"duplicate argument {} for op {}", arg_name, op_name};
             } else if (builtin_tag_known_name(op_name)) {
                 const auto [it, created] = tmp[builtin_tag_from_name(op_name)].try_emplace(arg_name, v);
                 if (!created) [[unlikely]]
-                            throw error(fmt::format("duplicate argument {} for op {}", arg_name, op_name));
+                            throw error{"duplicate argument {} for op {}", arg_name, op_name};
             } else {
                 // configs do contain builtins that are not on mainnet, such as addByteString
                 // log each unsupported builtin only once
@@ -766,7 +766,7 @@ namespace turbo::plutus::costs {
                         case term_tag::force: m.force_op = ex_units_from_args(args); break;
                         case term_tag::lambda: m.lambda_op = ex_units_from_args(args); break;
                         case term_tag::variable: m.variable_op = ex_units_from_args(args); break;
-                        [[unlikely]] default: throw error(fmt::format("unsupported tag: {}", tag));
+                        [[unlikely]] default: throw error{"unsupported tag: {}", tag};
                     }
                 } else if constexpr (std::is_same_v<T, builtin_tag>) {
                     const auto [op, created] = m.builtin_costs.try_emplace(tag, builtin_cost_from_args(args));
@@ -799,7 +799,7 @@ namespace turbo::plutus::costs {
                             break;
                     }
                 } else {
-                    throw error(fmt::format("unsupported tag type: {}", typeid(T).name()));
+                    throw error{"unsupported tag type: {}", typeid(T).name()};
                 }
             }, t);
         }
@@ -814,13 +814,13 @@ namespace turbo::plutus::costs {
             case cardano::script_type::plutus_v1: models = &v1; break;
             case cardano::script_type::plutus_v2: models = &v2; break;
             case cardano::script_type::plutus_v3: models = &v3; break;
-            [[unlikely]] default: throw error(fmt::format("unsupported script type: {}", static_cast<int>(typ)));
+            [[unlikely]] default: throw error{"unsupported script type: {}", static_cast<int>(typ)};
         }
         const auto &model = models->at(static_cast<size_t>(semantics));
         if (model) [[likely]]
             return *model;
-        throw error(fmt::format("cost model semantics variant {} is unavailable for {}",
-            static_cast<int>(semantics), typ));
+        throw error{"cost model semantics variant {} is unavailable for {}",
+            static_cast<int>(semantics), typ};
     }
 
     const arg_map &default_cost_args_a()

@@ -26,9 +26,9 @@ namespace turbo::plutus {
         {
             return v.for_each_bytes_chunk([&](const buffer chunk) {
                 if (chunk.size() > bounded_bytes_chunk_size) [[unlikely]]
-                    throw error(fmt::format(
+                    throw error{
                         "Plutus bounded-bytes chunks may not exceed {} bytes but got {}",
-                        bounded_bytes_chunk_size, chunk.size()));
+                        bounded_bytes_chunk_size, chunk.size()};
                 func(chunk);
             });
         }
@@ -154,7 +154,7 @@ namespace turbo::plutus {
                                     return {};
                                 }
                             }
-                            throw error(fmt::format("unsupported tag id: {}", id));
+                            throw error{"unsupported tag id: {}", id};
                         }
                     }
                 }
@@ -216,7 +216,7 @@ namespace turbo::plutus {
                         return {};
                     }
                 }
-                [[unlikely]] default: throw error(fmt::format("unsupported CBOR type {}!", typ));
+                [[unlikely]] default: throw error{"unsupported CBOR type {}!", typ};
             }
         }
     }

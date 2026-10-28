@@ -90,7 +90,7 @@ namespace turbo::sync {
                         bp.slot = chain.blocks.back()->blk->slot() - 1;
                         break;
                     [[unlikely]] default:
-                        throw error(fmt::format("unsupported failure_type: {}", static_cast<int>(mock_cfg.failure_type)));
+                        throw error{"unsupported failure_type: {}", static_cast<int>(mock_cfg.failure_type)};
                 }
             }
             auto pblock = std::make_unique<parsed_block>(bp.cbor());
@@ -127,7 +127,7 @@ namespace turbo::sync {
             if (block_epoch == epochs.size())
                 epochs.emplace_back();
             else if (block_epoch > epochs.size()) [[unlikely]]
-                throw error(fmt::format("nonconsecutive epochs: epoch {} came after {}", block_epoch, epochs.size()));
+                throw error{"nonconsecutive epochs: epoch {} came after {}", block_epoch, epochs.size()};
             auto &epoch_data = epochs.at(block_epoch);
             epoch_data.blocks.emplace_back(blk.get());
             epoch_data.data << *blk->data;

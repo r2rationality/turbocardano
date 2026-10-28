@@ -40,7 +40,7 @@ namespace turbo::cli::test_stake_balances {
             chunk_registry cr { data_dir, chunk_registry_settings_t { .mode=chunk_registry::mode::index } };
             reconstructor r { cr };
             if (ledger_slot != r.last_slot()) [[unlikely]]
-                throw error(fmt::format("ledger last slot: {} does not match raw data last slot: {}", ledger_slot, r.last_slot()));
+                throw error{"ledger last slot: {} does not match raw data last slot: {}", ledger_slot, r.last_slot()};
             verify_sample(r, ledger_stake_dist, min_pct, max_pct);
         }
     private:

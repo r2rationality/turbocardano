@@ -83,13 +83,13 @@ namespace turbo::plutus {
         {
             if (_budget) {
                 if (_cost.steps > _budget->steps) [[unlikely]]
-                    throw error(fmt::format(
+                    throw error{
                         "plutus program CPU cost has exceeded its budget: consumed {} allowed {}",
-                        _cost.steps, _budget->steps));
+                        _cost.steps, _budget->steps};
                 if (_cost.mem > _budget->mem) [[unlikely]]
-                    throw error(fmt::format(
+                    throw error{
                         "plutus program memory has exceeded its budget: consumed {} allowed {}",
-                        _cost.mem, _budget->mem));
+                        _cost.mem, _budget->mem};
             }
         }
 
@@ -196,7 +196,7 @@ namespace turbo::plutus {
         {
             const auto &i = *arg.as_int();
             if (i < lower || i > upper) [[unlikely]]
-                throw error(fmt::format("{} is out of bounds: {}", what, i));
+                throw error{"{} is out of bounds: {}", what, i};
         }
 
         static void _check_cardano_integer(const value &arg)
@@ -209,7 +209,7 @@ namespace turbo::plutus {
         static void _check_cardano_bytestring(const value &arg)
         {
             if (arg.as_bstr()->size() > 65536) [[unlikely]]
-                throw error(fmt::format("bytestring size {} exceeds the protocol limit of 65536", arg.as_bstr()->size()));
+                throw error{"bytestring size {} exceeds the protocol limit of 65536", arg.as_bstr()->size()};
         }
 
         void _check_ensurable_args(const builtin_tag tag, const value_args &args) const
@@ -285,8 +285,8 @@ namespace turbo::plutus {
                 }
                 case builtin_tag::write_bits:
                     if (_arg(args, 0).as_bstr()->size() > 4096) [[unlikely]]
-                        throw error(fmt::format("writeBits input size {} exceeds the protocol limit of 4096",
-                            _arg(args, 0).as_bstr()->size()));
+                        throw error{"writeBits input size {} exceeds the protocol limit of 4096",
+                            _arg(args, 0).as_bstr()->size()};
                     break;
                 case builtin_tag::shift_byte_string:
                 case builtin_tag::rotate_byte_string:
@@ -307,7 +307,7 @@ namespace turbo::plutus {
             try {
                 cost = costs::cost_builtin(builtin_cost, tag, args, text_costed_by_byte_length);
             } catch (const std::exception &ex) {
-                throw error(fmt::format("failed to cost builtin {} with {} arguments: {}", tag, args.size(), ex.what()));
+                throw error{"failed to cost builtin {} with {} arguments: {}", tag, args.size(), ex.what()};
             }
             _spend(cost.mem, cost.steps);
         }
@@ -326,7 +326,7 @@ namespace turbo::plutus {
         {
             if (const auto *val = _lookup_opt(env, idx); val)
                 return *val;
-            throw error(fmt::format("reference to a free variable: v{}", idx));
+            throw error{"reference to a free variable: v{}", idx};
         }
 
         term _discharge_term(const environment &env, const term &t, const size_t local_depth,
@@ -399,7 +399,7 @@ namespace turbo::plutus {
                     t_constr pc { v.tag, term_list { _alloc, std::move(args) } };
                     return term { _alloc, std::move(pc) };
                 } else {
-                    throw error(fmt::format("an unsupported value type to discharge: {}", typeid(v).name()));
+                    throw error{"an unsupported value type to discharge: {}", typeid(v).name()};
                 }
             });
         }
@@ -427,11 +427,11 @@ namespace turbo::plutus {
         value _apply_builtin_impl(const value_args args, const size_t forces)
         {
             if (args.size() != Arity) [[unlikely]]
-                throw error(fmt::format("can't apply builtin {} to {} arguments: {} arguments are required!",
-                    Tag, args.size(), Arity));
+                throw error{"can't apply builtin {} to {} arguments: {} arguments are required!",
+                    Tag, args.size(), Arity};
             if (forces != PolymorphicArgs) [[unlikely]]
-                throw error(fmt::format("can't apply builtin {} with {} forces: {} forces are required!",
-                    Tag, forces, PolymorphicArgs));
+                throw error{"can't apply builtin {} with {} forces: {} forces are required!",
+                    Tag, forces, PolymorphicArgs};
             _spend(Tag, args);
             if constexpr (Tag == builtin_tag::cons_byte_string) {
                 if (_use_v2_semantics)
@@ -448,7 +448,7 @@ namespace turbo::plutus {
                     return _apply_builtin_impl<builtin_tag::tag, arity, polymorphic, builtins::function>(args, forces);
 #include <turbo/plutus/builtin-registry.inc>
 #undef TURBO_PLUTUS_BUILTIN
-                [[unlikely]] default: throw error(fmt::format("not implemented: {}", static_cast<uint64_t>(builtin.tag)));
+                [[unlikely]] default: throw error{"not implemented: {}", static_cast<uint64_t>(builtin.tag)};
             }
         }
 
@@ -464,7 +464,7 @@ namespace turbo::plutus {
                     v_builtin new_b { f.b, { _alloc, f.args, arg }, f.forces };
                     const auto &descriptor = builtins::descriptor(new_b.b.tag);
                     if (descriptor.polymorphic_args != new_b.forces) [[unlikely]]
-                        throw error(fmt::format("an application of an polymorphic builtin with an incorrect number of forces: {}", new_b.b.tag));
+                        throw error{"an application of an polymorphic builtin with an incorrect number of forces: {}", new_b.b.tag};
                     if (new_b.args.size() < descriptor.num_args) [[likely]]
                         return value { _alloc, std::move(new_b) };
                     //logger::info("{} {}", new_b.b.tag, new_b.args);
@@ -472,7 +472,7 @@ namespace turbo::plutus {
                     //logger::info("{} => {}", new_b.b.tag, res);
                     return res;
                 }
-                throw error(fmt::format("only lambdas and builtins can be applied but got: {}", typeid(T).name()));
+                throw error{"only lambdas and builtins can be applied but got: {}", typeid(T).name()};
                 return value { _alloc, constant { _alloc, std::monostate {} } };
             });
         }
@@ -490,10 +490,10 @@ namespace turbo::plutus {
                         ++new_b.forces;
                         return value { _alloc, std::move(new_b) };
                     }
-                    throw error(fmt::format("an unexpected force of a builtin: {} polymorphic_args: {} num_forces: {}",
-                        v.b.tag, polymorphic_args, v.forces));
+                    throw error{"an unexpected force of a builtin: {} polymorphic_args: {} num_forces: {}",
+                        v.b.tag, polymorphic_args, v.forces};
                 }
-                throw error(fmt::format("unsupported value for force: {}", typeid(T).name()));
+                throw error{"unsupported value for force: {}", typeid(T).name()};
                 return value { _alloc, constant { _alloc, std::monostate {} } };
             });
         }
@@ -540,8 +540,8 @@ namespace turbo::plutus {
                 args.emplace_back(_compute(env, arg));
             const value_args arg_view { args.data(), args.size() };
             if (e.forces != descriptor.polymorphic_args) [[unlikely]]
-                throw error(fmt::format(
-                    "an application of an polymorphic builtin with an incorrect number of forces: {}", e.b.tag));
+                throw error{
+                    "an application of an polymorphic builtin with an incorrect number of forces: {}", e.b.tag};
             if (args.size() < descriptor.num_args) {
                 return value { _alloc, v_builtin {
                     e.b, builtin_args { _alloc, arg_view }, e.forces
@@ -577,16 +577,16 @@ namespace turbo::plutus {
         value _case_branch(const environment &env, const t_case &e, const size_t idx)
         {
             if (idx >= e.cases->size()) [[unlikely]]
-                throw error(fmt::format("case branch index {} is out of bounds for {} branches", idx, e.cases->size()));
+                throw error{"case branch index {} is out of bounds for {} branches", idx, e.cases->size()};
             return _compute(env, *std::next(e.cases->begin(), idx));
         }
 
         value _case_branch_const(const environment &env, const t_case &e, const constant &c)
         {
             if (_protocol_major < machine::builtin_case_protocol_major) [[unlikely]] {
-                throw error(fmt::format(
+                throw error{
                     "case on builtin constants requires protocol version {} or later but got {}",
-                    machine::builtin_case_protocol_major, _protocol_major));
+                    machine::builtin_case_protocol_major, _protocol_major};
             }
             const auto num_branches = e.cases->size();
             return std::visit<value>([&](const auto &v) -> value {
@@ -594,20 +594,20 @@ namespace turbo::plutus {
                 if constexpr (std::is_same_v<T, std::monostate>) {
                     if (num_branches == 1) [[likely]]
                         return _case_branch(env, e, 0);
-                    throw error(fmt::format("casing on unit requires exactly one branch but got {}", num_branches));
+                    throw error{"casing on unit requires exactly one branch but got {}", num_branches};
                 } else if constexpr (std::is_same_v<T, bool>) {
                     if (!v && (num_branches == 1 || num_branches == 2))
                         return _case_branch(env, e, 0);
                     if (v && num_branches == 2)
                         return _case_branch(env, e, 1);
-                    throw error(fmt::format("builtin bool value {} has no matching case branch", v));
+                    throw error{"builtin bool value {} has no matching case branch", v};
                 } else if constexpr (std::is_same_v<T, bint_type>) {
                     if (*v >= 0 && *v < num_branches)
                         return _case_branch(env, e, static_cast<size_t>(*v));
-                    throw error(fmt::format("builtin integer value {} has no matching case branch", *v));
+                    throw error{"builtin integer value {} has no matching case branch", *v};
                 } else if constexpr (std::is_same_v<T, constant_list>) {
                     if (num_branches != 1 && num_branches != 2) [[unlikely]]
-                        throw error(fmt::format("casing on list requires exactly one or two branches but got {}", num_branches));
+                        throw error{"casing on list requires exactly one or two branches but got {}", num_branches};
                     if (v.empty()) {
                         if (num_branches == 2)
                             return _case_branch(env, e, 1);
@@ -619,12 +619,12 @@ namespace turbo::plutus {
                     return _apply(res, tail_val);
                 } else if constexpr (std::is_same_v<T, constant_pair>) {
                     if (num_branches != 1) [[unlikely]]
-                        throw error(fmt::format("casing on pair requires exactly one branch but got {}", num_branches));
+                        throw error{"casing on pair requires exactly one branch but got {}", num_branches};
                     auto res = _case_branch(env, e, 0);
                     res = _apply(res, value { _alloc, v->first });
                     return _apply(res, value { _alloc, v->second });
                 } else {
-                    throw error(fmt::format("builtin constant type {} is not supported in case", typeid(T).name()));
+                    throw error{"builtin constant type {} is not supported in case", typeid(T).name()};
                 }
             }, *c);
         }
@@ -643,7 +643,7 @@ namespace turbo::plutus {
                 } else if constexpr (std::is_same_v<T, constant>) {
                     return _case_branch_const(env, e, v);
                 } else {
-                    throw error(fmt::format("case requires a constructor or builtin constant but got {}", typeid(T).name()));
+                    throw error{"case requires a constructor or builtin constant but got {}", typeid(T).name()};
                 }
             });
         }

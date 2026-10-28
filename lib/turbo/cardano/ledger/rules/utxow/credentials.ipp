@@ -17,7 +17,7 @@
                 case pay_ident::ident_type::SHELLEY_SCRIPT:
                     return { script_signer_t { pay_id.hash, typ } };
                 [[unlikely]] default:
-                    throw error(fmt::format("unsupported pay_ident type: {}", static_cast<int>(pay_id.type)));
+                    throw error{"unsupported pay_ident type: {}", static_cast<int>(pay_id.type)};
             }
         }
 

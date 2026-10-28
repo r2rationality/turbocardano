@@ -20,7 +20,7 @@
                     || std::is_same_v<T, instant_reward_cert>) {
                 process_cert(c, loc);
             } else {
-                throw error(fmt::format("certificate type is not supported in shelley era: {}", typeid(T).name()));
+                throw error{"certificate type is not supported in shelley era: {}", typeid(T).name()};
             }
         }, cert.val);
     }
@@ -40,7 +40,7 @@
                 cardano::amount { acc.go_stake }, acc.deleg, acc.mark_deleg,
                 acc.set_deleg, acc.go_deleg,
                 cardano::amount { acc.deleg ? _active_pool_dist.get(*acc.deleg) : 0 });
-            throw error(fmt::format("withdrawal from account {} does not drain its reward balance: requested {} but available {}", stake_id, amount, acc.reward));
+            throw error{"withdrawal from account {} does not drain its reward balance: requested {} but available {}", stake_id, amount, acc.reward};
         }
         acc.reward -= amount;
         if (acc.deleg)
@@ -50,10 +50,10 @@
     void state::_withdraw_reward(const reward_id_t &reward_id, const uint64_t amount)
     {
         if (reward_id.network_id() != _cfg.shelley_network_id) [[unlikely]] {
-            throw error(fmt::format(
+            throw error{
                 "withdrawal reward address has network id {} but expected {}",
                 reward_id.network_id(),
-                _cfg.shelley_network_id));
+                _cfg.shelley_network_id};
         }
         withdraw_reward(static_cast<stake_ident>(reward_id), amount);
     }

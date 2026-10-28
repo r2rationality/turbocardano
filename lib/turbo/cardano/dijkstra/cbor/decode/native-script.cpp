@@ -72,10 +72,10 @@ namespace turbo::cardano::dijkstra {
                     break;
                 }
                 [[unlikely]] default:
-                    throw error(fmt::format("unsupported Dijkstra native script type: {}", type));
+                    throw error{"unsupported Dijkstra native script type: {}", type};
             }
             if (!it.done()) [[unlikely]]
-                throw error(fmt::format("Dijkstra native script type {} has trailing elements", type));
+                throw error{"Dijkstra native script type {} has trailing elements", type};
         }
     }
 

@@ -11,7 +11,7 @@ namespace turbo::cardano::dijkstra {
             auto &it = v.array();
             protocol_version res { it.read().uint(), numeric_cast<uint32_t>(it.read().uint()) };
             if (res.major > 13) [[unlikely]]
-                throw error(fmt::format("unsupported Dijkstra protocol major version: {}", res.major));
+                throw error{"unsupported Dijkstra protocol major version: {}", res.major};
             if (!it.done()) [[unlikely]]
                 throw error("unexpected trailing Dijkstra protocol version elements");
             return res;

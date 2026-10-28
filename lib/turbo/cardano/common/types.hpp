@@ -50,7 +50,7 @@ namespace turbo::cardano {
     private:
         static base_type _size_ok(const buffer buf) {
             if (buf.size() > SZ) [[unlikely]]
-                throw error(fmt::format("buffer size is too big for a {}-byte static_byte_vector: {}!", SZ, buf.size()));
+                throw error{"buffer size is too big for a {}-byte static_byte_vector: {}!", SZ, buf.size()};
             return {buf.begin(), buf.end()};
         }
     };
@@ -59,7 +59,7 @@ namespace turbo::cardano {
     {
         auto &it = v.array();
         if (const auto ver = it.read().uint(); ver != 1) [[unlikely]]
-            throw error(fmt::format("only version 1 serialization is supported but got: {}", ver));
+            throw error{"only version 1 serialization is supported but got: {}", ver};
         return proc(it.read());
     }
 
@@ -240,7 +240,7 @@ namespace turbo::cardano {
                 static_assert(max_size > 0);
                 const auto sz = v.special_uint();
                 if (sz > max_size) [[unlikely]]
-                    throw error(fmt::format("the requested map size is unrealistically big: {}!", sz));
+                    throw error{"the requested map size is unrealistically big: {}!", sz};
                 res.reserve(sz);
             }
             auto &it = v.map();
@@ -259,7 +259,7 @@ namespace turbo::cardano {
         {
             if (const auto it = base_type::nth(idx); it != base_type::end()) [[likely]]
                 return *it;
-            throw error(fmt::format("map index out of range: {}", idx));
+            throw error{"map index out of range: {}", idx};
         }
     };
 
@@ -276,7 +276,7 @@ namespace turbo::cardano {
                 static_assert(max_size > 0);
                 const auto sz = v.special_uint();
                 if (sz > max_size) [[unlikely]]
-                    throw error(fmt::format("the requested vector size is unrealistically big: {}!", sz));
+                    throw error{"the requested vector size is unrealistically big: {}!", sz};
                 res.reserve(sz);
             }
             auto &it = v.array();
@@ -386,9 +386,9 @@ namespace turbo::cardano {
         void update(const uint64_t slot)
         {
             if (slot < _min) [[unlikely]]
-                throw error(fmt::format("block supplied not in order slot {} observed after slot {}", slot, _min));
+                throw error{"block supplied not in order slot {} observed after slot {}", slot, _min};
             if (slot < _max) [[unlikely]]
-                throw error(fmt::format("block supplied not in order slot {} observed after slot {}", slot, _max));
+                throw error{"block supplied not in order slot {} observed after slot {}", slot, _max};
             _max = slot;
         }
 
@@ -833,7 +833,7 @@ namespace turbo::cardano {
             return script_type::plutus_v4;
         if (s == "native")
             return script_type::native;
-        throw error(fmt::format("unsupported script type: {}", s));
+        throw error{"unsupported script type: {}", s};
     }
 
     struct script_info {
@@ -971,7 +971,7 @@ namespace turbo::cardano {
                     if (_bytes.size() > 29) [[unlikely]]
                         _bytes = _bytes.subbuf(0, 29);
                     if (_bytes.size() < 29) [[unlikely]]
-                        throw error(fmt::format("cardano reward addresses must have at least 29 bytes: {}!", _bytes));
+                        throw error{"cardano reward addresses must have at least 29 bytes: {}!", _bytes};
                     break;
 
                 case 0b0000: // base address: keyhash28,keyhash28
@@ -981,7 +981,7 @@ namespace turbo::cardano {
                     if (_bytes.size() > 57) [[unlikely]]
                         _bytes = _bytes.subbuf(0, 57);
                     if (_bytes.size() < 57) [[unlikely]]
-                        throw error(fmt::format("shelley base address must have at least 57 bytes: {}!", _bytes));
+                        throw error{"shelley base address must have at least 57 bytes: {}!", _bytes};
                     break;
 
                 case 0b1000: // byron
@@ -1020,7 +1020,7 @@ namespace turbo::cardano {
                 }
 
                 [[unlikely]] default:
-                    throw error(fmt::format("unsupported address type: {}!", type()));
+                    throw error{"unsupported address type: {}!", type()};
             }
         }
 
@@ -1056,7 +1056,7 @@ namespace turbo::cardano {
         {
 
             if (data().size() < 28 + 3) [[unlikely]]
-                throw error(fmt::format("pointer data is too small - expect 31+ bytes but got: {}", data().size()));
+                throw error{"pointer data is too small - expect 31+ bytes but got: {}", data().size()};
             const auto ptr = data().subspan(28, data().size() - 28);
             uint64_t slot, tx_idx, cert_idx;
             const auto sz1 = _read_var_uint_be(slot, ptr);
@@ -1079,7 +1079,7 @@ namespace turbo::cardano {
                     return stake_ident { data().subbuf(28, 28), (type() & 0x2) > 0 };
 
                 [[unlikely]] default:
-                    throw error(fmt::format("address::stake_id unsupported for address type: {}!", type()));
+                    throw error{"address::stake_id unsupported for address type: {}!", type()};
             }
         }
 
@@ -1107,7 +1107,7 @@ namespace turbo::cardano {
                 return stake_id();
             if (has_pointer())
                 return pointer();
-            throw error(fmt::format("address {} has neither a stake_id not a pointer reference!", _bytes));
+            throw error{"address {} has neither a stake_id not a pointer reference!", _bytes};
         }
 
         bool has_stake_id() const
@@ -1209,7 +1209,7 @@ namespace turbo::cardano {
                     break;
             }
             if (!type_str) [[unlikely]]
-                throw error(fmt::format("unsupported address type: {}!", type()));
+                throw error{"unsupported address type: {}!", type()};
             json::object res {
                 { "type", type_str },
                 { "data", fmt::format("{}", _bytes) }
@@ -1242,7 +1242,7 @@ namespace turbo::cardano {
                 x |= val & 0x7F;
                 if (val & 0x80) {
                     if (buf.size() < num_read + 1) [[unlikely]]
-                        throw error(fmt::format("the buffer is too small: {}!", buf.size()));
+                        throw error{"the buffer is too small: {}!", buf.size()};
                     val = static_cast<uint64_t>(buf[num_read]);
                     ++num_read;
                 } else {
@@ -1382,14 +1382,14 @@ namespace turbo::cardano {
         tx_out_idx(size_t out_idx)
         {
             if (out_idx >= (1U << 16)) [[unlikely]]
-                throw error(fmt::format("tx out idx is too big: {}!", out_idx));
+                throw error{"tx out idx is too big: {}!", out_idx};
             _out_idx = out_idx;
         }
 
         tx_out_idx &operator=(size_t out_idx)
         {
             if (out_idx >= (1U << 16)) [[unlikely]]
-                throw error(fmt::format("tx out idx is too big: {}!", out_idx));
+                throw error{"tx out idx is too big: {}!", out_idx};
             _out_idx = out_idx;
             return *this;
         }
@@ -1549,7 +1549,7 @@ namespace turbo::cardano {
                 case 12:
                 case 13:
                     return 8;
-                [[unlikely]] default: throw error(fmt::format("unsupported protocol major version: {}", major));
+                [[unlikely]] default: throw error{"unsupported protocol major version: {}", major};
             }
         }
     };
@@ -1676,7 +1676,7 @@ namespace turbo::cardano {
         {
             if (const auto *model = find(id); model)
                 return *model;
-            throw error(fmt::format("missing plutus cost model for language id: {}", id));
+            throw error{"missing plutus cost model for language id: {}", id};
         }
 
         bool contains(const uint64_t id) const noexcept
@@ -2181,7 +2181,7 @@ namespace turbo::cardano {
         reward_id_t(const buffer bytes): base_type { bytes }
         {
             if (const auto typ = at(0) >> 4; typ != 0xE && typ != 0xF) [[unlikely]]
-                throw error(fmt::format("unsupported reward id type: 0x{:X}", typ));
+                throw error{"unsupported reward id type: 0x{:X}", typ};
         }
 
         buffer hash() const
@@ -2421,7 +2421,7 @@ namespace fmt {
             switch (const auto typ = v.val.index(); typ) {
                 case 0: return fmt::format_to(ctx.out(), "{}", std::get<turbo::cardano::datum_hash>(v.val));
                 case 1: return fmt::format_to(ctx.out(), "{}", std::get<turbo::uint8_vector>(v.val));
-                [[unlikely]] default: throw turbo::error(fmt::format("unsupported variant index: {}", typ));
+                [[unlikely]] default: throw turbo::error{"unsupported variant index: {}", typ};
             }
         }
     };
@@ -2458,7 +2458,7 @@ namespace fmt {
                     return fmt::format_to(ctx.out(), "{}", std::get<turbo::cardano::stake_pointer>(v));
 
                 [[unlikely]] default:
-                    throw turbo::error(fmt::format("unsupported stake_ident_hybrid index: {}", v.index()));
+                    throw turbo::error{"unsupported stake_ident_hybrid index: {}", v.index()};
             }
         }
     };
@@ -2490,7 +2490,7 @@ namespace fmt {
                 case script_type::plutus_v2: return fmt::format_to(ctx.out(), "plutus_v2");
                 case script_type::plutus_v3: return fmt::format_to(ctx.out(), "plutus_v3");
                 case script_type::plutus_v4: return fmt::format_to(ctx.out(), "plutus_v4");
-                [[unlikely]] default: throw turbo::error(fmt::format("unsupported address type: {}!", static_cast<int>(v)));
+                [[unlikely]] default: throw turbo::error{"unsupported address type: {}!", static_cast<int>(v)};
             }
         }
     };
@@ -2536,7 +2536,7 @@ namespace fmt {
                                 (addr.type() & 1) ? "script" : "key", addr.data().subspan(0, 28), addr.pointer());
 
                 [[unlikely]] default:
-                    throw turbo::error(fmt::format("unsupported address type: {}!", addr.type()));
+                    throw turbo::error{"unsupported address type: {}!", addr.type()};
             }
         }
     };
@@ -2696,7 +2696,7 @@ namespace fmt {
                     return fmt::format_to(ctx.out(), "abstain");
                 if constexpr (std::is_same_v<T, turbo::cardano::drep_t::no_confidence_t>)
                     return fmt::format_to(ctx.out(), "no-confidence");
-                throw turbo::error(fmt::format("unsupported drep.type: {}", typeid(v).name()));
+                throw turbo::error{"unsupported drep.type: {}", typeid(v).name()};
                 return fmt::format_to(ctx.out(), "error");
             }, v.val);
         }

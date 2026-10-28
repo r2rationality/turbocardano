@@ -26,7 +26,7 @@ namespace turbo::cardano::ledger::conway::rules::gov {
                     return "new_constitution";
                 if constexpr (std::is_same_v<T, gov_action_t::info_action_t>)
                     return "info";
-                throw error(fmt::format("unsupported gov action type: {}", typeid(T).name()));
+                throw error{"unsupported gov action type: {}", typeid(T).name()};
                 return "unsupported";
             }, ga.val);
         }
@@ -214,7 +214,7 @@ namespace turbo::cardano::ledger::conway::rules::gov {
                     return is_cc || is_drep;
                 if constexpr (std::is_same_v<T, gov_action_t::info_action_t>)
                     return is_cc || is_drep || is_pool;
-                throw error(fmt::format("unsupported governance action type: {}", typeid(T).name()));
+                throw error{"unsupported governance action type: {}", typeid(T).name()};
                 return false;
             }, ga.val);
             if (!allowed)
@@ -531,10 +531,10 @@ namespace turbo::cardano::ledger::conway {
                 rules::gov::action_label(p.procedure.action),
                 rules::name(checked.rule),
                 rules::gov::failure_name(checked.failure));
-            throw error(fmt::format(
+            throw error{
                 "invalid Conway governance proposal {}: {}",
                 p.id,
-                rules::gov::failure_name(checked.failure)));
+                rules::gov::failure_name(checked.failure)};
         }
         if (_params.protocol_ver.major < 11 && _num_dormant_epochs) {
             for (auto &[drep_id, info]: _drep_state) {
@@ -570,12 +570,12 @@ namespace turbo::cardano::ledger::conway {
         };
         const auto checked = rules::gov::vote(env, v);
         if (!checked) [[unlikely]] {
-            throw error(fmt::format(
+            throw error{
                 "{} failed for action {} at {}: {}",
                 rules::name(checked.rule),
                 v.action_id,
                 loc_slot,
-                rules::gov::failure_name(checked.failure)));
+                rules::gov::failure_name(checked.failure)};
         }
         switch (checked.effect.target) {
             case rules::gov::vote_target::committee: {

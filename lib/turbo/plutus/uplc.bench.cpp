@@ -28,7 +28,7 @@ suite plutus_uplc_suite = [] {
                       if (exp_res == "parse error")
                           continue;
                   }
-                  throw error(fmt::format("unable to parse script: {}", path));
+                  throw error{"unable to parse script: {}", path};
               }
             }
             return total_size;

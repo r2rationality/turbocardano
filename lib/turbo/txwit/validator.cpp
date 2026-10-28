@@ -262,7 +262,7 @@ namespace turbo::txwit {
             return witness_type::script;
         if (s == "none")
             return witness_type::none;
-        throw error(fmt::format("unsupported value of the wits options: {}", s));
+        throw error{"unsupported value of the wits options: {}", s};
     }
 
     struct processor::impl {
@@ -691,7 +691,7 @@ namespace turbo::txwit {
                 if (part.epoch > _st.epoch()) {
                     timer t { fmt::format("txwit batch: {} epoch: {} apply_epoch_update", part.part_id, part.epoch), logger::level::debug };
                     if (part.epoch != _st.epoch() + 1) [[unlikely]]
-                        throw error(fmt::format("unexpected epoch: {} after: {}", part.epoch, _st.epoch()));
+                        throw error{"unexpected epoch: {} after: {}", part.epoch, _st.epoch()};
                     _st.start_epoch(part.epoch);
                     refresh();
                 }
@@ -715,14 +715,14 @@ namespace turbo::txwit {
                         using T = std::decay_t<decltype(w)>;
                         if constexpr (std::is_same_v<T, tx_wit_byron_vkey>) {
                             if (!b_addr.vkey_ok(w.vkey, 0)) [[unlikely]]
-                                throw error(fmt::format("epoch: {} slot: {} tx {} the byron witness #{} does not match the address: {}!",
-                                    part.epoch, tx.slot, tx.tx_id, byron_input_idx, b_addr));
+                                throw error{"epoch: {} slot: {} tx {} the byron witness #{} does not match the address: {}!",
+                                    part.epoch, tx.slot, tx.tx_id, byron_input_idx, b_addr};
                         } else if constexpr (std::is_same_v<T, tx_wit_byron_redeemer>) {
                             if (!b_addr.vkey_ok(w.vkey, 2)) [[unlikely]]
-                                throw error(fmt::format("epoch: {} slot: {} tx {} the byron witness #{} does not match the address: {}!",
-                                    part.epoch, tx.slot, tx.tx_id, byron_input_idx, b_addr));
+                                throw error{"epoch: {} slot: {} tx {} the byron witness #{} does not match the address: {}!",
+                                    part.epoch, tx.slot, tx.tx_id, byron_input_idx, b_addr};
                         } else {
-                            throw error(fmt::format("unsupported byron signer type: {}", typeid(T).name()));
+                            throw error{"unsupported byron signer type: {}", typeid(T).name()};
                         }
                     }, tx.byron_signers.at(byron_input_idx));
                     ++byron_input_idx;
@@ -783,9 +783,9 @@ namespace turbo::txwit {
                 wit_cnt cnts {};
                 const auto rss_before_mb = memory::my_usage_mb();
                 if (part.tx_frames.size() != batch_info::num_parts) [[unlikely]]
-                    throw error(fmt::format(
+                    throw error{
                         "invalid number of transaction frames: {} (expected: {})",
-                        part.tx_frames.size(), batch_info::num_parts));
+                        part.tx_frames.size(), batch_info::num_parts};
                 std::array<validation_partition_diagnostics_t, batch_info::num_parts> diagnostics {};
                 sched.wait_all(task_id, [&](const auto &, const auto &submit_f) {
                     for (size_t pi = 0; pi < batch_info::num_parts; ++pi) {
@@ -939,7 +939,7 @@ namespace turbo::txwit {
             const auto &cr = _cr;
             const auto &cfg = _cfg;
             if (batch.empty()) [[unlikely]]
-                throw error(fmt::format("batch {} is empty!", batch_no));
+                throw error{"batch {} is empty!", batch_no};
             stage1_batch_diagnostics_t diag {
                 .epoch=cr.make_slot(batch.front()->first_slot).epoch(),
                 .chunks=batch.size(),
@@ -980,7 +980,7 @@ namespace turbo::txwit {
                 const auto first_epoch = cr.make_slot(chunk.first_slot).epoch();
                 const auto last_epoch = cr.make_slot(chunk.last_block.slot).epoch();
                 if (first_epoch != part.epoch || last_epoch != part.epoch) [[unlikely]]
-                    throw error(fmt::format("batch: {} contains data from multiple epochs: {}, {}, {}", batch_no, part.epoch, first_epoch, last_epoch));
+                    throw error{"batch: {} contains data from multiple epochs: {}, {}, {}", batch_no, part.epoch, first_epoch, last_epoch};
 
                 const auto &data = part.input_bytes.emplace_back(_read(chunk, diag));
                 diag.input_serialized_bytes += data.size();
@@ -1067,7 +1067,7 @@ namespace turbo::txwit {
                 if (it->second) [[likely]] {
                     part.utxos.erase(it);
                 } else {
-                    throw error(fmt::format("found a non-unique TXO in the same chunk {}", it->first));
+                    throw error{"found a non-unique TXO in the same chunk {}", it->first};
                 }
             }
         }
@@ -1081,7 +1081,7 @@ namespace turbo::txwit {
         static void _add_utxo(txo_map &idx, const tx_base &tx, const tx_output &txo, const size_t txo_idx)
         {
             if (const auto [it, created] = idx.try_emplace(tx_out_ref { tx.hash(), txo_idx }, txo); !created) [[unlikely]]
-                throw error(fmt::format("found a non-unique TXO {}#{}", tx.hash(), txo_idx));
+                throw error{"found a non-unique TXO {}#{}", tx.hash(), txo_idx};
         }
 
     };
