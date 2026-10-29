@@ -14,7 +14,7 @@ namespace turbo::cardano::ledger::conway {
         logger::debug("conway::vrf_state created max_epoch_slot: {}", _max_epoch_slot);
     }
 
-    state::state(): state { babbage::state { shelley::state { cardano::config::get(), scheduler::get() } } }
+    state::state(const cardano::config &cfg, scheduler &sched): state { babbage::state { shelley::state { cfg, sched } } }
     {
         const protocol_version pv { 9, 0 };
         _params.protocol_ver = pv;

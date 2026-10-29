@@ -512,9 +512,9 @@ suite cardano_ledger_conway_suite = [] {
             }
         };
         "parameter update"_test = [] {
-            const auto &cfg = cardano::config::get();
+            cardano::config cfg {};
             cfg.shelley_start_epoch(0U);
-            state st {};
+            state st { cfg };
             gov_action_id_t gid {};
             gid.tx_id = crypto::blake2b::digest<tx_hash>(std::string_view { "A" });
             const stake_ident return_addr { crypto::blake2b::digest<key_hash>(std::string_view { "R" }), false };
@@ -523,7 +523,7 @@ suite cardano_ledger_conway_suite = [] {
             p.id = gid;
             p.procedure.deposit = st.params().gov_action_deposit;
             p.procedure.return_addr = return_addr;
-            p.procedure.return_addr_network_id = cardano::config::get().shelley_network_id;
+            p.procedure.return_addr_network_id = cfg.shelley_network_id;
             const cert_loc_t p_loc { 0, 0, 0 };
             st.process_proposal(p, p_loc);
             {

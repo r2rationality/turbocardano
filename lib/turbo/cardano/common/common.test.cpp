@@ -27,7 +27,7 @@ suite cardano_common_suite = [] {
                 expect(fmt::format("{}", a) == a_text);
             }
         };
-        const auto &cfg = cardano::config::get();
+        cardano::config cfg {};
         cfg.shelley_start_epoch(208);
         "slot"_test = [&] {
             expect(cardano::slot { cfg } == 0);

@@ -12,10 +12,11 @@ namespace {
     using namespace turbo;
     using namespace cardano::ledger;
 
-    void update_params(state &st, const uint64_t slot, const cardano::param_update &update)
+    void update_params(state &st, const uint64_t slot, const cardano::param_update &update,
+        const cardano::config &cfg=cardano::config::get())
     {
-        const cardano::slot slot_obj { slot, cardano::config::get() };
-        for (const auto &[deleg_id, meta]: cardano::config::get().shelley_delegates) {
+        const cardano::slot slot_obj { slot, cfg };
+        for (const auto &[deleg_id, meta]: cfg.shelley_delegates) {
             st.propose_update(slot, { .key_id=deleg_id, .update=update, .epoch=slot_obj.epoch() });
         }
     }
@@ -103,14 +104,15 @@ suite cardano_ledger_state_suite = [] {
             expect(snapshot_target == st);
         };
         "finish_epoch"_test = [] {
-            state st {};
+            cardano::config cfg {};
+            state st { cfg };
             expect_equal(st.params().protocol_ver.major, 0);
-            update_params(st, cardano::slot { 1, cardano::config::get() }, { .protocol_ver=cardano::protocol_version { 2, 0 } });
+            update_params(st, 1, { .protocol_ver=cardano::protocol_version { 2, 0 } }, cfg);
             expect_equal(st.treasury(), 0);
             expect_equal(st.reserves(), 0);
             st.start_epoch();
             st.process_block(20000, 2, 0, 0);
-            cardano::config::get().shelley_start_epoch(0);
+            cfg.shelley_start_epoch(0);
             expect_equal(st.treasury(), 0);
             expect_equal(st.reserves(), 13887515255000000ULL);
             expect_equal(st.params().protocol_ver.major, 2);

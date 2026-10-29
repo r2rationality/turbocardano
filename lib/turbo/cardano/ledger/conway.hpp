@@ -163,7 +163,7 @@ namespace turbo::cardano::ledger::conway {
     };
 
     struct state: babbage::state {
-        state();
+        explicit state(const cardano::config &cfg=cardano::config::get(), scheduler &sched=scheduler::get());
         state(babbage::state &&);
 
         using babbage::state::process_cert;
