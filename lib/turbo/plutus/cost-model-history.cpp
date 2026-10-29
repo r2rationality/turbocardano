@@ -61,7 +61,7 @@ namespace turbo::plutus {
                     if (!models.items.emplace(id, cardano::plutus_cost_model{std::move(raw), names}).second) [[unlikely]]
                         throw error{"duplicate cost model language id: {}", id};
                 } catch (const std::exception &ex) {
-                    throw error{"cost model epoch {} language {}: {}", epoch, key, ex.what()};
+                    throw error{"cost model epoch {} language {}: {}", epoch, static_cast<std::string_view>(key), ex.what()};
                 }
             }
             updates.emplace_back(epoch, std::move(models));
