@@ -118,6 +118,25 @@ namespace turbo::cardano {
         spend, mint, cert, reward, vote, propose, guard
     };
 
+    inline redeemer_tag redeemer_tag_from_str(const std::string_view s)
+    {
+        if (s == "spend")
+            return redeemer_tag::spend;
+        if (s == "mint")
+            return redeemer_tag::mint;
+        if (s == "cert")
+            return redeemer_tag::cert;
+        if (s == "reward")
+            return redeemer_tag::reward;
+        if (s == "vote")
+            return redeemer_tag::vote;
+        if (s == "propose")
+            return redeemer_tag::propose;
+        if (s == "guard")
+            return redeemer_tag::guard;
+        throw error{"unsupported redeemer tag: {}", s};
+    }
+
     struct redeemer_id {
         redeemer_tag tag;
         uint32_t ref_idx;

@@ -9,7 +9,9 @@
 #include <turbo/index/merge-zpp.hpp>
 #include <turbo/index/utxo.hpp>
 #include <turbo/plutus/context.hpp>
+#include <turbo/plutus/cost-model-history.hpp>
 #include <turbo/storage/partition.hpp>
+#include <turbo/txwit/validator.hpp>
 #include <turbo/zpp-stream.hpp>
 #include "common.hpp"
 
@@ -32,22 +34,16 @@ namespace turbo::cli::txwit_prep {
             chunk_registry cr { args.at(0), chunk_registry_settings_t { .mode=chunk_registry::mode::store } };
             const auto &out_dir = args.at(1);
             std::filesystem::create_directories(out_dir);
+            const auto protocol_versions = _write_ledger_history(cr, out_dir);
 
             mutex::unique_lock::mutex_type done_mutex alignas(mutex::alignment) {};
             uint64_t next_epoch = 0;
             std::set<uint64_t> ready_epochs {};
-            std::vector<param_update> updates {};
             utxo_processor proc { cr, out_dir };
 
             storage::parse_parallel_epoch<part_info>(cr,
                 [&](auto &part, const auto &blk) {
                     const auto &block_info = cr.find_block_by_offset(blk.offset());
-                    blk->foreach_update_proposal([&](const auto &prop) {
-                        part.updates.emplace_back(blk->slot_object(), prop);
-                    });
-                    blk->foreach_update_vote([&](const auto &vote) {
-                        part.updates.emplace_back(blk->slot_object(), vote);
-                    });
                     blk->foreach_tx([&](const auto &tx) {
                         size_t num_redeemers = 0;
                         tx.foreach_redeemer([&](const auto &) {
@@ -60,7 +56,7 @@ namespace turbo::cli::txwit_prep {
                                 .body=uint8_vector { tx.raw() },
                                 .wits=uint8_vector { tx.witness_raw() },
                                 .block=block_info,
-                                .protocol_ver=blk->protocol_ver()
+                                .protocol_ver=part.protocol_ver
                             };
                             ctx.validate_format();
                             bool complete = true;
@@ -107,11 +103,12 @@ namespace turbo::cli::txwit_prep {
                         }
                     });
                 },
-                [&](const size_t epoch_no, const storage::partition &) {
+                [&](const size_t epoch_no, const storage::partition &part) {
                     return part_info {
                         chunked_zpp_stream { fmt::format("{}/ctx/{}-1p", out_dir, epoch_no) },
                         zpp_stream::write_stream(fmt::format("{}/tx-unres/{}.zpp", out_dir, epoch_no)),
-                        timer { fmt::format("prep-epoch-{}", epoch_no), logger::level::info }
+                        timer { fmt::format("prep-epoch-{}", epoch_no), logger::level::info },
+                        protocol_versions.at(cr.make_slot(part.first_slot()).epoch())
                     };
                 },
                 [&](auto &&part_o, const size_t epoch_no, const auto &) {
@@ -125,9 +122,6 @@ namespace turbo::cli::txwit_prep {
                         for (auto it = ready_epochs.begin(); it != ready_epochs.end() && next_epoch == *it; it = ready_epochs.erase(it)) {
                             next_epoch = *it + 1;
                         }
-                        updates.reserve(updates.size() + part.updates.size());
-                        for (auto &&u: part.updates)
-                            updates.emplace_back(std::move(u));
                         logger::info("epoch {} took {:.3f} secs utxos: {} outputs: {} inputs: {} num_complete_txs: {} num_incomplete_txs: {}",
                             epoch_no, part.t.stop(false),
                             part.utxos.size(), part.num_outputs, part.num_inputs, part.num_complete_txs, part.num_incomplete_txs);
@@ -137,28 +131,10 @@ namespace turbo::cli::txwit_prep {
             );
             proc.schedule_apply(next_epoch);
             cr.sched().process(true);
-            _write_cost_models(out_dir, updates, next_epoch);
             std::filesystem::remove_all(fmt::format("{}/utxo", out_dir));
             std::filesystem::remove_all(fmt::format("{}/tx-unres", out_dir));
         }
     private:
-        struct param_update {
-            cardano::slot slot;
-            std::variant<param_update_proposal, param_update_vote> update {};
-
-            bool operator<(const param_update &o) const
-            {
-                return slot < o.slot;
-            }
-        };
-        using param_update_list = std::vector<param_update>;
-
-        struct cost_model_update {
-            uint64_t epoch;
-            plutus_cost_models models;
-        };
-        using cost_model_update_list = std::vector<cost_model_update>;
-
         struct chunked_zpp_stream {
             chunked_zpp_stream(const std::string &prefix, const size_t limit=2000):
                 _prefix { prefix }, _limit { limit },
@@ -195,8 +171,8 @@ namespace turbo::cli::txwit_prep {
             chunked_zpp_stream tx_res_s;
             zpp_stream::write_stream tx_unres_s;
             timer t;
+            protocol_version protocol_ver;
             txo_map utxos {};
-            param_update_list updates {};
             size_t num_outputs = 0;
             size_t num_inputs = 0;
             size_t num_complete_txs = 0;
@@ -320,37 +296,24 @@ namespace turbo::cli::txwit_prep {
             }
         };
 
-        static void _write_cost_models(const std::string &out_dir, param_update_list &updates, const uint64_t end_epoch)
+        static flat_map<uint64_t, protocol_version> _write_ledger_history(const chunk_registry &cr, const std::string &out_dir)
         {
-            std::sort(updates.begin(), updates.end());
-            ledger::state st {};
+            timer t{"prepare ledger parameter history", logger::level::info};
+            ledger::state st {cr.config(), cr.sched()};
             st.start_epoch(0);
-            cost_model_update_list epoch_cost_models {};
-            epoch_cost_models.emplace_back(0, st.params().plutus_cost_models);
-            auto updates_it = updates.begin();
-            while (st.epoch() < end_epoch) {
-                if (st.params().plutus_cost_models != epoch_cost_models.back().models) {
+            txwit::processor proc{cr, st};
+            flat_map<uint64_t, protocol_version> protocol_versions {};
+            cost_model_history_t::builder epoch_cost_models {};
+            epoch_cost_models.append(0, st.params().plutus_cost_models);
+            for (const auto &part: storage::epoch_partition_map { cr }) {
+                proc.apply(storage::chunk_cptr_list { part.begin(), part.end() }, {}, {}, txwit::witness_type::none);
+                protocol_versions.emplace(st.epoch(), st.params().protocol_ver);
+                if (st.epoch() > 0 && epoch_cost_models.append(st.epoch(), st.params().plutus_cost_models))
                     logger::info("cost model update at epoch: {}", st.epoch());
-                    epoch_cost_models.emplace_back(st.epoch(), st.params().plutus_cost_models);
-                }
-                for (; updates_it != updates.end() && updates_it->slot.epoch() == st.epoch(); ++updates_it) {
-                    std::visit([&](const auto &u) {
-                        using T = std::decay_t<decltype(u)>;
-                        if constexpr (std::is_same_v<T, param_update_proposal>) {
-                            st.propose_update(updates_it->slot, u);
-                            //std::cout << fmt::format("update proposal slot: {} data: {}\n", e.slot, std::get<cardano::param_update_proposal>(e.update));
-                        } else if constexpr (std::is_same_v<T, param_update_vote>) {
-                            //std::cout << fmt::format("update vote slot: {} data: {}\n", e.slot, std::get<cardano::param_update_vote>(e.update));
-                            st.proposal_vote(updates_it->slot, u);
-                        } else {
-                            throw error{"unsupported parameter update type: {}", typeid(T).name()};
-                        }
-                    }, updates_it->update);
-                }
-                st.start_epoch(st.epoch() + 1);
             }
             zpp_stream::write_stream ws { fmt::format("{}/cost-models/all.zpp", out_dir) };
-            ws.write(epoch_cost_models);
+            ws.write(std::move(epoch_cost_models).finish());
+            return protocol_versions;
         }
 
         static void _del_utxo(txo_map &idx, const tx_out_ref &txo_id)

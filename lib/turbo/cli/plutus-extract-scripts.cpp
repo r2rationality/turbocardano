@@ -7,8 +7,9 @@
 #include <turbo/chunk-registry.hpp>
 #include <turbo/index/merge-zpp.hpp>
 #include <turbo/index/utxo.hpp>
+#include <turbo/json.hpp>
 #include <turbo/plutus/context.hpp>
-#include <turbo/plutus/costs-config.hpp>
+#include <turbo/plutus/cost-model-history.hpp>
 #include <turbo/plutus/flat-encoder.hpp>
 #include <turbo/zpp-stream.hpp>
 #include "common.hpp"
@@ -30,20 +31,18 @@ namespace turbo::cli::plutus_extract_scripts {
         }
 
         void run(const arguments &args, const options &opts) const override {
-            const auto &ctx_dir = args.at(0);
-            const auto &tx_list_path = args.at(1);
-            const auto &out_dir = args.at(2);
+            const auto &[ctx_dir, tx_list_path, out_dir] = std::tie(args.at(0), args.at(1), args.at(2));
             std::filesystem::create_directories(out_dir);
-            user_config cfg { .uplc=opts.contains("uplc") };
+            user_config cfg{.uplc=opts.contains("uplc")};
             if (const auto opt_it = opts.find("protocol"); opt_it != opts.end() && opt_it->second)
                 cfg.protocol = std::stoull(*opt_it->second);
             {
                 cfg.tx_list.emplace();
                 if (std::filesystem::exists(tx_list_path)) {
-                    const std::string text { file::read(tx_list_path).str() };
+                    const std::string text{file::read(tx_list_path).str()};
                     for (auto prev_it = text.begin(); prev_it != text.end(); ) {
                         auto next_it = std::find_if(prev_it, text.end(), [&](const auto &x) { return std::isspace(x); });
-                        if (const std::string tx_id { prev_it, next_it }; !tx_id.empty())
+                        if (const std::string tx_id{prev_it, next_it}; !tx_id.empty())
                             cfg.tx_list->emplace(tx_hash::from_hex(tx_id));
                         while (next_it != text.end() && std::isspace(*next_it))
                             ++next_it;
@@ -55,18 +54,13 @@ namespace turbo::cli::plutus_extract_scripts {
             }
 
             auto &sched = scheduler::get();
-            std::optional<std::string> file_prefix {};
+            std::optional<std::string> file_prefix{};
             if (const auto opt_it = opts.find("file"); opt_it != opts.end() && opt_it->second)
                 file_prefix.emplace(*opt_it->second);
-            runtime_models_update_list epoch_cost_models {};
-            {
-                zpp_stream::read_stream s { fmt::format("{}/cost-models/all.zpp", ctx_dir) };
-                const auto updates  = s.read<cost_model_update_list>();
-                for (const auto &u: updates) {
-                    epoch_cost_models.emplace_back(u.epoch, costs::ingest(u.models));
-                }
-            }
-            file::path_list paths {};
+            zpp_stream::read_stream cost_models_stream{fmt::format("{}/cost-models/all.zpp", ctx_dir)};
+            const auto epoch_cost_models = cost_models_stream.read<cost_model_history_t>();
+            json::save_pretty(fmt::format("{}/cost-models.json", out_dir), epoch_cost_models.to_json());
+            file::path_list paths{};
             for (auto &&p: file::files_with_ext_path(fmt::format("{}/ctx", ctx_dir), ".zpp")) {
                 if (!file_prefix || p.filename().string().starts_with(*file_prefix))
                     paths.emplace_back(std::move(p));
@@ -74,13 +68,13 @@ namespace turbo::cli::plutus_extract_scripts {
             std::sort(paths.begin(), paths.end());
 
             mutex::unique_lock::mutex_type all_mutex alignas(mutex::alignment) {};
-            extract_res all {};
+            extract_res all{};
             for (size_t i = 0; i < paths.size(); ++i) {
                 if (std::filesystem::file_size(paths[i]) > 0) {
                     const auto ctx_path = paths[i].string();
                     sched.submit("extract", -static_cast<int64_t>(i), [&, ctx_path]() {
                         const auto res = _extract_scripts(out_dir, ctx_path, epoch_cost_models, cfg);
-                        mutex::scoped_lock lk { all_mutex };
+                        mutex::scoped_lock lk{all_mutex};
                         all += res;
                     });
                 }
@@ -90,25 +84,13 @@ namespace turbo::cli::plutus_extract_scripts {
         }
     private:
         struct user_config {
-            std::optional<std::set<tx_hash>> tx_list {};
-            std::optional<uint64_t> protocol {};
+            std::optional<std::set<tx_hash>> tx_list{};
+            std::optional<uint64_t> protocol{};
             bool uplc = false;
         };
 
-        struct runtime_models_update {
-            uint64_t epoch;
-            costs::runtime_models models;
-        };
-        using runtime_models_update_list = std::vector<runtime_models_update>;
-
-        struct cost_model_update {
-            uint64_t epoch;
-            plutus_cost_models models;
-        };
-        using cost_model_update_list = std::vector<cost_model_update>;
-
         struct extract_res {
-            std::set<script_hash> scripts {};
+            std::set<script_hash> scripts{};
             size_t num_redeemers = 0;
 
             extract_res &operator+=(const extract_res &o)
@@ -120,32 +102,28 @@ namespace turbo::cli::plutus_extract_scripts {
             }
         };
 
-        static extract_res _extract_scripts(const std::string &out_dir, const std::string &ctx_path, const runtime_models_update_list &epoch_cost_models, const user_config &cfg)
+        static extract_res _extract_scripts(const std::string &out_dir, const std::string &ctx_path, const cost_model_history_t &epoch_cost_models, const user_config &cfg)
         {
-            timer t { fmt::format("evaluation of a script context file {}", ctx_path), logger::level::info };
+            timer t{fmt::format("evaluation of a script context file {}", ctx_path), logger::level::info};
             logger::info("thread {} started testing context file {}", std::this_thread::get_id(), ctx_path);
-            if (epoch_cost_models.empty()) [[unlikely]]
-                throw error("epoch_cost_models must not be empty!");
-            zpp_stream::read_stream rs { ctx_path };
-            extract_res res {};
+            zpp_stream::read_stream rs{ctx_path};
+            extract_res res{};
+            std::optional<cost_model_history_t::active_models_t> cached_models{};
             while (!rs.eof()) {
                 auto stored_ctx = rs.read<stored_tx_context>();
                 stored_ctx.validate_format();
                 const auto &tx_id = stored_ctx.tx_id;
                 if (cfg.tx_list && !cfg.tx_list->contains(tx_id))
                     continue;
-                std::optional<uint64_t> epoch {};
+                std::optional<uint64_t> epoch{};
                 try {
-                    context ctx { std::move(stored_ctx) };
+                    context ctx{std::move(stored_ctx)};
                     if (cfg.protocol)
-                        ctx.protocol_ver({ *cfg.protocol, 0 });
+                        ctx.protocol_ver({*cfg.protocol, 0});
                     epoch.emplace(ctx.slot().epoch());
-                    auto it = std::upper_bound(epoch_cost_models.begin(), epoch_cost_models.end(), *epoch,
-                        [&](const auto val, const auto &e) { return val < e.epoch; });
-                    if (it == epoch_cost_models.begin()) [[unlikely]]
-                        throw error("internal error: can't find a passing epoch cost model!");
-                    it = std::prev(it);
-                    ctx.cost_models(it->models);
+                    if (!cached_models || cached_models->epoch != *epoch)
+                        cached_models.emplace(*epoch, epoch_cost_models.for_epoch(*epoch));
+                    ctx.cost_models(cached_models->models);
                     ctx.prepare();
                     size_t r_idx = 0;
                     for (const auto &[rid, r]: ctx.redeemers()) {
@@ -154,13 +132,14 @@ namespace turbo::cli::plutus_extract_scripts {
                         static std::string exp_prefix { "plutus_" };
                         if (!typ_s.starts_with(exp_prefix)) [[unlikely]]
                             throw error{"unsupported script type: {}!", typ_s};
-                        const auto out_prefix = fmt::format("{}/{}/{}-{}-{}-{}-p{}",
-                            out_dir, *epoch, tx_id, r_idx++, ps.hash, typ_s.substr(exp_prefix.size()),
-                            ctx.protocol_ver().major);
+                        const auto out_prefix = fmt::format("{}/{}/{}-{}-{}-{}-{}-p{}-m{}-s{}",
+                            out_dir, *epoch, tx_id, r_idx++, rid.tag,
+                            ps.hash, typ_s.substr(exp_prefix.size()),
+                            ctx.protocol_ver().major, r.budget.mem, r.budget.steps);
                         if (cfg.uplc) {
                             file::write(out_prefix + ".uplc", fmt::format("(program 0.0.0 {})", ps.expr));
                         } else {
-                            file::write(out_prefix + ".flat", flat::encode_cbor(ps.ver, ps.expr));
+                            file::write(out_prefix + ".flat", flat::encode(ps.ver, ps.expr));
                         }
                         ++res.num_redeemers;
                     }

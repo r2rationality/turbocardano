@@ -59,8 +59,8 @@ namespace turbo::plutus {
         script_hash hash;
         script_type typ;
         term expr;
-        version ver {};
-        std::optional<ex_units> budget {};
+        version ver{};
+        std::optional<ex_units> budget{};
     };
 
     struct context {
