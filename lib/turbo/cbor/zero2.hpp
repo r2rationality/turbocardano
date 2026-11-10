@@ -20,6 +20,7 @@
 #include <memory>
 #include <memory_resource>
 #include <utility>
+#include <vector>
 #include <turbo/common/bytes.hpp>
 #include <turbo/common/error.hpp>
 #include <turbo/common/format.hpp>
@@ -56,6 +57,7 @@ namespace turbo::cbor::zero2 {
 
         // no need for a virtual destructor since no child class needs it
 
+        // Advance one container item; value::finalize drives nested containers iteratively.
         virtual void consume() =0;
 
         value *next_chunk(value &);
@@ -157,7 +159,7 @@ namespace turbo::cbor::zero2 {
         uint64_t id() const noexcept;
         value &read();
     private:
-        const uint8_t *_begin_ptr;
+        bool _read = false;
         value &_val;
     };
     static_assert(sizeof(tag_reader) == 24);
@@ -208,8 +210,9 @@ namespace turbo::cbor::zero2 {
         void skip(const size_t num_items);
     protected:
         value &_dec_level;
+        uint64_t _pos = 0;
     };
-    static_assert(sizeof(map_reader) == 16);
+    static_assert(sizeof(map_reader) == 24);
 
     struct map_reader_sized: map_reader {
         using map_reader::map_reader;
@@ -219,8 +222,6 @@ namespace turbo::cbor::zero2 {
         value &read_key() override;
         value &read_val(value &&) override;
         void consume() override;
-    private:
-        size_t _pos = 0;
     };
     static_assert(sizeof(map_reader_sized) == 24);
 
@@ -466,7 +467,7 @@ namespace turbo::cbor::zero2 {
     static_assert(sizeof(value) <= 64); // Ensure each value fits into a single cache line
 
     struct decoder {
-        static constexpr size_t max_depth = 64;
+        static constexpr size_t inline_depth = 512;
 
         static std::shared_ptr<std::pmr::memory_resource> create_chunk_storage(const size_t initial_size = 65536)
         {
@@ -479,9 +480,7 @@ namespace turbo::cbor::zero2 {
             _current { &_val_at(0) },
             _chunk_storage { std::move(storage) }
         {
-            for (size_t i = 0; i < max_depth; ++i) {
-                new (&_val_at(i)) value { *this };
-            }
+            new (_current) value{*this};
         }
 
         bool done()
@@ -507,8 +506,13 @@ namespace turbo::cbor::zero2 {
 
         const uint8_t *_ptr;
         const uint8_t *_end;
-        alignas(value) std::array<uint8_t, sizeof(value) * max_depth> _val_storage {};
+        struct alignas(value) value_storage {
+            std::array<uint8_t, sizeof(value) * inline_depth> bytes;
+        };
+        value_storage _val_storage;
         value *_current;
+        size_t _depth = 0;
+        std::vector<std::unique_ptr<value_storage>> _overflow;
         std::shared_ptr<std::pmr::memory_resource> _chunk_storage;
 
         bool done(value &v)
@@ -528,19 +532,27 @@ namespace turbo::cbor::zero2 {
 
         value &push()
         {
-            ++_current;
-            // ensures that the values are never reallocated since value::readers keep references to them!
-            if (_current >= &_val_at(max_depth)) [[unlikely]]
-                throw error{"the cbor structure has more than {} levels!", max_depth};
+            if ((_depth + 1) % inline_depth == 0) [[unlikely]] {
+                if (_overflow.size() == (_depth + 1) / inline_depth - 1)
+                    _overflow.emplace_back(std::make_unique_for_overwrite<value_storage>());
+                _current = &_val_at(_depth + 1);
+            } else {
+                ++_current;
+            }
+            ++_depth;
+            new (_current) value{*this};
             return *_current;
         }
 
         void pop()
         {
-            if (_current == &_val_at(0)) [[unlikely]]
-                throw error("cbor::decoder: invalid nesting of cbor structures detected!");
-            new (_current) value { *this };
-            --_current;
+            if (_depth == 0) [[unlikely]]
+                throw error{"cbor::decoder: invalid nesting of cbor structures detected!"};
+            if (_depth % inline_depth == 0) [[unlikely]]
+                _current = &_val_at(_depth - 1);
+            else
+                --_current;
+            --_depth;
         }
 
         bool empty() const noexcept
@@ -572,10 +584,11 @@ namespace turbo::cbor::zero2 {
             return _end;
         }
     private:
-        // this is a private method. all callers ensure i is alway < max_depth
         value &_val_at(size_t i)
         {
-            return *(reinterpret_cast<value *>(&_val_storage) + i);
+            if (i < inline_depth) [[likely]]
+                return *(reinterpret_cast<value *>(&_val_storage) + i);
+            return *(reinterpret_cast<value *>(_overflow[i / inline_depth - 1].get()) + i % inline_depth);
         }
     };
 
@@ -979,6 +992,11 @@ namespace turbo::cbor::zero2 {
 
     inline void value::finalize()
     {
+        // Finish the deepest slot before allowing its parent to advance or close.
+        while (_dec._current != this) {
+            _dec._current->_reader_base().consume();
+            _dec._val_at(_dec._depth - 1)._reader_base().consume();
+        }
         _reader_base().consume();
     }
 
@@ -1218,14 +1236,16 @@ namespace turbo::cbor::zero2 {
     }
 
     inline tag_reader::tag_reader(value &dec_level):
-        _begin_ptr { _parent(this)._dec.next() },
-        _val { _parent(this)._dec.read(dec_level) }
+        _val{dec_level}
     {
     }
 
     inline void tag_reader::consume()
     {
-        _val.finalize();
+        if (!_read) {
+            read();
+            return;
+        }
         _parent(this)._dec.pop();
         _parent(this)._mark_end();
     }
@@ -1237,6 +1257,10 @@ namespace turbo::cbor::zero2 {
 
     inline value &tag_reader::read()
     {
+        if (!_read) {
+            _parent(this)._dec.read(_val);
+            _read = true;
+        }
         return _val;
     }
 
@@ -1265,8 +1289,9 @@ namespace turbo::cbor::zero2 {
 
     inline void array_reader::consume()
     {
-        while (!done()) {
+        if (!done()) {
             read();
+            return;
         }
         _parent(this)._dec.step(1);
         _parent(this)._dec.pop();
@@ -1292,8 +1317,9 @@ namespace turbo::cbor::zero2 {
 
     inline void array_reader_sized::consume()
     {
-        while (!done()) {
+        if (!done()) {
             read();
+            return;
         }
         _parent(this)._dec.pop();
         _parent(this)._mark_end();
@@ -1311,20 +1337,26 @@ namespace turbo::cbor::zero2 {
 
     inline value &map_reader::read_key()
     {
+        ++_pos;
         return _parent(this)._dec.read(_dec_level);
     }
 
     // the move argument is just a reminder that the previously returned key argument will be overwritten
     inline value &map_reader::read_val(value &&)
     {
+        ++_pos;
         return _parent(this)._dec.read(_dec_level);
     }
 
     inline void map_reader::consume()
     {
-        while (!done()) {
-            auto &key = read_key();
-            read_val(std::move(key));
+        if (_pos & 1) {
+            read_val(std::move(_dec_level));
+            return;
+        }
+        if (!done()) {
+            read_key();
+            return;
         }
         _parent(this)._dec.step(1);
         _parent(this)._dec.pop();
@@ -1342,7 +1374,7 @@ namespace turbo::cbor::zero2 {
     inline bool map_reader_sized::done()
     {
         const bool eof = _parent(this)._dec.done(_dec_level);
-        if (_pos < _parent(this).special_uint()) {
+        if (_pos / 2 < _parent(this).special_uint()) {
             if (eof) [[unlikely]] throw incomplete_error();
             return false;
         }
@@ -1351,9 +1383,13 @@ namespace turbo::cbor::zero2 {
 
     inline void map_reader_sized::consume()
     {
-        while (!done()) {
-            auto &key = read_key();
-            read_val(std::move(key));
+        if (_pos & 1) {
+            read_val(std::move(_dec_level));
+            return;
+        }
+        if (!done()) {
+            read_key();
+            return;
         }
         _parent(this)._dec.pop();
         _parent(this)._mark_end();
@@ -1361,6 +1397,7 @@ namespace turbo::cbor::zero2 {
 
     inline value &map_reader_sized::read_key()
     {
+        ++_pos;
         return _parent(this)._dec.read(_dec_level);
     }
 

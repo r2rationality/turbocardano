@@ -6,6 +6,7 @@
 #include <turbo/cardano/ledger/rules/utxos/phase2.hpp>
 #include <turbo/common/test.hpp>
 #include <turbo/crypto/blake2b.hpp>
+#include <turbo/plutus/context.hpp>
 
 namespace {
     using namespace turbo;
@@ -41,16 +42,17 @@ namespace {
 }
 
 suite conway_validation_suite = [] {
-    "UTXOW voting pointers count distinct voters including key voters"_test = [] {
+    "UTXOW voting pointers use ledger order and count distinct voters"_test = [] {
         storage::block_info meta {};
         meta.era = 7;
         mocks::block block { 0, meta, turbo::cardano::config::get() };
         cbor::encoder body {}, witnesses {};
         body.map(4).uint(0).array(1).array(2).bytes(tx_hash {}).uint(0);
-        body.uint(1).array(0).uint(2).uint(200'000).uint(19).map(2);
-        const script_hash script {};
-        for (const auto voter_type: { 2U, 3U }) { // key DRep, then script DRep
-            body.array(2).uint(voter_type).bytes(script).map(2);
+        body.uint(1).array(0).uint(2).uint(200'000).uint(19).map(3);
+        const auto script = script_hash::from_hex("D1F8737AEBB2C1DA4255E4D28CF0BD5C109B15A55755F63BEBAAA856");
+        // CBOR tag order puts the script DRep third; ledger order puts it second.
+        for (const auto voter_type: { 0U, 2U, 3U }) {
+            body.array(2).uint(voter_type).bytes(voter_type == 3 ? script : key_hash {}).map(2);
             for (const auto action_index: { 0U, 1U })
                 body.array(2).bytes(tx_hash {}).uint(action_index).array(2).uint(1).s_null();
         }
@@ -61,7 +63,7 @@ suite conway_validation_suite = [] {
         tx.parse_witnesses(witness_value.get());
         conway_validation checks {};
         checks.collect(tx, {});
-        expect(tx.votes().size() == 4_u);
+        expect(tx.votes().size() == 6_u);
         expect(checks.credentials.keys.size() == 1_u);
         expect(checks.credentials.scripts.size() == 1_u);
         expect(checks.credentials.purposes.size() == 1_u);
@@ -69,6 +71,9 @@ suite conway_validation_suite = [] {
         expect(checks.credentials.purposes.contains(pointer));
         if (const auto it = checks.credentials.purposes.find(pointer); it != checks.credentials.purposes.end())
             expect(it->second == script);
+        // Script extraction resolves the same pointer without UTXOW's cached bindings.
+        plutus::context ctx { uint8_vector { body.cbor() }, uint8_vector { witnesses.cbor() }, meta, block.config() };
+        expect(ctx.redeemer_script(pointer) == script);
     };
 
     "UTXOW certificates and zero withdrawals share credential projections"_test = [] {
@@ -98,9 +103,27 @@ suite conway_validation_suite = [] {
         expect(checks.credentials.purposes.contains({ redeemer_tag::cert, 0 }));
         expect(!checks.credentials.purposes.contains({ redeemer_tag::cert, 1 }));
         expect(checks.credentials.purposes.contains({ redeemer_tag::reward, 0 }));
-        checks.credentials.observe_payment(output().addr()); // collateral key: no spending pointer
+        checks.credentials.observe_collateral(output().addr());
         expect(checks.credentials.keys.size() == 1_u);
         expect(checks.credentials.purposes.size() == 2_u);
+    };
+
+    "UTXOW collateral requires key witnesses but never script witnesses"_test = [] {
+        credential_requirements needed{};
+        const auto script = output(true);
+        needed.observe_collateral(script.addr());
+        expect(needed.keys.empty());
+        expect(needed.scripts.empty());
+        expect(needed.purposes.empty());
+        // With redeemers, UTXO rejects script collateral instead of requesting its witness.
+        collateral_balance collateral{};
+        expect(throws([&] { collateral.add(script); }));
+        const auto key = output();
+        needed.observe_collateral(key.addr());
+        expect(needed.keys.size() == 1_u);
+        expect(needed.keys.contains(key.addr().pay_id().hash));
+        expect(needed.scripts.empty());
+        expect(needed.purposes.empty());
     };
 
     "UTXOW redeemer domain preserves repeated spending script identity"_test = [] {
@@ -199,7 +222,15 @@ suite conway_validation_suite = [] {
         expect(nothrow([&] { validate_phase2_result(scripts, true, prepare, succeed); }));
         expect(throws([&] { validate_phase2_result(scripts, false, prepare, succeed); }));
         expect(nothrow([&] { validate_phase2_result(scripts, false, prepare, fail); }));
-        expect(throws([&] { validate_phase2_result(scripts, true, prepare, fail); }));
+        std::string failure;
+        try {
+            validate_phase2_result(scripts, true, prepare, fail);
+        } catch (const error &ex) {
+            failure = ex.what();
+        }
+        expect(failure.find("redeemer 0") != std::string::npos) << failure;
+        expect(failure.find("marked valid") != std::string::npos) << failure;
+        expect(failure.find("script failure") != std::string::npos) << failure;
         const auto bad_prepare = [](int script) {
             if (script == 1)
                 throw error("bad context");

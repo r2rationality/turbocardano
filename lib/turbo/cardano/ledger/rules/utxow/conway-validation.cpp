@@ -181,8 +181,13 @@ namespace turbo::cardano::ledger::rules {
                 throw error("missing required script");
             if (script->second != script_type::native) {
                 ++needed_redeemers;
-                if (!redeemers.contains(pointer))
-                    throw error("missing required redeemer pointer");
+                if (!redeemers.contains(pointer)) {
+                    std::string supplied;
+                    for (const auto &id: redeemers)
+                        supplied += fmt::format("[{}] ", id);
+                    throw error("missing required redeemer pointer [{}] for script {}; supplied: [{}]",
+                        pointer, hash, supplied);
+                }
                 languages.emplace(script->second);
             }
         }

@@ -306,7 +306,7 @@ namespace turbo::plutus {
 
         data encode(const constitution_t &c)
         {
-            return encode(c.policy_id);
+            return constr(0, { encode(c.policy_id) });
         }
 
         data encode(const stake_reg_cert &c)
@@ -562,14 +562,103 @@ namespace turbo::plutus {
             return data::map(_alloc, std::move(m));
         }
 
+        template<typename T>
+        data encode_parameter(const T &v)
+        {
+            return encode(v);
+        }
+
+        // Ledger ToPlutusData uses lists here, unlike the Plutus API's constructor-encoded rationals.
+        data encode_parameter(const rational_u64 &v)
+        {
+            return data::list(_alloc, { encode(v.numerator), encode(v.denominator) });
+        }
+
+        data encode_parameter(const nil_optional_t<rational_u64> &v)
+        {
+            return v ? constr(0, { encode_parameter(*v) }) : constr(1, {});
+        }
+
+        data encode_parameter(const ex_units &v)
+        {
+            return data::list(_alloc, { encode(v.mem), encode(v.steps) });
+        }
+
+        data encode_parameter(const ex_unit_prices &v)
+        {
+            return data::list(_alloc, { encode_parameter(v.mem), encode_parameter(v.steps) });
+        }
+
+        data encode_parameter(const pool_voting_thresholds_t &v)
+        {
+            return data::list(_alloc, {
+                encode_parameter(v.motion_of_no_confidence),
+                encode_parameter(v.committee_normal),
+                encode_parameter(v.committee_no_confidence),
+                encode_parameter(v.hard_fork_initiation),
+                encode_parameter(v.security_voting_threshold)
+            });
+        }
+
+        data encode_parameter(const drep_voting_thresholds_t &v)
+        {
+            return data::list(_alloc, {
+                encode_parameter(v.motion_no_confidence),
+                encode_parameter(v.committee_normal),
+                encode_parameter(v.committee_no_confidence),
+                encode_parameter(v.update_constitution),
+                encode_parameter(v.hard_fork_initiation),
+                encode_parameter(v.pp_network_group),
+                encode_parameter(v.pp_economic_group),
+                encode_parameter(v.pp_technical_group),
+                encode_parameter(v.pp_governance_group),
+                encode_parameter(v.treasury_withdrawal)
+            });
+        }
+
         data encode(const param_update_t &u)
         {
-            // Haskell encodes ChangedParameters with ToPlutusData for the full
-            // PParamsUpdate. Keep this local subset explicit until the whole
-            // PParamsUpdate PlutusData encoding is mirrored here.
-            data::map_type m { _alloc };
-            if (u.plutus_cost_models)
-                m.emplace_back(_alloc, data::bint(_alloc, 18), encode(*u.plutus_cost_models));
+            data::map_type m{_alloc};
+            const auto add = [&](const uint64_t key, const auto &value) {
+                if (value)
+                    m.emplace_back(_alloc, encode(key), encode_parameter(*value));
+            };
+            add(0, u.min_fee_a);
+            add(1, u.min_fee_b);
+            add(2, u.max_block_body_size);
+            add(3, u.max_transaction_size);
+            add(4, u.max_block_header_size);
+            add(5, u.key_deposit);
+            add(6, u.pool_deposit);
+            add(7, u.e_max);
+            add(8, u.n_opt);
+            add(9, u.pool_pledge_influence);
+            add(10, u.expansion_rate);
+            add(11, u.treasury_growth_rate);
+            add(16, u.min_pool_cost);
+            add(17, u.lovelace_per_utxo_byte);
+            add(18, u.plutus_cost_models);
+            add(19, u.ex_unit_prices);
+            add(20, u.max_tx_ex_units);
+            add(21, u.max_block_ex_units);
+            add(22, u.max_value_size);
+            add(23, u.max_collateral_pct);
+            add(24, u.max_collateral_inputs);
+            add(25, u.pool_voting_thresholds);
+            add(26, u.drep_voting_thresholds);
+            add(27, u.committee_min_size);
+            add(28, u.committee_max_term_length);
+            add(29, u.gov_action_lifetime);
+            add(30, u.gov_action_deposit);
+            add(31, u.drep_deposit);
+            add(32, u.drep_activity);
+            add(33, u.min_fee_ref_script_cost_per_byte);
+            add(34, u.max_ref_script_size_per_block);
+            add(35, u.max_ref_script_size_per_tx);
+            add(36, u.ref_script_cost_stride);
+            add(37, u.ref_script_cost_multiplier);
+            add(38, u.max_pledge_leverage);
+            add(39, u.min_pool_margin);
             return data::map(_alloc, std::move(m));
         }
 

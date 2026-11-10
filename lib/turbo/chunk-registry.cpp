@@ -247,6 +247,47 @@ namespace turbo {
             return data_dir / "compressed/revalidate-source.bin";
         }
 
+        // Check before journal recovery, snapshot loading or orphan cleanup can write.
+        void require_network(const std::filesystem::path &root, const cardano::config &cfg, const bool writable)
+        {
+            const auto path = (root / "network.json").string();
+            const json::value expected = json::object{
+                {"version", 1},
+                {"networkMagic", cfg.byron_protocol_magic},
+                {"byronGenesisHash", fmt::format("{}", cfg.byron_genesis_hash)},
+                {"shelleyGenesisHash", fmt::format("{}", cfg.shelley_genesis_hash)},
+                {"alonzoGenesisHash", fmt::format("{}", cfg.alonzo_genesis_hash)},
+                {"conwayGenesisHash", fmt::format("{}", cfg.conway_genesis_hash)},
+                {"initialProtocolMajor", cfg.initial_protocol_version.major},
+                {"initialProtocolMinor", cfg.initial_protocol_version.minor}
+            };
+            if (std::filesystem::exists(path)) {
+                if (json::load(path) != expected) [[unlikely]]
+                    throw error{"network configuration does not match {}; use a separate data directory for each network", path};
+                return;
+            }
+            const auto check_legacy = [&](const std::filesystem::path &base) {
+                for (const auto name: {"state.bin", "state-pre.bin", "revalidate-source.bin"}) {
+                    const auto legacy = base / "compressed" / name;
+                    if (!std::filesystem::exists(legacy)) continue;
+                    storage::chunk_map chunks{};
+                    load_chunk_registry_state(chunks, legacy.string());
+                    if (!chunks.empty() && (chunks.begin()->second.offset != 0
+                            || chunks.begin()->second.prev_block_hash != cfg.byron_genesis_hash)) [[unlikely]]
+                        throw error{"legacy registry {} belongs to a different network", root};
+                }
+            };
+            check_legacy(root);
+            if (const auto transactions = root / "transactions"; std::filesystem::exists(transactions)) {
+                for (const auto &entry: std::filesystem::directory_iterator(transactions)) {
+                    if (entry.is_directory() && entry.path().filename().string().starts_with("pending-"))
+                        check_legacy(entry.path() / "files");
+                }
+            }
+            if (writable)
+                json::save_pretty(path, expected);
+        }
+
         void restore_revalidation_source(const std::filesystem::path &data_dir)
         {
             const auto source = revalidation_source_path(data_dir);
@@ -290,6 +331,7 @@ namespace turbo {
             throw error("orphan recovery requires a validating registry: '{}'", _data_dir);
         if (_mode == mode::validate)
             _writer_lock = std::make_unique<storage::registry_writer_lock>(_data_dir);
+        require_network(_data_dir, _cardano_cfg, _mode == mode::validate);
         storage::commit_journal::recover(_data_dir, _mode == mode::validate);
         if (settings.mode != mode::validate && std::filesystem::exists(revalidation_source_path(_data_dir))) [[unlikely]] {
             throw error("interrupted revalidation requires opening the registry in validation mode first");
@@ -318,6 +360,20 @@ namespace turbo {
             marked = _file_remover.removable();
         }
         _repair_or_require_clean_storage(scan, chunks, marked);
+        // Snapshot slot checks need the discovered era boundary before processors load.
+        if (!_cardano_cfg.shelley_start_known()) {
+            uint64_t offset = 0;
+            for (const auto &[last_byte, chunk]: chunks) {
+                if (chunk.offset != offset || chunk.blocks.empty())
+                    break;
+                const auto &first = chunk.blocks.front();
+                if (first.era >= 2) {
+                    _cardano_cfg.set_shelley_start_epoch(offset ? first.slot / _cardano_cfg.byron_epoch_length : 0);
+                    break;
+                }
+                offset = chunk.end_offset();
+            }
+        }
         if (_mode != mode::validate) {
             index_slices = _inspect_derived_state(chunks, marked);
         }
@@ -1805,9 +1861,9 @@ namespace turbo {
                 throw error{"internal error: duplicate chunk offset: {} size: {}", um_it->second.offset, um_it->second.data_size};
             while (!_unmerged_chunks.empty() && _unmerged_chunks.begin()->second.offset == num_bytes()) {
                 const auto &tested_chunk = _unmerged_chunks.begin()->second;
-                if (const auto &first_block = tested_chunk.blocks.at(0); first_block.era >= 2 && !_cardano_cfg.shelley_started()) {
+                if (const auto &first_block = tested_chunk.blocks.at(0); first_block.era >= 2 && !_cardano_cfg.shelley_start_known()) {
                     // If there were no blocks before this one, then count from the slot 0
-                    _cardano_cfg.shelley_start_epoch(_chunks.empty() ? 0 : first_block.slot / _cardano_cfg.byron_epoch_length);
+                    _cardano_cfg.set_shelley_start_epoch(_chunks.empty() ? 0 : first_block.slot / _cardano_cfg.byron_epoch_length);
                 }
                 if (_validator) {
                     if (const auto future_slot = cardano::slot::from_future(_cardano_cfg); tested_chunk.last_block.slot >= future_slot) [[unlikely]]
@@ -1982,7 +2038,7 @@ namespace turbo {
             }
             // reconfigure time if truncating back into Byron era
             if (_chunks.empty() || _chunks.rbegin()->second.blocks.back().era < 2)
-                _cardano_cfg.shelley_start_epoch({});
+                _cardano_cfg.reset_shelley_start_epoch();
         }
     }
 
@@ -2152,13 +2208,44 @@ namespace turbo {
             // transaction state and require a reopen before any further mutation.
             throw error("commit interrupted; reopen the registry to complete the pending transaction");
         }
+        std::optional<uint64_t> validated_offset;
+        if (commit_err) {
+            try {
+                std::rethrow_exception(commit_err);
+            } catch (const validator::deferred_validation_error &ex) {
+                validated_offset = ex.validated_offset;
+            } catch (...) {
+            }
+        }
+        if (aim_progress && validated_offset && *validated_offset > _transaction->start_offset()) {
+            logger::run_log_errors([&] { _sched.process(true); });
+            const auto recovery_err = logger::run_log_errors([&] {
+                const auto prefix = find_block_by_offset(*validated_offset - 1).point();
+                if (prefix.end_offset != *validated_offset) [[unlikely]]
+                    throw error{"validated prefix does not end at a block boundary"};
+                logger::info("recovering the locally validated prefix through {}", prefix);
+                // Finish merges while the full candidate's chunk metadata is still available.
+                _indexer->flush();
+                _do_truncate(prefix, false);
+                _prepare_tx();
+                if (_before_commit)
+                    _before_commit();
+                _require_better_candidate_chain(false);
+                _commit_tx();
+                logger::info("committed the locally validated prefix through {}", prefix);
+            });
+            if (!recovery_err)
+                return commit_err;
+            if (_journal && _journal->decided()) [[unlikely]]
+                throw error{"prefix commit interrupted; reopen the registry to complete the pending transaction"};
+        }
         logger::debug("rollback triggers: action error: {} commit error: {}", !!act_err, !!commit_err);
         logger::run_log_errors([&] { _sched.process(true); });
         // Before the journal's decision, discard staging and restore in-memory
         // state. Rollback failure propagates and prevents another transaction.
         _rollback_tx();
         logger::run_log_errors([&] { _sched.process(true); });
-        return act_err ? act_err : commit_err;
+        return validated_offset ? commit_err : (act_err ? act_err : commit_err);
     }
 
     void chunk_registry::_start_tx(cardano::optional_point start, const std::optional<progress_point> &target)

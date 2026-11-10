@@ -29,10 +29,9 @@ namespace turbo::cardano::ledger {
         return it == conway_state->drep_state().end() ? 0 : it->second.deposited;
     }
     state::state(const cardano::config &cfg, scheduler &sched, const init_mode mode):
-        _cfg { cfg }, _sched { sched },
-        _state { std::make_unique<shelley::state>(_cfg, _sched, mode) },
-        _vrf_state { std::make_unique<shelley::vrf_state>(_cfg) }
+        _cfg{cfg}, _sched{sched}
     {
+        clear(mode);
     }
 
     point state::_deserialize_node_vrf_state(cbor::zero2::value &v)
@@ -79,6 +78,7 @@ namespace turbo::cardano::ledger {
 
     point state::deserialize_node(const buffer data)
     {
+        clear(init_mode::empty);
         auto item = cbor::zero2::parse(data);
         const auto tip = decode_versioned(item.get(), [&](auto &v) {
             auto &it = v.array();
@@ -124,6 +124,7 @@ namespace turbo::cardano::ledger {
 
     void state::load_zpp(const std::string &path)
     {
+        clear(init_mode::empty);
         try {
             parallel_decoder dec { path };
             zpp::deserialize(_subchains, dec.at(0));
@@ -195,6 +196,11 @@ namespace turbo::cardano::ledger {
         _eras.clear();
         _state = std::make_unique<shelley::state>(_cfg, _sched, mode);
         _vrf_state = std::make_unique<shelley::vrf_state>(_cfg);
+        if (mode == init_mode::genesis && _cfg.initial_protocol_version.major >= 2) {
+            _state->_apply_param_update({.protocol_ver=_cfg.initial_protocol_version});
+            _transition_era(0, _cfg.initial_protocol_version.era());
+            track_era(_cfg.initial_protocol_version.era(), 0);
+        }
     }
 
     bool state::operator==(const state &o) const

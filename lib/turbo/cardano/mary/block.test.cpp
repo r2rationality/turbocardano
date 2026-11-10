@@ -4,6 +4,7 @@
  * License: https://github.com/r2rationality/turbocardano/blob/main/LICENSE */
 
 #include <turbo/cardano/mary/block.hpp>
+#include <turbo/cardano/dijkstra/transaction.hpp>
 #include <turbo/common/file.hpp>
 #include <turbo/common/test.hpp>
 
@@ -27,6 +28,29 @@ suite cardano_mary_suite = [] {
             expect_equal(1, mints.size());
             expect_equal(1, mints.begin()->second.size());
             expect_equal(-2, mints.begin()->second.begin()->second);
+        };
+
+        "mint duplicates follow era decoding rules"_test = [] {
+            const auto policy = "581C" + std::string(56, '0');
+            for (const auto &[input, expected]: {
+                std::pair{"A2" + policy + "A14001" + policy + "A14001", "A1" + policy + "A14001"},
+                {"A1" + policy + "A240014021", "A1" + policy + "A14021"},
+                {"A1" + policy + "A240214002", "A1" + policy + "A14002"},
+                {"A1" + policy + "A240004001", "A1" + policy + "A14001"},
+                {"A1" + policy + "A240014000", std::string{"A0"}},
+                {"A2" + policy + "A14001" + policy + "A141AA02", "A1" + policy + "A141AA02"},
+                {"A2" + policy + "A14001" + policy + "A0", std::string{"A0"}},
+                {"A2" + policy + "A14001" + policy + "A14000", std::string{"A0"}},
+                {"BF" + policy + "BF40014021FFFF", "A1" + policy + "A14021"}
+            }) {
+                const auto raw = uint8_vector::from_hex(input);
+                const auto expected_raw = uint8_vector::from_hex(expected);
+                auto parsed = cbor::zero2::parse(raw);
+                auto expected_parsed = cbor::zero2::parse(expected_raw);
+                expect(mary::mint_t::from_cbor(parsed.get()) == mary::mint_t::from_cbor(expected_parsed.get())) << input;
+                expect(throws<error>([&] { conway::mint_t::from_cbor(cbor::zero2::parse(raw).get()); }));
+                expect(throws<error>([&] { dijkstra::mint_t::from_cbor(cbor::zero2::parse(raw).get()); }));
+            }
         };
 
         "parse allegra block"_test = [] {

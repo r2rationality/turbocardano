@@ -14,7 +14,7 @@ suite cardano_allegra_suite = [] {
         "native scripts"_test = [] {
             const configs_dir cfg { configs_dir::default_path() };
             const cardano::config ccfg { cfg };
-            ccfg.shelley_start_epoch(208);
+            ccfg.set_shelley_start_epoch(208);
             for (const auto &path: file::files_with_ext(install_path("data/allegra"), ".zpp")) {
                 const plutus::context ctx { path, ccfg };
                 const auto wit_cnts = ctx.tx().witnesses_ok();

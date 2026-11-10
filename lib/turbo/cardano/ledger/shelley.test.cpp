@@ -69,7 +69,7 @@ suite cardano_ledger_shelley_suite = [] {
     "cardano::ledger::shelley"_test = [] {
         "early rewards are retained across reload and normal completion"_test = [] {
             cardano::config cfg { cardano::config::get() };
-            cfg.shelley_start_epoch(0);
+            cfg.set_shelley_start_epoch(0);
             for (const uint64_t major: { 2, 8 }) {
                 reward_test_state early { cfg, major };
                 reward_test_state normal { cfg, major };
@@ -116,7 +116,7 @@ suite cardano_ledger_shelley_suite = [] {
         };
         "zero-block epochs retain pool likelihoods and repair saved updates"_test = [] {
             cardano::config cfg { cardano::config::get() };
-            cfg.shelley_start_epoch(0);
+            cfg.set_shelley_start_epoch(0);
             for (const uint64_t major: { 2, 8 }) {
                 reward_test_state st { cfg, major };
                 st._blocks_before.clear();
@@ -155,7 +155,7 @@ suite cardano_ledger_shelley_suite = [] {
         };
         "an empty reward eligibility snapshot stays frozen"_test = [] {
             cardano::config cfg { cardano::config::get() };
-            cfg.shelley_start_epoch(0);
+            cfg.set_shelley_start_epoch(0);
             reward_test_state st { cfg, 2 };
             st._accounts.begin()->second.ptr.reset();
             const auto start = slot::from_epoch(1, cfg) + cfg.shelley_randomness_stabilization_window + 1;
@@ -170,7 +170,7 @@ suite cardano_ledger_shelley_suite = [] {
         };
         "failed reward completion can be retried"_test = [] {
             cardano::config cfg { cardano::config::get() };
-            cfg.shelley_start_epoch(0);
+            cfg.set_shelley_start_epoch(0);
             scheduler sched { 4 };
             reward_test_state st { cfg, 8, sched };
             st._epoch_slot = cfg.shelley_randomness_stabilization_window + 1;
@@ -188,7 +188,7 @@ suite cardano_ledger_shelley_suite = [] {
         };
         "an empty completed reward update remains complete after CBOR decoding"_test = [] {
             cardano::config cfg { cardano::config::get() };
-            cfg.shelley_start_epoch(0);
+            cfg.set_shelley_start_epoch(0);
             reward_test_state st { cfg, 8 };
             st._epoch_slot = cfg.shelley_randomness_stabilization_window + 1;
             cbor::encoder enc {};

@@ -61,6 +61,13 @@ namespace turbo::cardano::ledger::rules {
             observe({ pay.hash, pay.type == pay_ident::ident_type::SHELLEY_SCRIPT }, pointer);
         }
 
+        void observe_collateral(const address &addr)
+        {
+            const auto pay = addr.pay_id();
+            if (pay.type != pay_ident::ident_type::SHELLEY_SCRIPT)
+                keys.emplace(pay.hash);
+        }
+
         void collect(const conway::tx &tx)
         {
             size_t index = 0;

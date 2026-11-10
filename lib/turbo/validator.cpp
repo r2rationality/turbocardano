@@ -202,7 +202,9 @@ namespace turbo::validator {
             const auto max_end_offset = new_tip ? new_tip->end_offset : 0;
             if (_state.truncate_subchains(max_end_offset))
                 logger::debug("validator truncated pending subchains at end_offset {}", max_end_offset);
-            if (_state.end_offset() > max_end_offset || (!_snapshots.empty() && _snapshots.rbegin()->end_offset > max_end_offset)) {
+            // A failed batch can mutate state without advancing its offset.
+            if (_replay_failed || _state.end_offset() > max_end_offset
+                    || (!_snapshots.empty() && _snapshots.rbegin()->end_offset > max_end_offset)) {
                 for (auto it = _snapshots.begin(); it != _snapshots.end(); ) {
                     if (it->end_offset > max_end_offset) {
                         _cr.remover().mark(_storage_path("ledger", it->end_offset));
@@ -243,6 +245,7 @@ namespace turbo::validator {
 
         void my_start_tx()
         {
+            _replay_failed = false;
             _next_end_offset = _state.end_offset();
             _next_tasks.clear();
             _snapshot_tip_height = _cr.tx()->target ? _cr.tx()->target->height : std::nullopt;
@@ -268,9 +271,16 @@ namespace turbo::validator {
         void my_prepare_tx()
         {
             timer t { "validator::_prepare_tx" };
+            const auto recovering = std::exchange(_replay_failed, false);
             flush();
-            if (_mode == validation_mode::turbo && _state.end_offset() > _cr.tx()->start_offset())
+            if (_mode == validation_mode::turbo && _state.end_offset() > _cr.tx()->start_offset()) {
                 _validate_tail();
+                // Preserve the validated commit boundary for the next tail replay,
+                // even when a short import ends before the catch-up snapshot timer.
+                _save_current_snapshot(true);
+            } else if (recovering) {
+                _save_current_snapshot(true);
+            }
         }
 
         void my_stage_tx()
@@ -321,6 +331,7 @@ namespace turbo::validator {
         void my_rollback_tx()
         {
             _load_state(_cr.chunks(), true);
+            _replay_failed = false;
             _remove_temporary_data();
         }
 
@@ -489,6 +500,7 @@ namespace turbo::validator {
         txwit::processor _witnesses;
         validation_mode _mode;
         bool _replay_witnesses = false;
+        bool _replay_failed = false;
         cardano::optional_point _witness_from {};
         std::atomic_uint64_t _applied_offset { 0 };
         std::optional<uint64_t> _trusted_shelley_authority_epoch {};
@@ -691,7 +703,7 @@ namespace turbo::validator {
                 issuers.emplace(crypto::blake2b::digest<cardano::pool_hash>(issuer));
             flat_set<cardano::pool_hash> seen {};
             auto rit = _cr.crbegin();
-            if (_cr.config().shelley_started()) {
+            if (_cr.config().shelley_start_known()) {
                 const auto shelley_start = _cr.config().shelley_start_slot();
                 if (!shelley_start)
                     return {};
@@ -714,7 +726,7 @@ namespace turbo::validator {
             if (!_validate_vrf)
                 return;
             const auto &cfg = _cr.config();
-            if (!cfg.shelley_started() || new_epoch < cfg.shelley_start_epoch())
+            if (!cfg.shelley_start_known() || new_epoch < cfg.shelley_start_epoch())
                 return;
             const auto root = cfg.shelley_start_epoch() + 1;
             if (new_epoch == cfg.shelley_start_epoch()) {
@@ -878,9 +890,15 @@ namespace turbo::validator {
                 _witness_from.reset();
                 _replay_witnesses = false;
             }};
-            _apply_ledger_updates_fast();
-            if (_state.end_offset() != target || my_end_offset() != target)
-                throw error("turbo witness replay did not reach the candidate tip");
+            auto validated_offset = _state.end_offset();
+            try {
+                _apply_ledger_updates_fast(&validated_offset);
+                if (_state.end_offset() != target || my_end_offset() != target) [[unlikely]]
+                    throw error{"turbo witness replay did not reach the candidate tip"};
+            } catch (const std::exception &ex) {
+                _replay_failed = true;
+                throw deferred_validation_error{validated_offset, ex};
+            }
         }
 
         std::string _storage_path(const std::string_view &prefix, uint64_t end_offset) const
@@ -991,7 +1009,7 @@ namespace turbo::validator {
             indexer::clean_up_ledger_data(indexer.indexers(), indexer.idx_dir());
         }
 
-        void _apply_ledger_updates_fast()
+        void _apply_ledger_updates_fast(uint64_t *validated_offset=nullptr)
         {
             _remove_temporary_data();
             std::vector<index::indexer_base *> idxrs {};
@@ -1010,6 +1028,8 @@ namespace turbo::validator {
                 mutex::unique_lock lk { _next_task_mutex };
                 _schedule_validation(std::move(lk), true);
                 _cr.sched().process(true);
+                if (validated_offset && my_end_offset() == _state.end_offset())
+                    *validated_offset = _state.end_offset();
             };
             if (state_start_offset < target_offset) {
                 auto it = _cr.find_offset_it(state_start_offset);

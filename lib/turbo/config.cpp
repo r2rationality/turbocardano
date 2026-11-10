@@ -76,6 +76,17 @@ namespace turbo {
         return p;
     }
 
+    std::string configs_dir::network_path(const std::string_view network)
+    {
+        const std::filesystem::path name{network};
+        if (name.empty() || name.has_parent_path() || name.has_root_path() || name == "." || name == "..") [[unlikely]]
+            throw error{"invalid network directory name: {}", network};
+        const std::filesystem::path path{install_path(fmt::format("etc/{}", network))};
+        if (!std::filesystem::is_regular_file(path / "config.json")) [[unlikely]]
+            throw error{"network {} requires configuration file {}", network, (path / "config.json").string()};
+        return path.string();
+    }
+
     void configs_dir::set_default_path(const std::optional<std::string> &p)
     {
         _configs_default_path() = p;

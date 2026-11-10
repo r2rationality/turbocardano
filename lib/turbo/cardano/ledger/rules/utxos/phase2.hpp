@@ -9,18 +9,19 @@ namespace turbo::cardano::ledger::rules {
     {
         bool success = true;
         for (const auto &[id, redeemer]: redeemers) {
-            // Prepare every invocation even after failure. Phase-1/preparation errors
-            // must not be mistaken for an acceptable phase-2 false result.
+            // Preparation errors must not count as an acceptable phase-2 false result.
             auto program = prepare(redeemer);
             if (success) {
                 try {
                     evaluate(program);
-                } catch (const error &) {
+                } catch (const error &ex) {
+                    if (expected_valid) [[unlikely]]
+                        throw error{fmt::format("phase-2 evaluation failed for redeemer {} although the transaction is marked valid", id), ex};
                     success = false;
                 }
             }
         }
-        if (success != expected_valid)
-            throw error("phase-2 result does not match the transaction validity flag");
+        if (success != expected_valid) [[unlikely]]
+            throw error{"phase-2 scripts succeeded but the transaction is marked invalid"};
     }
 }

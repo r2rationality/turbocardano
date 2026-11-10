@@ -168,23 +168,6 @@ namespace turbo::cardano::conway {
                 ++it;
             groups.emplace_back(begin, it);
         }
-        const auto rank = [](const voter_t::type_t type) {
-            switch (type) {
-                case voter_t::const_comm_script: return 0;
-                case voter_t::const_comm_key: return 1;
-                case voter_t::drep_script: return 2;
-                case voter_t::drep_key: return 3;
-                case voter_t::pool_key: return 4;
-                default: throw error("unsupported voter type");
-            }
-        };
-        std::ranges::sort(groups, [&](const auto &a, const auto &b) {
-            const auto &av = a.first->voter;
-            const auto &bv = b.first->voter;
-            if (av.type != bv.type)
-                return rank(av.type) < rank(bv.type);
-            return av.hash < bv.hash;
-        });
         enc.map_compact(groups.size(), [&] {
             for (auto [it, voter_end]: groups) {
                 const auto &voter = it->voter;

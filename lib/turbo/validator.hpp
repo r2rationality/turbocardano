@@ -14,6 +14,15 @@ namespace turbo::cardano::ledger {
 
 namespace turbo::validator {
     enum class validation_mode { turbo, full, none };
+    struct deferred_validation_error: error {
+        uint64_t validated_offset;
+
+        deferred_validation_error(uint64_t offset, const std::exception &cause)
+            : error{"deferred validation failed", cause}, validated_offset{offset}
+        {
+        }
+    };
+
     static constexpr std::string_view validate_task{"validate"};
     static constexpr std::string_view validate_leaders_task{"validate-epoch"};
     // Protocol parameters now persist the Conway fields, previously omitted.

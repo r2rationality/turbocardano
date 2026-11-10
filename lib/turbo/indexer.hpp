@@ -66,6 +66,7 @@ namespace turbo::indexer {
 
         incremental(chunk_registry &cr, indexer_map &&indexers, const storage::chunk_map &chunks, std::optional<slice_list> slices={});
         ~incremental();
+        void flush();
         chunk_indexer_list_t make_chunk_indexers(uint64_t chunk_offset);
         slice_list slices(std::optional<uint64_t> end_offset={}) const;
         slice_path_list reader_paths(const std::string &name, const slice_list &slcs) const;

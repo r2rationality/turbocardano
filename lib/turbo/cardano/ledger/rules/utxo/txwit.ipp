@@ -42,7 +42,7 @@
                             break;
                     }
                 } catch (const std::exception &ex) {
-                    const auto msg = fmt::format("txwit epoch: {} tx: {}: {}", part.epoch, tx.tx_id, ex.what());
+                    const auto msg = fmt::format("txwit epoch: {} slot: {} tx: {}: {}", part.epoch, tx.slot, tx.tx_id, ex.what());
                     logger::error("{}", msg);
                     _cfg.error_handler(msg);
                     if (tx.era == 7)

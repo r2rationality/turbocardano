@@ -87,7 +87,7 @@ namespace turbo::cardano::mary {
 
     uint32_t block::body_size() const
     {
-        return numeric_cast<uint32_t>(_raw.size());
+        return numeric_cast<uint32_t>(_txs.raw.size() + _txs.wits_raw.size() + _meta.raw.size());
     }
 
     const cardano::block_header_base &block::header() const

@@ -93,7 +93,7 @@ suite cardano_babbage_suite = [] {
         "example scripts"_test = [] {
             const configs_dir cfg { configs_dir::default_path() };
             const cardano::config ccfg { cfg };
-            ccfg.shelley_start_epoch(208);
+            ccfg.set_shelley_start_epoch(208);
             for (const auto &path: file::files_with_ext(install_path("data/babbage"), ".zpp")) {
                 plutus::context ctx { path, ccfg };
                 ctx.prepare();

@@ -31,6 +31,9 @@ namespace turbo::cardano {
         struct tx {
             tx_input_list inputs {};
             tx_output_list outputs {};
+            tx_input_list collateral {};
+            std::optional<tx_output> collateral_return {};
+            bool invalid = false;
         };
         using tx_list = std::vector<tx>;
 
@@ -157,7 +160,7 @@ namespace turbo::cardano {
                 flat_map<crypto::ed25519::vkey, crypto::ed25519::skey> keys {};
                 keys.reserve(tx.inputs.size());
                 cbor::encoder tx_enc {};
-                tx_enc.map(2);
+                tx_enc.map(2 + !tx.collateral.empty() + tx.collateral_return.has_value());
                 tx_enc.uint(0).array(tx.inputs.size());
                 for (const auto &tx_in: tx.inputs) {
                     tx_enc.array(2)
@@ -170,6 +173,18 @@ namespace turbo::cardano {
                     tx_enc.map(2)
                         .uint(0).bytes(tx_out.address)
                         .uint(1).uint(tx_out.coin);
+                }
+                if (!tx.collateral.empty()) {
+                    tx_enc.uint(13).array(tx.collateral.size());
+                    for (const auto &input: tx.collateral) {
+                        tx_enc.array(2).bytes(input.tx_hash).uint(input.txo_idx);
+                        keys.try_emplace(input.vk, input.sk);
+                    }
+                }
+                if (tx.collateral_return) {
+                    tx_enc.uint(16).map(2)
+                        .uint(0).bytes(tx.collateral_return->address)
+                        .uint(1).uint(tx.collateral_return->coin);
                 }
                 const auto tx_hash = crypto::blake2b::digest<cardano::tx_hash>(tx_enc.cbor());
                 wit_enc.map(1);
@@ -192,7 +207,13 @@ namespace turbo::cardano {
         [[nodiscard]] uint8_vector _gen_invalid() const
         {
             cbor::encoder enc {};
-            enc.array(0);
+            size_t count = 0;
+            for (const auto &tx: txs)
+                count += tx.invalid;
+            enc.array(count);
+            for (size_t i = 0; i < txs.size(); ++i)
+                if (txs[i].invalid)
+                    enc.uint(i);
             return enc.cbor();
         }
     };

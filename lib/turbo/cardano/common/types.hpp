@@ -1406,6 +1406,12 @@ namespace turbo::cardano {
         tx_hash hash {};
         tx_out_idx idx {};
 
+        // Preserve aggregate field order without zpp's recursive type inspection on MSVC.
+        static constexpr auto serialize(auto &archive, auto &self)
+        {
+            return archive(self.hash, self.idx);
+        }
+
         static tx_out_ref from_cbor(cbor::zero2::value &);
 
         std::strong_ordering operator<=>(const auto &o) const

@@ -3,6 +3,7 @@
  * Copyright (c) 2024-2026 R2 Rationality OÜ (info at r2rationality dot com)
  * License: https://github.com/r2rationality/turbocardano/blob/main/LICENSE */
 
+#include <turbo/base58.hpp>
 #include <turbo/base64.hpp>
 #include <turbo/cardano/common/config.hpp>
 #include <turbo/cbor/encoder.hpp>
@@ -38,6 +39,14 @@ namespace turbo::cardano {
             tx_out_data txo_data { std::move(txo_addr), std::stoull(json::value_to<std::string>(lovelace)) };
             if (const auto [it, created] = txos.try_emplace(txo_id, std::move(txo_data)); !created) [[unlikely]]
                 throw error{"duplicate TXO {} in the byron genesis config", txo_id};
+        }
+        // Byron UTxO.fromBalances hashes the serialized address, with output index zero.
+        for (const auto &[address, lovelace]: byron_genesis.at("nonAvvmBalances").as_object()) {
+            auto bytes = base58::decode(address);
+            const tx_out_ref id{crypto::blake2b::digest<tx_hash>(bytes), 0};
+            tx_out_data output{std::move(bytes), std::stoull(json::value_to<std::string>(lovelace))};
+            if (!txos.try_emplace(id, std::move(output)).second) [[unlikely]]
+                throw error{"duplicate TXO {} in the byron genesis config", id};
         }
         return txos;
     }
@@ -229,13 +238,13 @@ namespace turbo::cardano {
         block_hash byron_genesis_hash {};
         uint32_t byron_protocol_magic = 0;
         uint64_t byron_start_time = 0;
-        uint64_t byron_epoch_length = 21600;
+        uint64_t byron_epoch_length = 0;
         uint64_t byron_slot_duration = 0;
         txo_map byron_utxos {};
         byron_delegate_map byron_delegates {};
         vkey_set byron_issuers {};
         signer_set byron_delegate_hashes {};
-        uint64_t byron_slots_per_chunk = 21600;
+        uint64_t byron_slots_per_chunk = 0;
         block_hash shelley_genesis_hash {};
         uint64_t shelley_epoch_length = 0;
         uint64_t shelley_update_quorum = 0;
@@ -261,6 +270,7 @@ namespace turbo::cardano {
         protocol_params shelley_protocol_params {};
         protocol_params alonzo_protocol_params {};
         protocol_params conway_protocol_params {};
+        protocol_version initial_protocol_version{0, 0};
         committee_member_map conway_committee_members {};
         rational_u64 conway_committee_threshold {};
         constitution_t conway_constitution {};
@@ -278,6 +288,10 @@ namespace turbo::cardano {
             byron_genesis_hash = config::_verify_hash_byron(
                 node_config.at("ByronGenesisHash").as_string(), byron);
             byron_protocol_magic = json::value_to<uint32_t>(byron.at("protocolConsts").at("protocolMagic"));
+            byron_epoch_length = 10 * json::value_to<uint64_t>(byron.at("protocolConsts").at("k"));
+            if (!byron_epoch_length) [[unlikely]]
+                throw error{"Byron epoch length must be positive"};
+            byron_slots_per_chunk = byron_epoch_length;
             byron_start_time = json::value_to<uint64_t>(byron.at("startTime"));
             byron_slot_duration = std::stoull(
                 json::value_to<std::string>(byron.at("blockVersionData").as_object().at("slotDuration"))) / 1000;
@@ -292,6 +306,28 @@ namespace turbo::cardano {
             const auto &shelley = genesis("ShelleyGenesisFile");
             shelley_genesis_hash = config::_verify_hash(
                 node_config.at("ShelleyGenesisHash").as_string(), shelley);
+            if (json::value_to<uint32_t>(shelley.at("networkMagic")) != byron_protocol_magic) [[unlikely]]
+                throw error{"Byron and Shelley network magic differ"};
+            {
+                static constexpr std::array<std::string_view, 6> forks{"Shelley", "Allegra", "Mary", "Alonzo", "Babbage", "Conway"};
+                bool previous_forced = true;
+                uint64_t initial_era = 1;
+                for (const auto name: forks) {
+                    const auto *epoch = node_config.json().if_contains(fmt::format("Test{}HardForkAtEpoch", name));
+                    if (epoch) {
+                        if (json::value_to<uint64_t>(*epoch) != 0 || !previous_forced) [[unlikely]]
+                            throw error{"only consecutive epoch-zero hard-fork overrides are supported"};
+                        ++initial_era;
+                    }
+                    previous_forced = epoch != nullptr;
+                }
+                if (initial_era > 1) {
+                    const auto &pv = shelley.at("protocolParams").at("protocolVersion");
+                    initial_protocol_version = {json::value_to<uint64_t>(pv.at("major")), json::value_to<uint64_t>(pv.at("minor"))};
+                    if (initial_protocol_version.era() != initial_era) [[unlikely]]
+                        throw error{"Shelley genesis protocol version does not match the epoch-zero hard forks"};
+                }
+            }
             shelley_epoch_length = json::value_to<uint64_t>(shelley.at("epochLength"));
             shelley_update_quorum = json::value_to<uint64_t>(shelley.at("updateQuorum"));
             shelley_max_lovelace_supply = json::value_to<uint64_t>(shelley.at("maxLovelaceSupply"));
@@ -385,6 +421,7 @@ namespace turbo::cardano {
         shelley_protocol_params { _immutable->shelley_protocol_params },
         alonzo_protocol_params { _immutable->alonzo_protocol_params },
         conway_protocol_params { _immutable->conway_protocol_params },
+        initial_protocol_version{_immutable->initial_protocol_version},
         conway_committee_members { _immutable->conway_committee_members },
         conway_committee_threshold { _immutable->conway_committee_threshold },
         conway_constitution { _immutable->conway_constitution },
@@ -395,7 +432,7 @@ namespace turbo::cardano {
     config::config(const configs &cfg):
         config { std::make_shared<immutable>(cfg), std::nullopt }
     {
-        shelley_start_epoch({});
+        reset_shelley_start_epoch();
     }
 
     config::config(const config &o):
@@ -419,13 +456,24 @@ namespace turbo::cardano {
         return *this;
     }
 
-    void config::shelley_start_epoch(std::optional<uint64_t> epoch) const
+    void config::set_shelley_start_epoch(const uint64_t epoch) const
     {
-        static const auto mainnet_hash = uint8_vector::from_hex("15a199f895e461ec0ffc6dd4e4028af28a492ab4e806d39cb674c88f7643ef62");
-        if (!epoch && conway_genesis_hash == mainnet_hash)
-            epoch = 208;
-        if (epoch)
-            _mutable.shelley_start_slot.emplace(*epoch * byron_epoch_length);
+        if (epoch > std::numeric_limits<uint64_t>::max() / byron_epoch_length) [[unlikely]]
+            throw error{"Shelley start epoch {} overflows the slot number", epoch};
+        const auto slot = epoch * byron_epoch_length;
+        if (byron_slot_duration && slot > (std::numeric_limits<uint64_t>::max() - byron_start_time) / byron_slot_duration) [[unlikely]]
+            throw error{"Shelley start epoch {} overflows the timestamp", epoch};
+        _mutable.shelley_start_slot = slot;
+    }
+
+    void config::reset_shelley_start_epoch() const
+    {
+        static constexpr auto mainnet_byron_hash = block_hash::from_hex("5f20df933584822601f9e3f8c024eb5eb252fe8cefb24d1317dc3d432e940ebb");
+        static constexpr auto mainnet_shelley_hash = block_hash::from_hex("1a3be38bcbb7911969283716ad7aa550250226b76a61fc51cc9a9a35d9276d81");
+        if (initial_protocol_version.major >= 2)
+            set_shelley_start_epoch(0);
+        else if (byron_genesis_hash == mainnet_byron_hash && shelley_genesis_hash == mainnet_shelley_hash)
+            set_shelley_start_epoch(208);
         else
             _mutable.shelley_start_slot.reset();
     }

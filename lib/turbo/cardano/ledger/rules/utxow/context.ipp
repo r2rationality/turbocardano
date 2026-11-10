@@ -60,7 +60,7 @@
                 for (auto &[id, data]: tx.collateral_inputs) {
                     resolve_input(id, data);
                     if (tx.era == 7)
-                        tx.conway.credentials.observe_payment(data.addr());
+                        tx.conway.credentials.observe_collateral(data.addr());
                     else
                         tx.required_signers.emplace(redeemer_tag::spend, data.addr());
                     if (tx.era == 7 && !tx.conway.redeemers.empty())

@@ -10,11 +10,14 @@ namespace turbo::cardano::ledger::rules {
         const auto head_size = [](uint64_t n) -> size_t {
             return n < 24 ? 1 : n <= UINT8_MAX ? 2 : n <= UINT16_MAX ? 3 : n <= UINT32_MAX ? 5 : 9;
         };
+        // Ledger encodeMap uses a one-byte header below 24 entries, otherwise
+        // an indefinite-map header and break, regardless of the entry count.
+        const auto map_overhead = [](size_t n) -> size_t { return n < 24 ? 1 : 2; };
         size_t size = head_size(out.coin);
         if (!out.assets.empty()) {
-            size += 1 + head_size(out.assets.size());
+            size += 1 + map_overhead(out.assets.size());
             for (const auto &[policy, assets]: out.assets) {
-                size += head_size(policy.size()) + policy.size() + head_size(assets.size());
+                size += head_size(policy.size()) + policy.size() + map_overhead(assets.size());
                 for (const auto &[name, quantity]: assets)
                     size += head_size(name.size()) + name.size() + head_size(quantity);
             }
@@ -46,7 +49,7 @@ namespace turbo::cardano::ledger::rules {
         void validate(const protocol_params &params) const
         {
             if (max_value_size > params.max_value_size)
-                throw error("output value exceeds maxValSize");
+                throw error("output value size {} exceeds maxValSize {}", max_value_size, params.max_value_size);
             if (params.lovelace_per_utxo_byte > max_coins_per_utxo_byte)
                 throw error("output is below minimum coin");
         }

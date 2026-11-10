@@ -14,6 +14,10 @@ namespace turbo::cardano::dijkstra {
                     throw error("Dijkstra mint amounts must be nonzero");
                 case mary::detail::invalid_mint::empty_policy:
                     throw error("Dijkstra mint policy maps must be nonempty");
+                case mary::detail::invalid_mint::duplicate_asset_name:
+                    throw error{"duplicate mint asset name"};
+                case mary::detail::invalid_mint::duplicate_policy:
+                    throw error{"duplicate mint policy"};
             }
             std::unreachable();
         }

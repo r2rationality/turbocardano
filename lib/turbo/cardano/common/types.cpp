@@ -189,7 +189,7 @@ namespace turbo::cardano {
     {
         const uint64_t secs = std::chrono::duration_cast<std::chrono::seconds>(tp.time_since_epoch()).count();
         if (secs >= cfg.byron_start_time) [[likely]] {
-            if (secs >= cfg.shelley_start_time()) [[likely]]
+            if (cfg.shelley_start_known() && secs >= cfg.shelley_start_time()) [[likely]]
                 return { secs - cfg.shelley_start_time() + cfg.shelley_start_slot(), cfg };
             return { (secs - cfg.byron_start_time) / cfg.byron_slot_duration, cfg };
         }
@@ -198,7 +198,7 @@ namespace turbo::cardano {
 
     slot slot::from_epoch(const uint64_t epoch, const uint64_t epoch_slot, const cardano::config &cfg)
     {
-        if (epoch >= cfg.shelley_start_epoch()) [[likely]]
+        if (cfg.shelley_start_known() && epoch >= cfg.shelley_start_epoch()) [[likely]]
             return { (epoch - cfg.shelley_start_epoch()) * cfg.shelley_epoch_length + cfg.shelley_start_slot() + epoch_slot, cfg };
         return { epoch * cfg.byron_epoch_length + epoch_slot, cfg };
     }
@@ -220,14 +220,14 @@ namespace turbo::cardano {
 
     uint64_t slot::epoch() const
     {
-        if (_slot > _cfg.shelley_start_slot())
+        if (_cfg.shelley_start_known() && _slot >= _cfg.shelley_start_slot())
             return _cfg.shelley_start_epoch() + (_slot - _cfg.shelley_start_slot()) / _cfg.shelley_epoch_length;
         return _slot / _cfg.byron_epoch_length;
     }
 
     uint64_t slot::epoch_slot() const
     {
-        if (_slot > _cfg.shelley_start_slot())
+        if (_cfg.shelley_start_known() && _slot >= _cfg.shelley_start_slot())
             return (_slot - _cfg.shelley_start_slot()) % _cfg.shelley_epoch_length;
         return _slot % _cfg.byron_epoch_length;
     }
@@ -244,9 +244,9 @@ namespace turbo::cardano {
 
     uint64_t slot::unixtime() const
     {
-        if (_slot >= _cfg.shelley_start_slot())
+        if (_cfg.shelley_start_known() && _slot >= _cfg.shelley_start_slot())
             return _cfg.shelley_start_time() + (_slot - _cfg.shelley_start_slot());
-        return _cfg.shelley_start_time() - (_cfg.shelley_start_slot() - _slot) * 20;
+        return _cfg.byron_start_time + _slot * _cfg.byron_slot_duration;
     }
 
     std::string slot::timestamp() const

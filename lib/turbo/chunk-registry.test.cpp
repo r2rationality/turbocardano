@@ -96,6 +96,44 @@ suite chunk_registry_suite = [] {
     };
 
     "chunk_registry"_test = [] {
+        "legacy network identity is checked before adoption"_test = [] {
+            const auto chain = sync::gen_chain({.height=2});
+            const file::tmp_directory dir{"registry-legacy-network"};
+            storage::chunk_fixture_t fixture{dir.path(), chain.cardano_cfg};
+            fixture.add(0, chain.data);
+            fixture.save();
+            const configs_dir files{configs_dir::network_path("preprod")};
+            const cardano::config preprod{files};
+            expect(throws([&] {
+                chunk_registry wrong{dir.path(), chunk_registry_settings_t{.ccfg=preprod}};
+            }));
+            expect(!std::filesystem::exists(dir.path() + "/network.json"));
+            {
+                chunk_registry adopted{dir.path(), chunk_registry_settings_t{.ccfg=chain.cardano_cfg}};
+                expect_equal(adopted.num_blocks(), 2);
+            }
+            expect(std::filesystem::exists(dir.path() + "/network.json"));
+        };
+        "network identity is checked before recovery"_test = [] {
+            const file::tmp_directory dir{"registry-network"};
+            const configs_dir preview_files{configs_dir::network_path("preview")};
+            const configs_dir preprod_files{configs_dir::network_path("preprod")};
+            const cardano::config preview{preview_files}, preprod{preprod_files};
+            {
+                chunk_registry cr{dir.path(), chunk_registry_settings_t{.ccfg=preview}};
+                cr.save_state();
+            }
+            const auto identity = file::read(dir.path() + "/network.json");
+            for (const auto mode: {chunk_registry::mode::store, chunk_registry::mode::validate}) {
+                expect(throws([&] {
+                    chunk_registry wrong{dir.path(), chunk_registry_settings_t{.mode=mode, .ccfg=preprod}};
+                }));
+                expect_equal(file::read(dir.path() + "/network.json"), identity);
+            }
+            expect(nothrow([&] {
+                chunk_registry reopened{dir.path(), chunk_registry_settings_t{.ccfg=preview}};
+            }));
+        };
         static std::string data_dir = storage::sample_registry_path();
         static std::string tmp_data_dir = install_path("./tmp/chunk-registry");
 

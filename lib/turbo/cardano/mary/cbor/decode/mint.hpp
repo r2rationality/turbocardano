@@ -9,7 +9,9 @@
 namespace turbo::cardano::mary::detail {
     enum class invalid_mint {
         zero_amount,
-        empty_policy
+        empty_policy,
+        duplicate_asset_name,
+        duplicate_policy
     };
 
     using invalid_mint_observer = void (*)(invalid_mint);

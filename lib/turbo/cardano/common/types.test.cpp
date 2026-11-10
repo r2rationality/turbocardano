@@ -15,6 +15,17 @@ namespace {
 
 suite cardano_type_test = [] {
     "cardano::type"_test = [] {
+        "TXO references retain their serialized field layout"_test = [] {
+            const tx_out_ref ref {
+                tx_hash::from_hex("000102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F"), 0x1234
+            };
+            // Legacy aggregate serialization encodes each field in declaration order.
+            // Use the hash's existing encoding, including its container framing.
+            auto expected = turbo::zpp::serialize(ref.hash);
+            expected << turbo::zpp::serialize(uint16_t { 0x1234 });
+            expect(turbo::zpp::serialize(ref) == expected);
+            expect(turbo::zpp::deserialize<tx_out_ref>(expected) == ref);
+        };
         "Conway protocol parameters survive snapshots and affect equality"_test = [] {
             const protocol_params defaults {};
             const auto check = [&](const auto member, const auto &value) {

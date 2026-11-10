@@ -236,6 +236,8 @@ namespace turbo::cardano::network {
             std::visit([&](const auto &mv) {
                 using T = std::decay_t<decltype(mv)>;
                 if constexpr (std::is_same_v<T, miniprotocol::handshake::msg_accept_version_t>) {
+                    if (mv.config.network_magic != _protocol_magic) [[unlikely]]
+                        throw error{"peer at {}:{} accepted a different network magic", _addr.host, _addr.port};
                     if ((mv.version != 14 && mv.version != 999)
                             || mv.version < _version_cfg.min || mv.version > _version_cfg.max) [[unlikely]]
                         throw error{"peer at {}:{} ignored the requested protocol version range and returned {}!", _addr.host, _addr.port, mv.version};

@@ -102,7 +102,8 @@ suite validator_suite = [] {
                     cardano::ledger::state expected { chain.cardano_cfg, scheduler::get(), cardano::ledger::state::init_mode::empty };
                     baseline.validator().load_snapshot(expected, *baseline.validator().snapshots().rbegin());
                     expect(cr.validator().state() == expected);
-                    expect_equal(cr.validator().snapshots().rbegin()->end_offset, start_offset);
+                    expect_equal(cr.validator().snapshots().rbegin()->end_offset, cr.num_bytes());
+                    expect(cr.validator().snapshots().at_offset(start_offset) != nullptr);
                 } else {
                     expect(cr.validator().state() == baseline.validator().state());
                 }
@@ -134,6 +135,121 @@ suite validator_suite = [] {
             expect(cr.empty());
             cr.accept_anything_or_throw({}, *chain.tip, [&] { cr.add_buffer(0, uint8_vector { chain.data }); });
             expect_equal(cr.valid_end_offset(), chain.data.size());
+        };
+        "turbo transport failures checkpoint each committed prefix"_test = [] {
+            const auto chain = gen_chain({ .height=2 });
+            const file::tmp_directory dir { "validator-transport-checkpoints" };
+            const chunk_registry_settings_t settings { .validate_vrf=false, .ccfg=chain.cardano_cfg };
+            progress_point target { *chain.tip };
+            // Stay outside the security window so normal cadence cannot create a snapshot.
+            target.height = chain.tip->height + chain.cardano_cfg.shelley_security_param + 1;
+            size_t offset = 0;
+            {
+                chunk_registry cr { dir.path(), settings };
+                cr.validation(validator::validation_mode::turbo);
+                for (const auto &block: chain.blocks) {
+                    const auto start_offset = offset;
+                    const auto bytes = block->blk.raw();
+                    const auto failure = cr.accept_progress(cr.tip(), target, [&] {
+                        cr.add_buffer(start_offset, uint8_vector { bytes });
+                        throw error { "injected transport failure" };
+                    });
+                    expect(fatal(static_cast<bool>(failure)));
+                    try {
+                        std::rethrow_exception(failure);
+                    } catch (const std::exception &ex) {
+                        expect_equal(std::string { ex.what() }, std::string { "injected transport failure" });
+                    }
+                    offset += bytes.size();
+                    expect_equal(cr.valid_end_offset(), offset);
+                    expect(fatal(!cr.validator().snapshots().empty()));
+                    expect_equal(cr.validator().snapshots().rbegin()->end_offset, offset);
+                    if (start_offset)
+                        expect(cr.validator().snapshots().at_offset(start_offset) != nullptr);
+                }
+            }
+            chunk_registry reloaded { dir.path(), settings };
+            expect_equal(reloaded.tip(), chain.tip);
+            expect_equal(reloaded.validator().state().end_offset(), offset);
+            expect(fatal(!reloaded.validator().snapshots().empty()));
+            expect_equal(reloaded.validator().snapshots().rbegin()->end_offset, offset);
+        };
+        "deferred failure commits a local prefix or restores the original state"_test = [] {
+            const auto chain = gen_chain({ .height=1 });
+            auto start = *chain.tip;
+            start.end_offset = chain.data.size();
+            const auto seed = crypto::blake2b::digest<crypto::ed25519::seed>(std::string_view{"1"});
+            const auto sk = crypto::ed25519::create_sk_from_seed(seed);
+            uint8_vector address{0x61};
+            address << crypto::blake2b::digest<key_hash>(crypto::ed25519::extract_vk(sk));
+            for (const auto [fail_first, fail_recovery]: { std::pair{true, false}, {false, false}, {false, true} }) {
+                const file::tmp_directory dir{"validator-prefix-recovery"};
+                file_remover remover;
+                const chunk_registry_settings_t settings{ .validate_vrf=false, .ccfg=chain.cardano_cfg, .fr=remover };
+                std::vector<uint8_vector> blocks;
+                auto target = start;
+                auto prefix = target;
+                block_producer block{sk, seed, vrf03_create_sk_from_seed(seed)};
+                block.vrf_nonce = chain.cardano_cfg.shelley_genesis_hash;
+                for (uint64_t height = 1; height <= (fail_first ? 1U : 2U); ++height) {
+                    block.height = height;
+                    block.slot = height * chain.cardano_cfg.shelley_epoch_length;
+                    block.prev_hash = target.hash;
+                    if (fail_first || height == 2)
+                        block.txs.push_back({ {}, {{address, 1}} });
+                    blocks.emplace_back(block.cbor());
+                    const parsed_block parsed{blocks.back(), chain.cardano_cfg};
+                    prefix = target;
+                    target = point{parsed.blk->hash(), block.slot, height, target.end_offset + blocks.back().size()};
+                }
+                const auto expected = fail_recovery ? start : prefix;
+                {
+                    chunk_registry cr{dir.path(), settings};
+                    cr.accept_anything_or_throw({}, *chain.tip, [&] { cr.add_buffer(0, uint8_vector{chain.data}); });
+                    cr.save_state();
+                    cr.validation(validator::validation_mode::turbo);
+                    bool recovery_attempted = false;
+                    chunk_processor observer{
+                        .truncate=[&](const auto &tip, bool track) {
+                            if (!track && tip == prefix)
+                                recovery_attempted = true;
+                        },
+                        .stage_tx=[&] {
+                            if (fail_recovery)
+                                throw error{"injected prefix recovery failure"};
+                        }
+                    };
+                    cr.register_processor(observer);
+                    const auto failure = cr.accept_progress(cr.tip(), target, [&] {
+                        auto offset = cr.num_bytes();
+                        for (const auto &bytes: blocks) {
+                            cr.add_buffer(offset, uint8_vector{bytes});
+                            offset += bytes.size();
+                        }
+                        throw error{"transport failure before deferred validation"};
+                    });
+                    cr.remove_processor(observer);
+                    expect(throws<validator::deferred_validation_error>([&] {
+                        if (failure)
+                            std::rethrow_exception(failure);
+                    }));
+                    expect_equal(recovery_attempted, !fail_first);
+                    expect_equal(cr.tip(), optional_point{expected});
+                    expect_equal(cr.valid_end_offset(), expected.end_offset);
+                    expect(cr.validator().state().utxos().empty());
+                    expect(!cr.tx());
+                }
+                const auto snapshot_path = std::filesystem::path{dir.path()} / "validate"
+                    / fmt::format("ledger-{:013}.bin", expected.end_offset);
+                const auto saved_time = std::filesystem::file_time_type::clock::now() - std::chrono::hours{24};
+                std::filesystem::last_write_time(snapshot_path, saved_time);
+                const auto snapshot_time = std::filesystem::last_write_time(snapshot_path);
+                chunk_registry reloaded{dir.path(), settings};
+                expect_equal(reloaded.tip(), optional_point{expected});
+                expect_equal(reloaded.validator().state().end_offset(), expected.end_offset);
+                expect(reloaded.validator().state().utxos().empty());
+                expect(std::filesystem::last_write_time(snapshot_path) == snapshot_time);
+            }
         };
         "maintenance reconstructs a missing ledger with the full-validation result"_test = [] {
             const auto chain = gen_chain({ .height=3 });

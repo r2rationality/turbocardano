@@ -129,7 +129,7 @@ namespace turbo::cardano::alonzo {
 
     uint32_t block::body_size() const
     {
-        return numeric_cast<uint32_t>(_raw.size());
+        return numeric_cast<uint32_t>(_txs.raw.size() + _txs.wits_raw.size() + _meta.raw.size() + _invalid_txs.raw.size());
     }
 
     const cardano::block_header_base &block::header() const

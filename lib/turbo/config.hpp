@@ -122,6 +122,7 @@ namespace turbo {
     };
 
     struct configs_dir: configs {
+        static std::string network_path(std::string_view network);
         static void set_default_path(const std::optional<std::string> &);
         static std::string default_path();
         static const configs &get();

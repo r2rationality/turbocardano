@@ -222,8 +222,15 @@
     {
         auto orig_params_prev = std::move(_params_prev);
         _params_prev = _params;
-        if (const auto update = _prep_param_update(); update)
+        if (const auto update = _prep_param_update(); update) {
+            // Byron proposal votes can reach quorum before the Shelley fork is
+            // activated. Retain them until the Shelley boundary discovered by
+            // chunk ingestion is known and reached, including across snapshots.
+            if (_params.protocol_ver.major < 2 && update->protocol_ver && update->protocol_ver->major >= 2
+                    && (!_cfg.shelley_start_known() || _epoch < _cfg.shelley_start_epoch()))
+                return orig_params_prev;
             _apply_param_update(*update);
+        }
         _ppups = std::move(_ppups_future);
         _ppups_future.clear();
         return orig_params_prev;

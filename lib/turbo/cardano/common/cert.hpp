@@ -453,7 +453,17 @@ namespace turbo::cardano {
 
         std::strong_ordering operator<=>(const voter_t &o) const noexcept
         {
-            const int cmp = static_cast<int>(type) - static_cast<int>(o.type);
+            // Ledger Voter/Credential constructor order differs from the CBOR tags.
+            const auto rank = [](const type_t t) {
+                switch (t) {
+                    case const_comm_script: return 0;
+                    case const_comm_key: return 1;
+                    case drep_script: return 2;
+                    case drep_key: return 3;
+                    default: return static_cast<int>(t); // pool_key is last
+                }
+            };
+            const int cmp = rank(type) - rank(o.type);
             if (cmp < 0)
                 return std::strong_ordering::less;
             if (cmp > 0)

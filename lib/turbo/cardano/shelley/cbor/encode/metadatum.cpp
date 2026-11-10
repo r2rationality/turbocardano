@@ -4,33 +4,51 @@
  * License: https://github.com/r2rationality/turbocardano/blob/main/LICENSE */
 
 #include <turbo/cardano/shelley/metadata.hpp>
+#include <boost/container/small_vector.hpp>
 
 namespace turbo::cardano::shelley {
     void metadatum_t::to_cbor(era_encoder &enc) const
     {
-        std::visit([&](const auto &item) {
-            using T = std::decay_t<decltype(item)>;
-            if constexpr (std::is_same_v<T, nint64_t>) {
-                enc.nint(item.raw);
-            } else if constexpr (std::is_same_v<T, uint64_t>) {
-                enc.uint(item);
-            } else if constexpr (std::is_same_v<T, uint8_vector>) {
-                enc.bytes(item);
-            } else if constexpr (std::is_same_v<T, std::string>) {
-                enc.text(item);
-            } else if constexpr (std::is_same_v<T, array_t>) {
-                enc.array_compact(item.size(), [&] {
-                    for (const auto &value: item)
-                        value.to_cbor(enc);
-                });
-            } else if constexpr (std::is_same_v<T, map_t>) {
-                enc.map_compact(item.size(), [&] {
-                    for (const auto &[key, value]: item) {
-                        key.to_cbor(enc);
-                        value.to_cbor(enc);
-                    }
-                });
+        boost::container::small_vector<const metadatum_t *, 16> pending{this};
+        while (!pending.empty()) {
+            const auto *current = pending.back();
+            pending.pop_back();
+            if (!current) {
+                enc.s_break();
+                continue;
             }
-        }, value);
+            std::visit([&](const auto &item) {
+                using T = std::decay_t<decltype(item)>;
+                if constexpr (std::is_same_v<T, nint64_t>) {
+                    enc.nint(item.raw);
+                } else if constexpr (std::is_same_v<T, uint64_t>) {
+                    enc.uint(item);
+                } else if constexpr (std::is_same_v<T, uint8_vector>) {
+                    enc.bytes(item);
+                } else if constexpr (std::is_same_v<T, std::string>) {
+                    enc.text(item);
+                } else if constexpr (std::is_same_v<T, array_t>) {
+                    if (item.size() >= 24) {
+                        enc.array();
+                        pending.push_back(nullptr);
+                    } else {
+                        enc.array(item.size());
+                    }
+                    for (auto it = item.rbegin(); it != item.rend(); ++it)
+                        pending.push_back(&*it);
+                } else if constexpr (std::is_same_v<T, map_t>) {
+                    if (item.size() >= 24) {
+                        enc.map();
+                        pending.push_back(nullptr);
+                    } else {
+                        enc.map(item.size());
+                    }
+                    for (auto it = item.rbegin(); it != item.rend(); ++it) {
+                        pending.push_back(&it->second);
+                        pending.push_back(&it->first);
+                    }
+                }
+            }, current->value);
+        }
     }
 }

@@ -42,6 +42,7 @@ namespace turbo::cardano::shelley {
         }
 
         metadatum_t() = delete;
+        ~metadatum_t();
         metadatum_t(metadatum_t &&) = default;
         metadatum_t(const metadatum_t &) = default;
         metadatum_t(value_type &&v): value(std::move(v))

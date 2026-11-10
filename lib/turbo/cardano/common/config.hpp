@@ -64,6 +64,8 @@ namespace turbo::cardano {
         const protocol_params &shelley_protocol_params;
         const protocol_params &alonzo_protocol_params;
         const protocol_params &conway_protocol_params;
+        // Protocol version after configured epoch-zero hard forks.
+        const protocol_version &initial_protocol_version;
         const committee_member_map &conway_committee_members;
         const rational_u64 &conway_committee_threshold;
         const constitution_t &conway_constitution;
@@ -75,18 +77,20 @@ namespace turbo::cardano {
         config &operator=(const config &) =delete;
         config &operator=(config &&) noexcept;
 
-        bool shelley_started() const
+        bool shelley_start_known() const
         {
             return static_cast<bool>(_mutable.shelley_start_slot);
         }
 
-        void shelley_start_epoch(std::optional<uint64_t> epoch) const;
+        // Explicitly overrides the network default until the next reset.
+        void set_shelley_start_epoch(uint64_t epoch) const;
+        void reset_shelley_start_epoch() const;
 
         uint64_t shelley_start_slot() const
         {
-            if (_mutable.shelley_start_slot) [[likely]]
-                return *_mutable.shelley_start_slot;
-            return std::numeric_limits<uint64_t>::max();
+            if (!_mutable.shelley_start_slot) [[unlikely]]
+                throw error{"Shelley start is unknown"};
+            return *_mutable.shelley_start_slot;
         }
 
         uint64_t shelley_start_epoch() const

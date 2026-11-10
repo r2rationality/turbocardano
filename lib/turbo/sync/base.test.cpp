@@ -105,6 +105,27 @@ suite turbo_sync_base_suite = [] {
                 expect_equal(cr.validator().snapshots().rbegin()->end_offset, cr.num_bytes());
             }
         };
+        "deferred validation failures stop retries without losing committed progress"_test = [] {
+            const file::tmp_directory dir{"sync-deferred-failure"};
+            const auto chain = gen_chain({ .height=3 });
+            file_remover remover;
+            chunk_registry cr{dir.path(), chunk_registry_settings_t{ .validate_vrf=false, .ccfg=chain.cardano_cfg, .fr=remover }};
+            const auto first = chain.blocks.front()->blk.raw();
+            const auto obsolete = dir.path() + "/obsolete";
+            file::write(obsolete, std::string_view{"obsolete"});
+            size_t retries = 0;
+            partial_progress_syncer syncer{cr, uint8_vector{first}, {}, obsolete, [&] {
+                ++retries;
+                throw validator::deferred_validation_error{cr.num_bytes(), error{"invalid witness"}};
+            }};
+            auto peer = std::make_shared<test_peer_info>(*chain.tip);
+            expect(throws<validator::deferred_validation_error>([&] {
+                syncer.sync(peer, {}, validation_mode_t::none);
+            }));
+            expect_equal(retries, 1);
+            expect_equal(cr.valid_end_offset(), first.size());
+            expect(!cr.tx());
+        };
         "cleanup after recoverable progress"_test = [] {
             static const std::string data_dir { "./tmp/test-sync-base-cleanup" };
             std::filesystem::remove_all(data_dir);

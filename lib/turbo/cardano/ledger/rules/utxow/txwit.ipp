@@ -44,7 +44,8 @@
                 if (tx.era == 7) {
                     const auto &needed = tx.conway.credentials;
                     if (!exact_script_witnesses(needed.scripts, tx.reference_scripts, tx.script_witnesses)) [[unlikely]]
-                        throw error("script witness domain differs from needed minus reference scripts");
+                        throw error{"script witness domain differs from needed minus reference scripts: slot: {} needed: {} references: {} supplied: {}",
+                            tx.slot, needed.scripts, tx.reference_scripts, tx.script_witnesses};
                     for (const auto &hash: needed.keys)
                         if (!has_key_witness(tx.signers, hash)) [[unlikely]]
                             throw error{"missing required key witness: {}", hash};
@@ -53,8 +54,6 @@
                             if (!native_available(hash)) [[unlikely]]
                                 throw error{"missing required native script: {}", hash};
                         } else if (tx.conway.redeemers.empty()) {
-                            // A collateral credential has no rdptr. With redeemers,
-                            // collateral validation already requires key addresses.
                             throw error("required Plutus script has no invocation");
                         }
                     }
@@ -66,7 +65,8 @@
                         if (const auto *script = std::get_if<script_signer_t>(&signer.val))
                             needed.emplace(script->hash);
                     if (!exact_script_witnesses(needed, tx.reference_scripts, tx.script_witnesses)) [[unlikely]]
-                        throw error("script witness domain differs from needed minus reference scripts");
+                        throw error{"script witness domain differs from needed minus reference scripts: slot: {} needed: {} references: {} supplied: {}",
+                            tx.slot, needed, tx.reference_scripts, tx.script_witnesses};
                 }
                 const auto *missing = missing_required_witness(tx.required_signers, tx.signers, native_available);
                 if (missing) [[unlikely]]

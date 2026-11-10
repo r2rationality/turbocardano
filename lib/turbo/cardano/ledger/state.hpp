@@ -19,8 +19,7 @@ namespace turbo::cardano::ledger {
     struct state {
         using init_mode = shelley::state_init_mode;
 
-        explicit state(const cardano::config &cfg=cardano::config::get(), scheduler &sched=scheduler::get(),
-            init_mode mode=init_mode::genesis);
+        explicit state(const cardano::config &cfg=cardano::config::get(), scheduler &sched=scheduler::get(), init_mode mode=init_mode::genesis);
 
         bool operator==(const state &o) const;
         void clear(init_mode mode=init_mode::genesis);

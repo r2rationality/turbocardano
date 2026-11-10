@@ -195,8 +195,9 @@ namespace turbo::sync::p2p {
                         while (headers.size() < 256 && !stop.stop_requested()) {
                             auto wait_started = std::chrono::steady_clock::now();
                             const auto check_progress = [&] {
-                                if (peer_wait + (std::chrono::steady_clock::now() - wait_started) >= std::chrono::seconds { 30 })
-                                    throw error("peer supplied no advancing chain after 30 seconds waiting for headers");
+                                // Pinned peers may be idle; ChainSync/KeepAlive detect lost connections.
+                                if (!addr && peer_wait + (std::chrono::steady_clock::now() - wait_started) >= std::chrono::seconds{30}) [[unlikely]]
+                                    throw error{"peer supplied no advancing chain after 30 seconds waiting for headers"};
                             };
                             const auto update = peer.client().next_header_sync(stop, [&] {
                                 const auto save_started = std::chrono::steady_clock::now();
@@ -279,6 +280,8 @@ namespace turbo::sync::p2p {
                                 throw error("upstream changed branch during catch-up");
                         }
                     }
+                } catch (const validator::deferred_validation_error &) {
+                    throw;
                 } catch (const std::exception &ex) {
                     if (stop.stop_requested()) {
                         break;
@@ -391,7 +394,23 @@ namespace turbo::sync::p2p {
                                 return false;
                             } else if constexpr (std::is_same_v<T, client::msg_block_t>) {
                                 if (stop.stop_requested() || _parent.local_chain().commit_requested()) return false;
-                                auto blk = std::make_unique<parsed_block>(rv.bytes);
+                                std::unique_ptr<parsed_block> blk;
+                                try {
+                                    blk = std::make_unique<parsed_block>(rv.bytes, _parent.local_chain().config());
+                                } catch (const std::exception &ex) {
+                                    logger::error("a block failed to parse: {}", ex.what());
+                                    logger::run_log_errors([&] {
+                                        const auto path = _parent.local_chain().full_path("last-failed-block.cbor");
+                                        file::write(path, rv.bytes);
+                                        logger::error("saved the block that failed to parse to {}: ", path);
+                                    });
+                                    logger::run_log_errors([&] {
+                                        auto parsed = cbor::zero2::parse(rv.bytes);
+                                        const header_container hdr{parsed.get(), _parent.local_chain().config()};
+                                        logger::error("failed block slot: {} hash: {}", hdr->slot(), hdr->hash());
+                                    });
+                                    throw;
+                                }
                                 if (_invalid_first_offset.load(std::memory_order_relaxed) != no_recorded_value)
                                     return false;
                                 if (max_slot && blk->blk->slot() > *max_slot) {

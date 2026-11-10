@@ -18,13 +18,23 @@ int main(const int argc, const char **argv)
 #endif
     using namespace turbo;
     consider_bin_dir(argv[0]);
-    cli::global_options_t gopts {
-        {{"config-dir",  {"the directory with configuration files"}}},
+    cli::global_options_t gopts{
+        {{"config-dir", {"the directory with configuration files"}},
+         {"network", {"network configuration directory under etc"}}},
         [&](const cli::options &opts) {
-            if (const auto it = opts.find("config-dir"); it != opts.end() && it->second) {
+            if (const auto it = opts.find("network"); it != opts.end()) {
+                if (opts.contains("config-dir")) [[unlikely]]
+                    throw error{"--network and --config-dir are mutually exclusive"};
+                if (!it->second || it->second->empty()) [[unlikely]]
+                    throw error{"--network requires a value"};
+                configs_dir::set_default_path(configs_dir::network_path(*it->second));
+            }
+            if (const auto it = opts.find("config-dir"); it != opts.end()) {
+                if (!it->second || it->second->empty()) [[unlikely]]
+                    throw error{"--config-dir requires a value"};
                 configs_dir::set_default_path(*it->second);
             }
         }
     };
-    return cli::run(argc, argv);
+    return cli::run(argc, argv, gopts);
 }

@@ -87,6 +87,74 @@ namespace {
 suite cardano_ledger_state_suite = [] {
     using boost::ext::ut::v2_1_0::nothrow;
     "cardano::ledger::state"_test = [] {
+        "Preview starts in Alonzo and survives reset and reload"_test = [] {
+            const configs_dir files{configs_dir::network_path("preview")};
+            const cardano::config cfg{files};
+            auto &sched = scheduler::get();
+            state st{cfg, sched};
+            const auto check = [&](const state &value) {
+                expect_equal(value.params().protocol_ver.major, 6);
+                expect_equal(value.eras().size(), 5);
+                expect_equal(value.utxos().size(), 1);
+                expect_equal(value.utxo_balance(), 30'000'000'000'000'000ULL);
+                expect_equal(value.reserves(), 15'000'000'000'000'000ULL);
+                expect_equal(value.params().max_collateral_inputs, cfg.alonzo_protocol_params.max_collateral_inputs);
+                expect_equal(value.params().plutus_cost_models.at(0), cfg.alonzo_protocol_params.plutus_cost_models.at(0));
+            };
+            check(st);
+            st.start_epoch(0);
+            check(st);
+            const file::tmp_directory dir{"preview-genesis-state"};
+            const auto path = dir.path() + "/state.bin";
+            st.save_zpp(path);
+            state loaded{cfg, sched};
+            loaded.load_zpp(path);
+            check(loaded);
+            st.clear();
+            check(st);
+        };
+        "Preprod retains the Shelley proposal while blocks are still Byron"_test = [] {
+            const configs_dir files { configs_dir::network_path("preprod") };
+            const cardano::config cfg { files };
+            state original { cfg };
+            original.start_epoch(0);
+            update_params(original, 1, { .protocol_ver=cardano::protocol_version { 1, 0 } }, cfg);
+            original.start_epoch(1);
+            expect_equal(original.params().protocol_ver.major, 1);
+            update_params(original, cfg.byron_epoch_length + 1,
+                { .protocol_ver=cardano::protocol_version { 2, 0 } }, cfg);
+
+            // Defer while the boundary is unknown, then while it is still ahead.
+            expect(!cfg.shelley_start_known());
+            original.start_epoch(2);
+            expect_equal(original.params().protocol_ver.major, 1);
+            cfg.set_shelley_start_epoch(4);
+            original.start_epoch(3);
+            expect_equal(original.params().protocol_ver.major, 1);
+            expect_equal(original.eras().size(), 1);
+            expect_equal(original.reserves(), 0);
+            original.process_block_updates({ { .slot=3 * cfg.byron_epoch_length + 2, .era=1 } });
+
+            const file::tmp snapshot { "preprod-deferred-shelley" };
+            original.save_zpp(snapshot.path());
+            state reloaded { cfg, scheduler::get(), state::init_mode::empty };
+            reloaded.load_zpp(snapshot.path());
+            expect(original == reloaded);
+
+            const auto shelley_slot = cfg.shelley_start_slot();
+            reloaded.start_epoch(4);
+            expect_equal(reloaded.params().protocol_ver.major, 2);
+            expect_equal(reloaded.eras().size(), 2);
+            expect_equal(reloaded.eras().back(), shelley_slot);
+            expect_equal(reloaded.reserves(), cfg.shelley_max_lovelace_supply - reloaded.utxo_balance());
+            reloaded.process_block_updates({ { .slot=shelley_slot, .era=2 } });
+
+            update_params(reloaded, shelley_slot + 1,
+                { .protocol_ver=cardano::protocol_version { 3, 0 } }, cfg);
+            reloaded.start_epoch(5);
+            expect_equal(reloaded.params().protocol_ver.major, 3);
+            expect_equal(reloaded.eras().size(), 3);
+        };
         "empty"_test = [] {
             state st {};
             expect(st.epoch() == 0_ull);
@@ -105,6 +173,7 @@ suite cardano_ledger_state_suite = [] {
         };
         "finish_epoch"_test = [] {
             cardano::config cfg {};
+            cfg.set_shelley_start_epoch(0);
             state st { cfg };
             expect_equal(st.params().protocol_ver.major, 0);
             update_params(st, 1, { .protocol_ver=cardano::protocol_version { 2, 0 } }, cfg);
@@ -112,7 +181,6 @@ suite cardano_ledger_state_suite = [] {
             expect_equal(st.reserves(), 0);
             st.start_epoch();
             st.process_block(20000, 2, 0, 0);
-            cfg.shelley_start_epoch(0);
             expect_equal(st.treasury(), 0);
             expect_equal(st.reserves(), 13887515255000000ULL);
             expect_equal(st.params().protocol_ver.major, 2);
@@ -125,18 +193,20 @@ suite cardano_ledger_state_suite = [] {
         };
         "clear"_test = [] {
             file::tmp tmp_state { "validator-state-test" };
-            state st {};
-            update_params(st, cardano::slot { 1, cardano::config::get() }, { .protocol_ver=cardano::protocol_version { 8, 0 } });
+            cardano::config cfg { cardano::config::get() };
+            cfg.set_shelley_start_epoch(0);
+            state st { cfg };
+            update_params(st, 1, { .protocol_ver=cardano::protocol_version { 8, 0 } }, cfg);
             st.start_epoch();
             st.reserves(10'000'000'000'000'000ULL);
             st.start_epoch();
             st.clear();
-            state st2 {};
+            state st2 { cfg };
             expect(st == st2);
         };
         "snapshot reload preserves pending protocol upgrade"_test = [] {
             cardano::config cfg { cardano::config::get() };
-            cfg.shelley_start_epoch(0);
+            cfg.set_shelley_start_epoch(0);
             state original { cfg, scheduler::get(), state::init_mode::empty };
             for (const auto &[key, delegate]: cfg.shelley_delegates)
                 original.propose_update(1, { .key_id=key,
@@ -156,14 +226,16 @@ suite cardano_ledger_state_suite = [] {
         };
         "save and load"_test = [] {
             file::tmp tmp_state { "validator-state-test" };
-            state st {};
-            update_params(st, 1, { .protocol_ver=cardano::protocol_version { 8, 0 } });
+            cardano::config cfg { cardano::config::get() };
+            cfg.set_shelley_start_epoch(0);
+            state st { cfg };
+            update_params(st, 1, { .protocol_ver=cardano::protocol_version { 8, 0 } }, cfg);
             st.start_epoch();
             st.reserves(10'000'000'000'000'000ULL);
             st.start_epoch();
             st.save_zpp(tmp_state.path());
             state st2 {
-                cardano::config::get(), scheduler::get(), state::init_mode::empty
+                cfg, scheduler::get(), state::init_mode::empty
             };
             expect(st2.utxos().empty());
             st2.load_zpp(tmp_state.path());
@@ -171,7 +243,7 @@ suite cardano_ledger_state_suite = [] {
         };
         "snapshot completion preserves the chain point and epoch result"_test = [] {
             cardano::config cfg { cardano::config::get() };
-            cfg.shelley_start_epoch(0);
+            cfg.set_shelley_start_epoch(0);
             for (const uint64_t major: { 2, 8, 9, 10, 11 }) {
                 for (const auto epoch_slot: { cfg.shelley_randomness_stabilization_window - 1,
                         cfg.shelley_randomness_stabilization_window,
@@ -221,19 +293,21 @@ suite cardano_ledger_state_suite = [] {
         };
         "save_node and load_node"_test = [] {
             file::tmp tmp_state { "validator-state-node-test" };
-            state st {};
-            update_params(st, 1, { .protocol_ver=cardano::protocol_version { 8, 0 } });
+            cardano::config cfg { cardano::config::get() };
+            cfg.set_shelley_start_epoch(0);
+            state st { cfg };
+            update_params(st, 1, { .protocol_ver=cardano::protocol_version { 8, 0 } }, cfg);
             st.start_epoch();
             st.reserves(10'000'000'000'000'000ULL);
             st.start_epoch();
             st.save_node(tmp_state.path(), cardano::point {});
-            state st2 {};
+            state st2 { cfg };
             st2.load_node(tmp_state.path());
             expect(st == st2);
         };
         "Node 11.1.3 separates the UTxO without changing legacy export"_test = [] {
             cardano::config cfg { cardano::config::get() };
-            cfg.shelley_start_epoch(0);
+            cfg.set_shelley_start_epoch(0);
             for (const uint64_t major: { 2, 3, 4, 5, 7, 9 }) {
                 state st { cfg, scheduler::get(), state::init_mode::empty };
                 for (const auto &[key, delegate]: cfg.shelley_delegates)
@@ -289,7 +363,7 @@ suite cardano_ledger_state_suite = [] {
         };
         "Node 11 pointer balances normalize and merge without changing cached state"_test = [] {
             cardano::config cfg { cardano::config::get() };
-            cfg.shelley_start_epoch(0);
+            cfg.set_shelley_start_epoch(0);
             for (const uint64_t major: { 2, 4, 7, 9 }) {
                 state st { cfg, scheduler::get(), state::init_mode::empty };
                 for (const auto &[key, delegate]: cfg.shelley_delegates)
@@ -333,7 +407,7 @@ suite cardano_ledger_state_suite = [] {
         };
         "Node 11 state layout follows the node version"_test = [] {
             cardano::config cfg { cardano::config::get() };
-            cfg.shelley_start_epoch(0);
+            cfg.set_shelley_start_epoch(0);
             for (const uint64_t major: { 2, 3, 4, 5, 7, 9, 10 }) {
                 node_layout_fixture fixture { cfg, major };
                 auto &[st, pool_id, pool, delegated, undelegated] = fixture;
@@ -435,7 +509,7 @@ suite cardano_ledger_state_suite = [] {
         };
         "Node 11 funded snapshots retain zero-stake delegators and Shelley AVVM outputs"_test = [] {
             cardano::config cfg { cardano::config::get() };
-            cfg.shelley_start_epoch(0);
+            cfg.set_shelley_start_epoch(0);
             for (const uint64_t major: { 2, 9 }) {
                 node_layout_fixture fixture { cfg, major };
                 auto &[st, pool_id, pool, delegated, undelegated] = fixture;
@@ -489,8 +563,10 @@ suite cardano_ledger_state_suite = [] {
         };
         "save_node and load_node pv11"_test = [] {
             file::tmp tmp_state { "validator-state-node-pv11-test" };
-            state st {};
-            update_params(st, 1, { .protocol_ver=cardano::protocol_version { 11, 0 } });
+            cardano::config cfg { cardano::config::get() };
+            cfg.set_shelley_start_epoch(0);
+            state st { cfg };
+            update_params(st, 1, { .protocol_ver=cardano::protocol_version { 11, 0 } }, cfg);
             st.start_epoch();
             cardano::pool_params params {};
             params.vrf_vkey = cardano::vrf_vkey::from_hex(
@@ -502,13 +578,15 @@ suite cardano_ledger_state_suite = [] {
             params.cost = 1;
             st.register_pool({ pool_id, params });
             st.save_node(tmp_state.path(), cardano::point {});
-            state st2 {};
+            state st2 { cfg };
             st2.load_node(tmp_state.path());
             expect(st == st2);
         };
         "register_pool"_test = [] {
-            state st {};
-            update_params(st, 1, { .protocol_ver=cardano::protocol_version { 8, 0 } });
+            cardano::config cfg { cardano::config::get() };
+            cfg.set_shelley_start_epoch(0);
+            state st { cfg };
+            update_params(st, 1, { .protocol_ver=cardano::protocol_version { 8, 0 } }, cfg);
             st.start_epoch();
             const auto pool_id = cardano::key_hash::from_hex("00000000000000000000000000000000000000000000000000000000");
             cardano::pool_params pp1 {};

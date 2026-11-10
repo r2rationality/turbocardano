@@ -158,6 +158,14 @@ namespace turbo::sync {
         const auto end = cr.tip();
         if (!failure || (end && start < end))
             cr.remover().remove();
+        if (failure) {
+            try {
+                std::rethrow_exception(failure);
+            } catch (const validator::deferred_validation_error &) {
+                throw;
+            } catch (...) {
+            }
+        }
         return failure;
     }
 

@@ -4,6 +4,7 @@
  * License: https://github.com/r2rationality/turbocardano/blob/main/LICENSE */
 
 #include <turbo/cardano/conway/block.hpp>
+#include <turbo/cardano.hpp>
 #include <turbo/common/test.hpp>
 #include <turbo/plutus/context.hpp>
 #include <turbo/cardano/ledger/rules/utxow/creds-needed.hpp>
@@ -13,6 +14,15 @@ using namespace turbo::cardano;
 
 suite cardano_conway_suite = [] {
     "cardano::conway"_test = [] {
+        "Shelley through Conway body sizes match their headers"_test = [] {
+            for (const auto era: { "shelley", "allegra", "mary", "alonzo", "babbage", "conway" }) {
+                const auto bytes = file::read(install_path(fmt::format("data/{}/block-0.cbor", era)));
+                const parsed_block block{bytes};
+                const auto &header = dynamic_cast<const shelley::block_header_base &>(block.blk->header());
+                expect_equal(block.blk->body_size(), header.body_size(), era);
+                expect(block.blk->body_size() + header.size() < bytes.size()) << era;
+            }
+        };
         "mint parsing rejects invalid entries"_test = [] {
             expect(boost::ut::throws<error>([] {
                 const auto data = uint8_vector::from_hex(
@@ -35,7 +45,7 @@ suite cardano_conway_suite = [] {
         "example scripts"_test = [] {
             const configs_dir cfg { configs_dir::default_path() };
             const cardano::config ccfg { cfg };
-            ccfg.shelley_start_epoch(208);
+            ccfg.set_shelley_start_epoch(208);
             for (const auto &path: file::files_with_ext(install_path("data/conway"), ".zpp")) {
                 plutus::context ctx { path, ccfg };
                 ledger::rules::credential_requirements needed {};

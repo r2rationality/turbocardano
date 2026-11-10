@@ -44,7 +44,18 @@ namespace turbo::cli::txwit_prep {
             storage::parse_parallel_epoch<part_info>(cr,
                 [&](auto &part, const auto &blk) {
                     const auto &block_info = cr.find_block_by_offset(blk.offset());
-                    blk->foreach_tx([&](const auto &tx) {
+                    for (const auto *tx_ptr: blk->txs()) {
+                        const auto &tx = *tx_ptr;
+                        if (tx.invalid()) {
+                            // A later transaction in this block can spend this collateral return.
+                            if (const auto *babbage_tx = dynamic_cast<const cardano::babbage::tx_base *>(&tx); babbage_tx) {
+                                if (const auto c_ret = babbage_tx->collateral_return(); c_ret) {
+                                    ++part.num_outputs;
+                                    _add_utxo(part.utxos, tx, *c_ret, tx.outputs().size());
+                                }
+                            }
+                            continue;
+                        }
                         size_t num_redeemers = 0;
                         tx.foreach_redeemer([&](const auto &) {
                             ++num_redeemers;
@@ -91,17 +102,7 @@ namespace turbo::cli::txwit_prep {
                             ++part.num_inputs;
                             _del_utxo(part.utxos, txi);
                         });
-                    });
-                    blk->foreach_invalid_tx([&](const auto &tx) {
-                        // UTXOs used as collaterals are processed in validator.cpp:_apply_ledger_state_updates_for_epoch
-                        if (const auto *babbage_tx = dynamic_cast<const cardano::babbage::tx_base *>(&tx); babbage_tx) {
-                            if (const auto c_ret = babbage_tx->collateral_return(); c_ret) {
-                                const auto txo_idx = tx.outputs().size();
-                                ++part.num_outputs;
-                                _add_utxo(part.utxos, tx, *c_ret, txo_idx);
-                            }
-                        }
-                    });
+                    }
                 },
                 [&](const size_t epoch_no, const storage::partition &part) {
                     return part_info {

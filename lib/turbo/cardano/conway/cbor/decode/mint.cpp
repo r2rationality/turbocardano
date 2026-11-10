@@ -10,9 +10,17 @@ namespace turbo::cardano::conway {
     namespace {
         [[noreturn]] void reject_invalid_mint(const mary::detail::invalid_mint issue)
         {
-            if (issue == mary::detail::invalid_mint::zero_amount) [[unlikely]]
-                throw error("Conway mint amounts must be nonzero");
-            throw error("a Conway mint policy must contain at least one asset");
+            switch (issue) {
+                case mary::detail::invalid_mint::zero_amount:
+                    throw error{"Conway mint amounts must be nonzero"};
+                case mary::detail::invalid_mint::empty_policy:
+                    throw error{"a Conway mint policy must contain at least one asset"};
+                case mary::detail::invalid_mint::duplicate_asset_name:
+                    throw error{"duplicate mint asset name"};
+                case mary::detail::invalid_mint::duplicate_policy:
+                    throw error{"duplicate mint policy"};
+            }
+            std::unreachable();
         }
     }
 

@@ -12,8 +12,15 @@
                 auto &max = part.max_stats;
                 uint64_t fees = 0;
                 uint64_t donations = 0;
-                if (!max.max_block_body_size || *max.max_block_body_size < blk->body_size())
-                    max.max_block_body_size = numeric_cast<uint32_t>(blk->body_size());
+                const auto body_size = blk->body_size();
+                if (blk->era() >= 2) {
+                    const auto declared_size = dynamic_cast<const cardano::shelley::block_header_base &>(blk->header()).body_size();
+                    if (body_size != declared_size) [[unlikely]]
+                        throw error{"block at slot {} hash {} has body size {} but its header declares {}",
+                            blk->slot(), blk->hash(), body_size, declared_size};
+                }
+                if (!max.max_block_body_size || *max.max_block_body_size < body_size)
+                    max.max_block_body_size = body_size;
                 if (!max.max_block_header_size || *max.max_block_header_size < blk->header().size())
                     max.max_block_header_size = numeric_cast<uint16_t>(blk->header().size());
                 blk->foreach_update_proposal([&](const auto &prop) {
@@ -109,8 +116,26 @@
                 for (const auto *tx_ptr: blk->txs()) {
                     const auto &tx = *tx_ptr;
                     const auto ref_info_idx = first_ref_info_idx + block_tx_idx++;
-                    if (tx.invalid() && blk->era() != 7)
+                    if (tx.invalid() && blk->era() != 7) {
+                        // Publish collateral returns before later transactions resolve their inputs.
+                        ++stats.num_invalid_txs;
+                        tx.foreach_collateral([&](const auto &txi) {
+                            part.timed_updates.emplace_back(make_timed_update(
+                                cert_loc_t { blk->slot(), tx.index(), 0 },
+                                index::timed_update::collected_collateral_input { txi.hash, txi.idx }
+                            ));
+                        });
+                        if (const auto *babbage_tx = dynamic_cast<const cardano::babbage::tx_base *>(&tx); babbage_tx) {
+                            if (const auto c_ret = babbage_tx->collateral_return(); c_ret) {
+                                part.timed_updates.emplace_back(make_timed_update(
+                                    cert_loc_t { blk->slot(), tx.index(), 0 },
+                                    index::timed_update::collected_collateral_refund { c_ret->coin }
+                                ));
+                                _add_utxo(part.utxos, tx, *c_ret, tx.outputs().size());
+                            }
+                        }
                         continue;
+                    }
                     const uint8_t tx_part_idx = tx.hash()[0];
                     const size_t tx_idx = part.txs[tx_part_idx].size();
                     tx_loc_t tx_loc { tx_part_idx, tx_idx };
@@ -341,26 +366,6 @@
                     }
                     part.txs[tx_part_idx].emplace_back(std::move(tx_checks));
                 }
-                blk->foreach_invalid_tx([&](const auto &tx) {
-                    if (blk->era() == 7)
-                        return; // already validated and reflected in the transaction-order overlay
-                    ++stats.num_invalid_txs;
-                    tx.foreach_collateral([&](const auto &txi) {
-                        part.timed_updates.emplace_back(make_timed_update(
-                            cert_loc_t { blk->slot(), tx.index(), 0 },
-                            index::timed_update::collected_collateral_input { txi.hash, txi.idx }
-                        ));
-                    });
-                    if (const auto *babbage_tx = dynamic_cast<const cardano::babbage::tx_base *>(&tx); babbage_tx) {
-                        if (const auto c_ret = babbage_tx->collateral_return(); c_ret) {
-                            part.timed_updates.emplace_back(make_timed_update(
-                                cert_loc_t { blk->slot(), tx.index(), 0 },
-                                index::timed_update::collected_collateral_refund { c_ret->coin }
-                            ));
-                            _add_utxo(part.utxos, tx, *c_ret, tx.outputs().size());
-                        }
-                    }
-                });
                 part.block_updates.emplace_back(blk->slot(), blk->issuer_hash(), fees, donations,
                     blk.end_offset(), numeric_cast<uint8_t>(blk->era()));
             }

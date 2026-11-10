@@ -10,6 +10,41 @@ using namespace turbo::cardano;
 
 suite cardano_shelley_metadata_suite = [] {
     "cardano::shelley::metadata"_test = [] {
+        "deep metadata decodes, encodes and releases without recursion"_test = [] {
+            for (const auto hex: {"81", "A100", "A1"}) {
+                auto raw = uint8_vector::from_hex("A100");
+                const auto prefix = uint8_vector::from_hex(hex);
+                for (size_t i = 0; i < 16053; ++i)
+                    raw << prefix;
+                raw.emplace_back(0);
+                if (prefix.size() == 1 && prefix.front() == 0xA1)
+                    raw.insert(raw.end(), 16053, 1);
+                {
+                    auto parsed = cbor::zero2::parse(raw);
+                    const auto metadata = shelley::metadata_t::from_cbor(parsed.get());
+                    era_encoder enc{era_t::conway};
+                    metadata.to_cbor(enc);
+                    expect_equal(enc.cbor(), raw);
+                }
+                raw.pop_back();
+                expect(throws([&] {
+                    auto parsed = cbor::zero2::parse(raw);
+                    shelley::metadata_t::from_cbor(parsed.get());
+                }));
+            }
+        };
+        "wide metadata keeps compact container breaks"_test = [] {
+            auto raw = uint8_vector::from_hex("A100829F");
+            raw.insert(raw.end(), 24, 0);
+            raw << uint8_vector::from_hex("FFBF");
+            raw.insert(raw.end(), 48, 0);
+            raw.emplace_back(0xFF);
+            auto parsed = cbor::zero2::parse(raw);
+            const auto metadata = shelley::metadata_t::from_cbor(parsed.get());
+            era_encoder enc{era_t::conway};
+            metadata.to_cbor(enc);
+            expect_equal(enc.cbor(), raw);
+        };
         "nested metadata maps preserve order and duplicate keys"_test = [] {
             const auto raw = uint8_vector::from_hex(
                 "A1" // metadata with one label

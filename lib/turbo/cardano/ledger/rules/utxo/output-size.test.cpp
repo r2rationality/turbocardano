@@ -49,4 +49,33 @@ suite ledger_output_size_suite = [] {
         params.max_value_size = 2;
         expect(nothrow([&] { limits.validate(params); }));
     };
+
+    "UTXO value size matches ledger encoding at both map boundaries"_test = [] {
+        for (const bool many_policies: { false, true }) {
+            for (const size_t count: { 23, 24, 255, 256 }) {
+                cardano::tx_out_data out { .coin=1'000'000 };
+                for (size_t i = 0; i < count; ++i) {
+                    cardano::script_hash policy {};
+                    const byte_array<2> name { static_cast<uint8_t>(i >> 8), static_cast<uint8_t>(i) };
+                    if (many_policies) {
+                        policy[26] = name[0];
+                        policy[27] = name[1];
+                    }
+                    out.assets[policy].emplace(cardano::asset_name_t { name }, 1);
+                }
+                cardano::era_encoder encoded { cardano::era_t::conway };
+                encoded.array(2).uint(out.coin);
+                out.assets.to_cbor(encoded);
+                output_size_limits limits {};
+                limits.observe(out, 0); // Minimum coin is disabled for this value-size test.
+                expect_equal(limits.max_value_size, encoded.cbor().size());
+                cardano::protocol_params params {};
+                params.lovelace_per_utxo_byte = 0;
+                params.max_value_size = encoded.cbor().size();
+                expect(nothrow([&] { limits.validate(params); }));
+                --params.max_value_size;
+                expect(throws([&] { limits.validate(params); }));
+            }
+        }
+    };
 };

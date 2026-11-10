@@ -18,6 +18,105 @@ suite cardano_config_suite = [] {
         static_assert(std::is_nothrow_move_assignable_v<cardano::config>);
         static_assert(std::movable<cardano::config>);
         const cardano::config cfg {};
+        "public testnet genesis"_test = [] {
+            for (const auto name: {"preview", "preprod"}) {
+                const bool preview = std::string_view{name} == "preview";
+                const configs_dir files{configs_dir::network_path(name)};
+                const cardano::config network{files};
+                expect_equal(network.byron_protocol_magic, preview ? 2U : 1U);
+                expect_equal(network.shelley_network_id, 0);
+                expect_equal(network.byron_epoch_length, preview ? 4320ULL : 21600ULL);
+                expect_equal(network.byron_slots_per_chunk, network.byron_epoch_length);
+                expect_equal(network.shelley_epoch_length, preview ? 86400ULL : 432000ULL);
+                expect_equal(network.shelley_security_param, preview ? 432ULL : 2160ULL);
+                expect_equal(network.initial_protocol_version.major, preview ? 6ULL : 0ULL);
+                expect_equal(network.shelley_start_known(), preview);
+                const auto start = std::chrono::system_clock::time_point{
+                    std::chrono::seconds{network.byron_start_time + (preview ? 86400 : 20)}
+                };
+                const auto slot = cardano::slot::from_time(start, network);
+                expect_equal(static_cast<uint64_t>(slot), preview ? 86400ULL : 1ULL);
+                expect_equal(slot.unixtime(), network.byron_start_time + (preview ? 86400 : 20));
+                expect_equal(network.byron_utxos.size(), 8);
+                uint64_t balance = 0;
+                for (const auto &[id, output]: network.byron_utxos)
+                    balance += output.coin;
+                expect_equal(balance, 30'000'000'000'000'000ULL);
+            }
+        };
+        "Shelley boundary overrides and reset"_test = [] {
+            for (const auto name: {"mainnet", "preview", "preprod"}) {
+                const configs_dir files{configs_dir::network_path(name)};
+                const cardano::config network{files};
+                const bool known = std::string_view{name} != "preprod";
+                const uint64_t default_epoch = std::string_view{name} == "mainnet" ? 208 : 0;
+                const auto check_default = [&] {
+                    expect_equal(network.shelley_start_known(), known);
+                    if (known) {
+                        expect_equal(network.shelley_start_epoch(), default_epoch);
+                    } else {
+                        expect(throws<error>([&] { network.shelley_start_slot(); }));
+                        expect(throws<error>([&] { network.shelley_start_epoch(); }));
+                        expect(throws<error>([&] { network.shelley_start_time(); }));
+                        const auto epoch = std::numeric_limits<uint64_t>::max() / network.byron_epoch_length;
+                        expect_equal(static_cast<uint64_t>(slot::from_epoch(epoch, network)), epoch * network.byron_epoch_length);
+                        const slot byron{network.byron_epoch_length + 1, network};
+                        expect_equal(byron.epoch(), 1);
+                        expect_equal(byron.epoch_slot(), 1);
+                        expect_equal(byron.unixtime(), network.byron_start_time + (network.byron_epoch_length + 1) * network.byron_slot_duration);
+                    }
+                };
+                check_default();
+                for (const uint64_t epoch: {0ULL, 123ULL}) {
+                    network.set_shelley_start_epoch(epoch);
+                    expect(network.shelley_start_known());
+                    expect_equal(network.shelley_start_epoch(), epoch);
+                    const slot boundary{epoch * network.byron_epoch_length, network};
+                    expect_equal(boundary.epoch(), epoch);
+                    expect_equal(boundary.epoch_slot(), 0);
+                    expect_equal(boundary.unixtime(), network.byron_start_time + boundary * network.byron_slot_duration);
+                    network.reset_shelley_start_epoch();
+                    check_default();
+                }
+            }
+        };
+        "Shelley boundary overflow"_test = [&] {
+            const cardano::config network{cfg};
+            const auto max_epoch = (std::numeric_limits<uint64_t>::max() - network.byron_start_time)
+                / network.byron_slot_duration / network.byron_epoch_length;
+            network.set_shelley_start_epoch(max_epoch);
+            expect_equal(network.shelley_start_epoch(), max_epoch);
+            expect_equal(network.shelley_start_time(), network.byron_start_time + max_epoch * network.byron_epoch_length * network.byron_slot_duration);
+            expect(throws<error>([&] { network.set_shelley_start_epoch(max_epoch + 1); }));
+            expect(throws<error>([&] {
+                network.set_shelley_start_epoch(std::numeric_limits<uint64_t>::max() / network.byron_epoch_length + 1);
+            }));
+            expect_equal(network.shelley_start_epoch(), max_epoch);
+        };
+        "Shelley boundary defaults require both mainnet genesis hashes"_test = [] {
+            const configs_dir mainnet{configs_dir::network_path("mainnet")};
+            for (const auto &[era, field]: {std::pair{"Byron", "startTime"}, {"Shelley", "updateQuorum"}, {"Conway", "committeeMinSize"}}) {
+                auto node = mainnet.at("config").json();
+                const auto name = std::filesystem::path{json::value_to<std::string>(node.at(fmt::format("{}GenesisFile", era)))}.stem().string();
+                auto genesis = mainnet.at(name).json();
+                genesis.at(field) = json::value_to<uint64_t>(genesis.at(field)) + 1;
+                configs_mock::map_type files;
+                files.emplace(name, config_json{std::move(genesis)});
+                const auto &modified = files.at(name);
+                const auto hash = std::string_view{era} == "Byron"
+                    ? crypto::blake2b::digest<block_hash>(json::serialize_canon(modified.json()))
+                    : crypto::blake2b::digest<block_hash>(modified.bytes());
+                node.at(fmt::format("{}GenesisHash", era)) = fmt::format("{}", hash);
+                files.emplace("config", config_json{std::move(node)});
+                for (const auto file: {"byron-genesis", "shelley-genesis", "alonzo-genesis", "conway-genesis"})
+                    files.try_emplace(file, mainnet.at(file));
+                const cardano::config network{configs_mock{std::move(files)}};
+                const bool known = std::string_view{era} == "Conway";
+                expect_equal(network.shelley_start_known(), known);
+                if (known)
+                    expect_equal(network.shelley_start_epoch(), 208);
+            }
+        };
         "mainnet genesis hashes"_test = [&] {
             expect(cfg.byron_genesis_hash == block_hash::from_hex("5f20df933584822601f9e3f8c024eb5eb252fe8cefb24d1317dc3d432e940ebb"));
             expect(cfg.shelley_genesis_hash == block_hash::from_hex("1a3be38bcbb7911969283716ad7aa550250226b76a61fc51cc9a9a35d9276d81"));
@@ -55,7 +154,7 @@ suite cardano_config_suite = [] {
             cardano::config copy { cfg };
             expect(&copy.byron_utxos == &cfg.byron_utxos);
             expect(&copy.shelley_protocol_params == &cfg.shelley_protocol_params);
-            copy.shelley_start_epoch(123);
+            copy.set_shelley_start_epoch(123);
             expect_equal(uint64_t { 123 }, copy.shelley_start_epoch());
             expect(copy.shelley_start_epoch() != cfg.shelley_start_epoch());
 

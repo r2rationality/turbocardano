@@ -139,16 +139,16 @@ namespace turbo::indexer {
         for (const auto &idx: *this) {
             idx->index(block);
         }
-        block->foreach_tx([&](const auto &tx) {
-            for (const auto &idx: *this) {
-                idx->index_tx(tx);
+        // A later transaction may spend an earlier invalid transaction's collateral return.
+        for (const auto *tx: block->txs()) {
+            if (tx->invalid()) {
+                for (const auto &idx: *this)
+                    idx->index_invalid_tx(*tx);
+            } else {
+                for (const auto &idx: *this)
+                    idx->index_tx(*tx);
             }
-        });
-        block->foreach_invalid_tx([&](const auto &tx) {
-            for (const auto &idx: *this) {
-                idx->index_invalid_tx(tx);
-            }
-        });
+        }
     }
 
     struct incremental::impl {
@@ -188,6 +188,11 @@ namespace turbo::indexer {
         ~impl()
         {
             _cr.remove_processor(_proc);
+        }
+
+        void flush()
+        {
+            _idx_prepare_tx();
         }
 
         slice_list slices(std::optional<uint64_t> end_offset={}) const
@@ -500,6 +505,11 @@ namespace turbo::indexer {
     }
 
     incremental::~incremental() =default;
+
+    void incremental::flush()
+    {
+        _impl->flush();
+    }
 
     chunk_indexer_list_t incremental::make_chunk_indexers(const uint64_t chunk_offset)
     {

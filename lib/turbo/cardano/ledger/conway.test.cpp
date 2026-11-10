@@ -513,7 +513,7 @@ suite cardano_ledger_conway_suite = [] {
         };
         "parameter update"_test = [] {
             cardano::config cfg {};
-            cfg.shelley_start_epoch(0U);
+            cfg.set_shelley_start_epoch(0U);
             state st { cfg };
             gov_action_id_t gid {};
             gid.tx_id = crypto::blake2b::digest<tx_hash>(std::string_view { "A" });

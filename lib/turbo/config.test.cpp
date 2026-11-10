@@ -33,6 +33,23 @@ suite config_suite = [] {
     static_assert(std::movable<configs_mock>);
     static_assert(std::movable<configs_dir>);
     "config"_test = [] {
+        "named networks"_test = [] {
+            for (const auto name: {"mainnet", "preview", "preprod", "sanchonet"})
+                expect_equal(configs_dir::network_path(name), install_path(fmt::format("etc/{}", name)));
+            for (const auto name: {"", ".", "..", "../mainnet"})
+                expect(throws<error>([&] { configs_dir::network_path(name); }));
+        };
+        "network requires only config.json"_test = [] {
+            const std::string name{"test-network-path"};
+            const file::tmp_directory dir{install_path("etc/" + name)};
+            expect(throws<error>([&] { configs_dir::network_path(name); }));
+            const auto path = dir.path() + "/config.json";
+            json::save_pretty(path, json::object{});
+            expect_equal(configs_dir::network_path(name), dir.path());
+            std::filesystem::remove(path);
+            std::filesystem::create_directory(path);
+            expect(throws<error>([&] { configs_dir::network_path(name); }));
+        };
         "path_absolute"_test = [] {
 #ifdef _WIN32
             expect_equal(true, std::filesystem::path { "D:/home/dev/some-dir/logs" }.is_absolute());

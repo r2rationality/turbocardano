@@ -10,6 +10,18 @@ using namespace turbo;
 
 suite base64_suite = [] {
     "base64"_test = [] {
+        "alphabet boundaries"_test = [] {
+            expect_equal(base64::decode("+/AA"), uint8_vector::from_hex("FBF000"));
+            expect_equal(base64::decode_url("-_AA"), uint8_vector::from_hex("FBF000"));
+            expect(throws([] { base64::decode("-_AA"); }));
+            expect(throws([] { base64::decode_url("+/AA"); }));
+            for (const auto decode: { base64::decode, base64::decode_url }) {
+                for (const auto byte: { 0x00, 0x20, 0x7F, 0x80, 0xFF }) {
+                    const char c = static_cast<char>(byte);
+                    expect(throws([&] { decode(std::string_view { &c, 1 }); }));
+                }
+            }
+        };
         "decode_url"_test = [] {
             static std::vector<std::pair<std::string_view, uint8_vector>> test_vectors {
                 { "-0Np4pyTOWF26iXWVIvu6fhz9QupwWRS2hcCaOEYlw0", uint8_vector::from_hex("fb4369e29c93396176ea25d6548beee9f873f50ba9c16452da170268e118970d") },

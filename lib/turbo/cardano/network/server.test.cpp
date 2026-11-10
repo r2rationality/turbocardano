@@ -20,6 +20,7 @@
 #include "miniprotocol/blockfetch/handler.hpp"
 #include "miniprotocol/chainsync/handler.hpp"
 #include "miniprotocol/handshake/handler.hpp"
+#include "miniprotocol/handshake/messages.hpp"
 #include "server.hpp"
 
 namespace {
@@ -425,6 +426,40 @@ suite cardano_network_server_suite = [] {
             expect(std::chrono::steady_clock::now() - started < std::chrono::seconds { 5 });
             intersect();
             expect(c->next_header_sync({}, pump).rollback);
+            srv.stop();
+        };
+        "client rejects an accepted handshake for another network"_test = [&] {
+            struct wrong_network: handshake::observer_t {
+                void on_success(const handshake::on_success_func &) override {}
+                void failed(std::string_view) override {}
+                void stopped() override {}
+                void data(buffer bytes, const protocol_send_func &send) override
+                {
+                    auto request = cbor::zero2::parse(bytes);
+                    // Preview proposes magic 2; the reply incorrectly accepts magic 1.
+                    const auto proposal = handshake::msg_t::from_cbor(request.get());
+                    expect_equal(std::get<handshake::msg_propose_versions_t>(proposal).versions.at(14).network_magic, 2);
+                    send([]() -> data_generator_t {
+                        cbor::encoder enc{};
+                        enc.array(3).uint(1).uint(14).array(4).uint(1).s_false().uint(0).s_false();
+                        co_yield std::move(enc.cbor());
+                    }());
+                }
+            };
+            const configs_dir files{configs_dir::network_path("preview")};
+            const cardano::config preview{files};
+            const auto iow = std::make_shared<asio::worker_manual>();
+            auto &ioc = iow->io_context();
+            server srv{listen_addr, {
+                { mini_protocol::handshake, [](const auto &) { return std::make_shared<wrong_network>(); } }
+            }, iow, preview};
+            ioc.run_for(std::chrono::milliseconds{10});
+            auto c = client_manager_async::get().connect(listen_addr, v14, preview, iow);
+            std::optional<client::find_response> response{};
+            c->find_tip([&](auto &&r) { response = std::move(r); });
+            pump_until(ioc, [&] { return response.has_value(); });
+            expect(fatal(std::holds_alternative<client::error_msg>(response->res)));
+            expect(std::get<client::error_msg>(response->res).find("different network magic") != std::string::npos);
             srv.stop();
         };
         "stop token interrupts an unfinished upstream handshake"_test = [&] {

@@ -28,6 +28,40 @@ suite cbor_zero2_test = [] {
                 expect_equal(parse(data).get().data_raw(), data);
             }
         };
+        "deep nesting and decoder level reuse"_test = [] {
+            for (const auto hex: {"81", "A100", "C0", "9F", "BF00", "81C0A100"}) {
+                const auto prefix = uint8_vector::from_hex(hex);
+                for (const size_t depth: {decoder::inline_depth - 1, decoder::inline_depth,
+                    decoder::inline_depth + 1, size_t{16053}}) {
+                    uint8_vector data;
+                    for (size_t i = 0; i < depth; ++i)
+                        data << prefix;
+                    data.emplace_back(0);
+                    if (prefix.front() == 0x9F || prefix.front() == 0xBF)
+                        data.insert(data.end(), depth, 0xFF);
+                    const auto item = data;
+                    data << item;
+                    decoder dec{data};
+                    expect_equal(dec.read().data_raw(), item);
+                    expect_equal(dec.read().data_raw(), item);
+                    expect(dec.done());
+                    data.resize(item.size() - 1);
+                    expect(throws<error>([&] { parse(data).get().data_raw(); }));
+                }
+            }
+        };
+        "deep map keys and partially read containers"_test = [] {
+            uint8_vector raw;
+            raw.insert(raw.end(), 16053, 0xA1);
+            raw.emplace_back(0);
+            raw.insert(raw.end(), 16053, 1);
+            decoder dec{raw};
+            auto &root = dec.read();
+            auto &key = root.map().read_key();
+            expect_equal(key.data_raw().size(), raw.size() - 2);
+            expect_equal(root.data_raw(), raw);
+            expect(dec.done());
+        };
         "data_begin"_test = [] {
             const auto data = uint8_vector::from_hex("1B000000FFFFFFFFFF");
             expect(parse(data).get().data_begin() == data.data());

@@ -25,41 +25,45 @@ namespace turbo::cardano::mary {
                     auto &name_v = p_it.read_key();
                     const auto name_bytes = name_v.bytes();
                     auto &coin_v = p_it.read_val(std::move(name_v));
+                    int64_t amount;
                     switch (coin_v.type()) {
                         case cbor::major_type::uint: {
-                            const auto amount = numeric_cast<int64_t>(coin_v.uint());
-                            if (amount != 0) {
-                                const auto before = p_m.size();
-                                p_m.emplace_hint(p_m.end(), name_bytes, amount);
-                                if (p_m.size() == before) [[unlikely]]
-                                    throw error("duplicate mint asset name");
-                            } else if (on_invalid) [[unlikely]]
-                                on_invalid(invalid_mint::zero_amount);
+                            amount = numeric_cast<int64_t>(coin_v.uint());
                             break;
                         }
                         case cbor::major_type::nint: {
                             const auto magnitude = coin_v.nint();
                             if (magnitude > uint64_t { 1 } << 63) [[unlikely]]
                                 throw error("mint amount is smaller than min_int64");
-                            const auto amount = magnitude == uint64_t { 1 } << 63
+                            amount = magnitude == uint64_t { 1 } << 63
                                 ? std::numeric_limits<int64_t>::min()
                                 : -numeric_cast<int64_t>(magnitude);
-                            const auto before = p_m.size();
-                            p_m.emplace_hint(p_m.end(), name_bytes, amount);
-                            if (p_m.size() == before) [[unlikely]]
-                                throw error("duplicate mint asset name");
                             break;
                         }
                         [[unlikely]] default: throw error{"expecting an int but got {}", coin_v.type()};
                     }
+                    // Before Conway, the last duplicate wins, including a zero that prunes an earlier value.
+                    if (amount != 0) [[likely]] {
+                        const auto before = p_m.size();
+                        p_m.insert_or_assign(p_m.end(), asset_name_t{name_bytes}, amount);
+                        if (p_m.size() == before && on_invalid) [[unlikely]]
+                            on_invalid(invalid_mint::duplicate_asset_name);
+                    } else {
+                        if (on_invalid) [[unlikely]]
+                            on_invalid(invalid_mint::zero_amount);
+                        p_m.erase(asset_name_t{name_bytes});
+                    }
                 }
                 if (!p_m.empty()) [[likely]] {
                     const auto before = m.size();
-                    m.emplace_hint(m.end(), policy_id_bytes, std::move(p_m));
-                    if (m.size() == before) [[unlikely]]
-                        throw error("duplicate mint policy");
-                } else if (on_invalid) [[unlikely]]
-                    on_invalid(invalid_mint::empty_policy);
+                    m.insert_or_assign(m.end(), script_hash{policy_id_bytes}, std::move(p_m));
+                    if (m.size() == before && on_invalid) [[unlikely]]
+                        on_invalid(invalid_mint::duplicate_policy);
+                } else {
+                    if (on_invalid) [[unlikely]]
+                        on_invalid(invalid_mint::empty_policy);
+                    m.erase(script_hash{policy_id_bytes});
+                }
             }
         }
     }
