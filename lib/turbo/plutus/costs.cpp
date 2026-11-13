@@ -809,6 +809,11 @@ namespace turbo::plutus::costs {
     const runtime_model &runtime_models::for_script(const cardano::script_type typ,
             const builtin_semantics semantics) const
     {
+        if (typ == cardano::script_type::plutus_v4) {
+            if (semantics == builtin_semantics::g && v4)
+                return *v4;
+            throw error{"Plutus V4 requires its own cost model and semantics G"};
+        }
         const variants *models = nullptr;
         switch (typ) {
             case cardano::script_type::plutus_v1: models = &v1; break;
@@ -816,7 +821,9 @@ namespace turbo::plutus::costs {
             case cardano::script_type::plutus_v3: models = &v3; break;
             [[unlikely]] default: throw error{"unsupported script type: {}", static_cast<int>(typ)};
         }
-        const auto &model = models->at(static_cast<size_t>(semantics));
+        const auto cost_variant = semantics == builtin_semantics::f ? builtin_semantics::d
+            : semantics == builtin_semantics::g ? builtin_semantics::e : semantics;
+        const auto &model = models->at(static_cast<size_t>(cost_variant));
         if (model) [[likely]]
             return *model;
         throw error{"cost model semantics variant {} is unavailable for {}",
@@ -878,6 +885,27 @@ namespace turbo::plutus::costs {
         return names;
     }
 
+    const std::vector<std::string> &cost_arg_names_v4()
+    {
+        static const auto names = [] {
+            auto result = cost_arg_names_v3();
+            result.insert(result.end(), {
+                "multiIndexArray-cpu-arguments-c0", "multiIndexArray-cpu-arguments-c1",
+                "multiIndexArray-cpu-arguments-c2", "multiIndexArray-memory-arguments-intercept",
+                "multiIndexArray-memory-arguments-slope", "assetCount-cpu-arguments",
+                "assetCount-memory-arguments", "policies-cpu-arguments-intercept",
+                "policies-cpu-arguments-slope", "policies-memory-arguments-intercept",
+                "policies-memory-arguments-slope", "keepPolicies-cpu-arguments-intercept",
+                "keepPolicies-cpu-arguments-slope", "keepPolicies-memory-arguments-intercept",
+                "keepPolicies-memory-arguments-slope", "dropPolicies-cpu-arguments-intercept",
+                "dropPolicies-cpu-arguments-slope", "dropPolicies-memory-arguments-intercept",
+                "dropPolicies-memory-arguments-slope"
+            });
+            return result;
+        }();
+        return names;
+    }
+
     runtime_models ingest(const cardano::plutus_cost_models &models)
     {
         runtime_models res {};
@@ -897,6 +925,12 @@ namespace turbo::plutus::costs {
         add(res.v2, builtin_semantics::d, v2, default_cost_args_d());
         add(res.v3, builtin_semantics::c, v3, default_cost_args_c());
         add(res.v3, builtin_semantics::e, v3, default_cost_args_e());
+        if (const auto *v4 = models.find(3)) {
+            auto values = v4->raw_values();
+            values.resize(cost_arg_names_v4().size(), std::numeric_limits<int64_t>::max());
+            const cardano::plutus_cost_model named { std::move(values), cost_arg_names_v4() };
+            res.v4.emplace(ingest(plutus_costs_to_args(named, default_cost_args_e())));
+        }
         return res;
     }
 

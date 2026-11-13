@@ -9,9 +9,6 @@
 #   pragma GCC diagnostic push
 #   pragma GCC diagnostic ignored "-Wdeprecated-declarations"
 #endif
-#ifdef _MSC_VER
-#   include <SDKDDKVer.h>
-#endif
 #define BOOST_ASIO_HAS_STD_INVOKE_RESULT 1
 #ifndef BOOST_ALLOW_DEPRECATED_HEADERS
 #   define BOOST_ALLOW_DEPRECATED_HEADERS

@@ -13,9 +13,6 @@
 #include <limits>
 #include <thread>
 #include "common.hpp"
-#ifdef _MSC_VER
-#   include <SDKDDKVer.h>
-#endif
 #include <boost/asio/signal_set.hpp>
 
 namespace turbo::cli::node_api {
@@ -76,11 +73,17 @@ namespace turbo::cli::node_api {
             cmd.opts.emplace("peer-host", "follow this peer instead of a random topology peer");
             cmd.opts.try_emplace("peer-port", "upstream peer TCP port", "3001");
             cmd.opts.try_emplace("snapshot-interval", "minimum seconds between live snapshots", "600");
+            cmd.opts.try_emplace("validation", "follower validation: full or turbo", "full");
         }
 
         void run(const arguments &args, const options &opts) const override
         {
             const auto &data_dir = args.at(0);
+            const auto &validation_name = opts.at("validation").value();
+            if (validation_name != "full" && validation_name != "turbo") [[unlikely]]
+                throw error{"validation must be full or turbo"};
+            const auto validation = validation_name == "full"
+                ? validator::validation_mode::full : validator::validation_mode::turbo;
             const auto ip = opts.at("ip").value();
             const auto port = opts.at("port").value();
             const auto positive_size = [&](const std::string &name) {
@@ -112,7 +115,7 @@ namespace turbo::cli::node_api {
             std::optional<address> peer;
             if (const auto it = opts.find("peer-host"); it != opts.end() && it->second)
                 peer.emplace(*it->second, opts.at("peer-port").value());
-            auto cr = std::make_shared<chunk_registry>(data_dir, chunk_registry_settings_t { .continuous=true });
+            auto cr = std::make_shared<chunk_registry>(data_dir, chunk_registry_settings_t { .continuous=true, .validation=validation });
             if (shutdown.token().stop_requested()) return;
             auto source = std::make_shared<chain_source>(cr, cache_bytes);
             sync::p2p::syncer syncer { *cr };
@@ -121,7 +124,7 @@ namespace turbo::cli::node_api {
             std::exception_ptr failure;
             std::jthread follower { [&] {
                 try {
-                    syncer.follow(shutdown.token(), [&](const auto &intersection) { source->publish(intersection); }, peer, {}, interval);
+                    syncer.follow(shutdown.token(), [&](const auto &intersection) { source->publish(intersection); }, peer, {}, interval, validation);
                 } catch (...) {
                     failure = std::current_exception();
                     srv.stop();

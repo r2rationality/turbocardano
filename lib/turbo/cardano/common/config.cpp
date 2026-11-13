@@ -3,6 +3,7 @@
  * Copyright (c) 2024-2026 R2 Rationality OÜ (info at r2rationality dot com)
  * License: https://github.com/r2rationality/turbocardano/blob/main/LICENSE */
 
+#include <boost/asio/ip/address.hpp>
 #include <turbo/base58.hpp>
 #include <turbo/base64.hpp>
 #include <turbo/cardano/common/config.hpp>
@@ -234,6 +235,189 @@ namespace turbo::cardano {
         return p;
     }
 
+    static dijkstra_genesis_t _prep_dijkstra_genesis(const turbo::config &genesis, const block_hash &hash)
+    {
+        dijkstra_genesis_t p {};
+        p.hash = hash;
+        p.parameters = genesis.json();
+        const auto rational = [&](const std::string_view name, const bool unit_interval=false) {
+            const auto &value = genesis.at(name);
+            if (!value.is_object()) {
+                const auto number = json::value_to<double>(value);
+                if (!std::isfinite(number) || number < 0
+                        || number >= static_cast<double>(std::numeric_limits<uint64_t>::max())) [[unlikely]]
+                    throw error{"invalid Dijkstra genesis rational: {}", name};
+            }
+            auto result = rational_u64::from_json(value);
+            if (!result.denominator || (unit_interval && result.numerator > result.denominator)) [[unlikely]]
+                throw error{"invalid Dijkstra genesis rational: {}", name};
+            result.normalize();
+            return result;
+        };
+        p.leios_announcement_period_length = json::value_to<uint32_t>(genesis.at("leiosAnnouncementPeriodLength"));
+        p.leios_committee_size = json::value_to<uint16_t>(genesis.at("leiosCommitteeSize"));
+        p.leios_diffusion_period_length = json::value_to<uint32_t>(genesis.at("leiosDiffusionPeriodLength"));
+        p.leios_quorum_stake_threshold = rational("leiosQuorumStakeThreshold", true);
+        p.leios_vote_period_length = json::value_to<uint32_t>(genesis.at("leiosVotePeriodLength"));
+        const auto &units = genesis.at("maxEndorserBlockExecutionUnits");
+        p.max_endorser_block_execution_units = {
+            json::value_to<uint64_t>(units.at("memory")), json::value_to<uint64_t>(units.at("steps"))
+        };
+        if (p.max_endorser_block_execution_units.mem > std::numeric_limits<int64_t>::max()
+                || p.max_endorser_block_execution_units.steps > std::numeric_limits<int64_t>::max()) [[unlikely]]
+            throw error{"Dijkstra genesis execution units exceed max_int64"};
+        p.max_endorser_block_references_size = json::value_to<uint32_t>(genesis.at("maxEndorserBlockReferencesSize"));
+        p.max_endorser_block_txs_size = json::value_to<uint32_t>(genesis.at("maxEndorserBlockTxsSize"));
+        if (const auto *leverage = genesis.json().if_contains("maxPledgeLeverage"); leverage && !leverage->is_null())
+            p.max_pledge_leverage = rational("maxPledgeLeverage");
+        p.max_ref_script_size_per_block = json::value_to<uint32_t>(genesis.at("maxRefScriptSizePerBlock"));
+        p.max_ref_script_size_per_endorser_block = json::value_to<uint32_t>(genesis.at("maxRefScriptSizePerEndorserBlock"));
+        p.max_ref_script_size_per_tx = json::value_to<uint32_t>(genesis.at("maxRefScriptSizePerTx"));
+        p.min_pool_margin = rational("minPoolMargin", true);
+        p.ref_script_cost_stride = json::value_to<uint32_t>(genesis.at("refScriptCostStride"));
+        p.ref_script_cost_multiplier = rational("refScriptCostMultiplier");
+        if (!p.ref_script_cost_stride) [[unlikely]]
+            throw error{"Dijkstra genesis refScriptCostStride must be positive"};
+        if (!p.ref_script_cost_multiplier.numerator) [[unlikely]]
+            throw error{"Dijkstra genesis refScriptCostMultiplier must be positive"};
+        p.peras_min_candidate_block_age = json::value_to<uint32_t>(genesis.at("perasMinCandidateBlockAge"));
+        p.peras_healing_factor = rational("perasHealingFactor");
+        if (!p.peras_healing_factor.numerator) [[unlikely]]
+            throw error{"Dijkstra genesis perasHealingFactor must be positive"};
+        p.peras_cert_boost = json::value_to<uint16_t>(genesis.at("perasCertBoost"));
+        p.peras_target_committee_size = json::value_to<uint16_t>(genesis.at("perasTargetCommitteeSize"));
+        if (!genesis.at("perasBootstrapRound").is_null())
+            p.peras_bootstrap_round.emplace(json::value_to<uint32_t>(genesis.at("perasBootstrapRound")));
+        p.peras_quorum_threshold_safety_margin = rational("perasQuorumThresholdSafetyMargin", true);
+        p.ref_inputs_cost_per_multi_asset_policy = json::value_to<uint64_t>(genesis.at("refInputsCostPerMultiAssetPolicy"));
+        p.ref_inputs_cost_per_datum_byte = json::value_to<uint64_t>(genesis.at("refInputsCostPerDatumByte"));
+        for (const auto &cost: genesis.at("plutusV4CostModel").as_array())
+            p.plutus_v4_cost_model.emplace_back(json::value_to<int64_t>(cost));
+        if (p.plutus_v4_cost_model.empty()) [[unlikely]]
+            throw error{"Dijkstra genesis requires a nonempty Plutus V4 cost model"};
+        return p;
+    }
+
+    static const json::object &_genesis_injection(const json::object &genesis,
+        const std::string_view name, const json::object &legacy)
+    {
+        if (const auto *extra = genesis.if_contains("extraConfig"); extra && !extra->is_null()) {
+            if (const auto *source = extra->as_object().if_contains(name); source && !source->is_null()) {
+                const auto &obj = source->as_object();
+                if (const auto *file = obj.if_contains("file"); file && !file->is_null()) [[unlikely]]
+                    throw error{"external Shelley genesis injection files are not supported: {}", name};
+                if (const auto *data = obj.if_contains("data"); data && !data->is_null()) {
+                    if (!legacy.empty()) [[unlikely]]
+                        throw error{"conflicting legacy and extraConfig Shelley genesis data: {}", name};
+                    return data->as_object();
+                }
+            }
+        }
+        return legacy;
+    }
+
+    static uint8_t _genesis_network_id(const json::value &value)
+    {
+        const auto &name = value.as_string();
+        if (name == "Mainnet")
+            return 1;
+        if (name == "Testnet")
+            return 0;
+        throw error{"unsupported genesis network id: {}", std::string_view { name }};
+    }
+
+    static relay_info _genesis_pool_relay(const json::value &value)
+    {
+        const auto &obj = value.as_object();
+        const auto port = [](const json::object &fields) -> nil_optional_t<uint16_t> {
+            if (const auto *v = fields.if_contains("port"); v && !v->is_null())
+                return json::value_to<uint16_t>(*v);
+            return {};
+        };
+        if (const auto *addr = obj.if_contains("single host address")) {
+            relay_addr relay { .port=port(addr->as_object()) };
+            if (const auto *v = addr->as_object().if_contains("IPv4"); v && !v->is_null()) {
+                const auto bytes = boost::asio::ip::make_address_v4(json::value_to<std::string>(*v)).to_bytes();
+                relay.ipv4.emplace(buffer { bytes.data(), bytes.size() });
+            }
+            if (const auto *v = addr->as_object().if_contains("IPv6"); v && !v->is_null()) {
+                const auto bytes = boost::asio::ip::make_address_v6(json::value_to<std::string>(*v)).to_bytes();
+                relay.ipv6.emplace(buffer { bytes.data(), bytes.size() });
+            }
+            return { std::move(relay) };
+        }
+        if (const auto *host = obj.if_contains("single host name"))
+            return { relay_host { port(host->as_object()), json::value_to<std::string>(host->at("dnsName")) } };
+        return { relay_dns { json::value_to<std::string>(obj.at("multi host name").at("dnsName")) } };
+    }
+
+    static shelley_initial_state_t _prep_shelley_initial_state(const turbo::config &genesis)
+    {
+        shelley_initial_state_t result {};
+        static const json::object empty {};
+        const auto *staking = genesis.json().if_contains("staking");
+        const auto &funds = _genesis_injection(genesis.json(), "initialFunds", genesis.at("initialFunds").as_object());
+        const auto &pools = _genesis_injection(genesis.json(), "stakePools", staking ? staking->at("pools").as_object() : empty);
+        const auto &delegations = _genesis_injection(genesis.json(), "stakeCredentials", staking ? staking->at("stake").as_object() : empty);
+        if ((!funds.empty() || !pools.empty() || !delegations.empty()) && _genesis_network_id(genesis.at("networkId"))) [[unlikely]]
+            throw error{"Shelley genesis funds and staking injection is only supported on testnets"};
+        auto remaining = json::value_to<uint64_t>(genesis.at("maxLovelaceSupply"));
+        for (const auto &[addr, value]: funds) {
+            auto bytes = uint8_vector::from_hex(addr);
+            static_cast<void>(address { bytes });
+            const auto coin = json::value_to<uint64_t>(value);
+            if (coin > remaining || coin > std::numeric_limits<int64_t>::max()) [[unlikely]]
+                throw error{"Shelley genesis funds exceed the available supply"};
+            remaining -= coin;
+            const tx_out_ref id { crypto::blake2b::digest<tx_hash>(bytes), 0 };
+            if (!result.utxos.try_emplace(id, tx_out_data { std::move(bytes), coin }).second) [[unlikely]]
+                throw error{"duplicate Shelley genesis output: {}", id};
+        }
+        result.pools.reserve(pools.size());
+        for (const auto &[key, value]: pools) {
+            const auto id = pool_hash::from_hex(key);
+            const auto &obj = value.as_object();
+            const auto *pool_id = obj.if_contains("poolId");
+            if (id != pool_hash::from_hex((pool_id ? *pool_id : obj.at("publicKey")).as_string())) [[unlikely]]
+                throw error{"Shelley genesis pool id differs from its map key: {}", std::string_view { key }};
+            pool_params params {};
+            params.vrf_vkey = vrf_vkey::from_hex(obj.at("vrf").as_string());
+            params.pledge = json::value_to<uint64_t>(obj.at("pledge"));
+            params.cost = json::value_to<uint64_t>(obj.at("cost"));
+            params.margin = rational_u64::from_json(obj.at("margin"));
+            if (!params.margin.denominator || params.margin.numerator > params.margin.denominator) [[unlikely]]
+                throw error{"Shelley genesis pool margin must be in [0, 1]"};
+            const auto *account = obj.if_contains("accountAddress");
+            const auto &reward = account ? *account : obj.at("rewardAccount");
+            const auto &credential = reward.at("credential").as_object();
+            const auto *key_hash = credential.if_contains("keyHash");
+            const auto hash = stake_keyhash_t::from_hex<stake_keyhash_t>((key_hash ? *key_hash : credential.at("scriptHash")).as_string());
+            params.reward_id.at(0) = (key_hash ? 0xE0 : 0xF0) | _genesis_network_id(reward.at("network"));
+            std::copy(hash.begin(), hash.end(), params.reward_id.begin() + 1);
+            for (const auto &owner: obj.at("owners").as_array())
+                params.owners.emplace(stake_keyhash_t::from_hex<stake_keyhash_t>(owner.as_string()));
+            for (const auto &relay: obj.at("relays").as_array())
+                params.relays.emplace_back(_genesis_pool_relay(relay));
+            if (const auto &metadata = obj.at("metadata"); !metadata.is_null()) {
+                params.metadata.emplace();
+                params.metadata->url = json::value_to<std::string>(metadata.at("url"));
+                const auto hash_bytes = uint8_vector::from_hex(metadata.at("hash").as_string());
+                params.metadata->hash = buffer { hash_bytes };
+            }
+            if (const auto *bls = obj.if_contains("blsKey"); bls && !bls->is_null()) [[unlikely]]
+                throw error{"Shelley genesis BLS pool keys are not supported"};
+            result.pools.try_emplace(id, std::move(params));
+        }
+        result.delegations.reserve(delegations.size());
+        for (const auto &[key, value]: delegations) {
+            const auto pool = pool_hash::from_hex(value.as_string());
+            if (!result.pools.contains(pool)) [[unlikely]]
+                throw error{"Shelley genesis delegates to an unknown pool: {}", pool};
+            result.delegations.try_emplace(stake_keyhash_t::from_hex<stake_keyhash_t>(key), pool);
+        }
+        return result;
+    }
+
     struct config::immutable {
         block_hash byron_genesis_hash {};
         uint32_t byron_protocol_magic = 0;
@@ -262,8 +446,10 @@ namespace turbo::cardano {
         uint64_t shelley_voting_deadline = 0;
         uint64_t shelley_chunks_per_epoch = 0;
         shelley_delegate_map shelley_delegates {};
+        shelley_initial_state_t shelley_initial_state {};
         block_hash alonzo_genesis_hash {};
         block_hash conway_genesis_hash {};
+        std::optional<dijkstra_genesis_t> dijkstra_genesis {};
         plutus_cost_models plutus_all_cost_models {};
         pool_voting_thresholds_t conway_pool_voting_thresholds {};
         drep_voting_thresholds_t conway_drep_voting_thresholds {};
@@ -309,7 +495,7 @@ namespace turbo::cardano {
             if (json::value_to<uint32_t>(shelley.at("networkMagic")) != byron_protocol_magic) [[unlikely]]
                 throw error{"Byron and Shelley network magic differ"};
             {
-                static constexpr std::array<std::string_view, 6> forks{"Shelley", "Allegra", "Mary", "Alonzo", "Babbage", "Conway"};
+                static constexpr std::array<std::string_view, 7> forks{"Shelley", "Allegra", "Mary", "Alonzo", "Babbage", "Conway", "Dijkstra"};
                 bool previous_forced = true;
                 uint64_t initial_era = 1;
                 for (const auto name: forks) {
@@ -331,7 +517,7 @@ namespace turbo::cardano {
             shelley_epoch_length = json::value_to<uint64_t>(shelley.at("epochLength"));
             shelley_update_quorum = json::value_to<uint64_t>(shelley.at("updateQuorum"));
             shelley_max_lovelace_supply = json::value_to<uint64_t>(shelley.at("maxLovelaceSupply"));
-            shelley_network_id = shelley.at("networkId").as_string() == "Mainnet" ? uint8_t { 1 } : uint8_t { 0 };
+            shelley_network_id = _genesis_network_id(shelley.at("networkId"));
             shelley_active_slots_coeff = rational_u64::from_json(shelley.at("activeSlotsCoeff"));
             shelley_slots_per_kes_period = json::value_to<uint64_t>(shelley.at("slotsPerKESPeriod"));
             shelley_max_kes_evolutions = json::value_to<uint64_t>(shelley.at("maxKESEvolutions"));
@@ -356,6 +542,10 @@ namespace turbo::cardano {
             shelley_chunks_per_epoch = shelley_epoch_length / byron_slots_per_chunk;
             shelley_delegates = config::_shelley_prep_delegates(shelley);
             shelley_protocol_params = _prep_shelley_protocol_params(shelley);
+            shelley_initial_state = _prep_shelley_initial_state(shelley);
+            if (initial_protocol_version.major < 2 && (!shelley_initial_state.utxos.empty()
+                    || !shelley_initial_state.pools.empty() || !shelley_initial_state.delegations.empty())) [[unlikely]]
+                throw error{"Shelley genesis injection requires an epoch-zero Shelley or later network"};
 
             const auto &alonzo = genesis("AlonzoGenesisFile");
             alonzo_genesis_hash = config::_verify_hash(
@@ -379,6 +569,24 @@ namespace turbo::cardano {
             conway_committee_threshold = decltype(conway_committee_threshold)::from_json(
                 committee.at("threshold"));
             conway_constitution = constitution_t::from_json(conway.at("constitution"));
+
+            const auto *dijkstra_file = node_config.json().if_contains("DijkstraGenesisFile");
+            const auto *dijkstra_hash = node_config.json().if_contains("DijkstraGenesisHash");
+            if (static_cast<bool>(dijkstra_file) != static_cast<bool>(dijkstra_hash)) [[unlikely]]
+                throw error("DijkstraGenesisFile and DijkstraGenesisHash must be configured together");
+            if (dijkstra_file) {
+                const std::filesystem::path path { json::value_to<std::string>(*dijkstra_file) };
+                // configs_dir indexes adjacent JSON files by stem; do not silently
+                // substitute an adjacent file for a reference to another directory.
+                if (path.empty() || path.extension() != ".json" || path.is_absolute()
+                        || (path.has_parent_path() && path.parent_path() != ".")) [[unlikely]]
+                    throw error("DijkstraGenesisFile must name a JSON file in the configuration directory");
+                const auto &dijkstra = genesis("DijkstraGenesisFile");
+                dijkstra_genesis = _prep_dijkstra_genesis(dijkstra,
+                    config::_verify_hash(dijkstra_hash->as_string(), dijkstra));
+            }
+            if (initial_protocol_version.major >= 12 && !dijkstra_genesis) [[unlikely]]
+                throw error{"Dijkstra genesis is required for an epoch-zero Dijkstra network"};
         }
     };
 
@@ -413,8 +621,10 @@ namespace turbo::cardano {
         shelley_voting_deadline { _immutable->shelley_voting_deadline },
         shelley_chunks_per_epoch { _immutable->shelley_chunks_per_epoch },
         shelley_delegates { _immutable->shelley_delegates },
+        shelley_initial_state { _immutable->shelley_initial_state },
         alonzo_genesis_hash { _immutable->alonzo_genesis_hash },
         conway_genesis_hash { _immutable->conway_genesis_hash },
+        dijkstra_genesis { _immutable->dijkstra_genesis },
         plutus_all_cost_models { _immutable->plutus_all_cost_models },
         conway_pool_voting_thresholds { _immutable->conway_pool_voting_thresholds },
         conway_drep_voting_thresholds { _immutable->conway_drep_voting_thresholds },

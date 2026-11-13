@@ -45,7 +45,7 @@
                     const auto msg = fmt::format("txwit epoch: {} slot: {} tx: {}: {}", part.epoch, tx.slot, tx.tx_id, ex.what());
                     logger::error("{}", msg);
                     _cfg.error_handler(msg);
-                    if (tx.era == 7)
+                    if (tx.era == 7 || tx.era == 8)
                         throw;
                 }
             }

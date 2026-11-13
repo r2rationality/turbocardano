@@ -1212,6 +1212,17 @@ namespace turbo::plutus::builtins {
     builtin_semantics semantics_variant(const cardano::script_type typ, const uint64_t protocol_major)
     {
         using cardano::script_type;
+        if (protocol_major >= 12) {
+            switch (typ) {
+                case script_type::plutus_v1:
+                case script_type::plutus_v2:
+                    return builtin_semantics::f;
+                case script_type::plutus_v3:
+                case script_type::plutus_v4:
+                    return builtin_semantics::g;
+                [[unlikely]] default: break;
+            }
+        }
         if (protocol_major >= 11) {
             switch (typ) {
                 case script_type::plutus_v1:
@@ -1241,6 +1252,7 @@ namespace turbo::plutus::builtins {
             case script_type::plutus_v1: return protocol_major >= 5;
             case script_type::plutus_v2: return protocol_major >= 7;
             case script_type::plutus_v3: return protocol_major >= 9;
+            case script_type::plutus_v4: return protocol_major >= 12;
             default: return false;
         }
     }
@@ -1253,10 +1265,10 @@ namespace turbo::plutus::builtins {
         using cardano::script_type;
         switch (typ) {
             case script_type::plutus_v1:
-                return protocol_major >= 11 || batch == 1;
+                return protocol_major >= 11 ? batch <= 6 : batch == 1;
             case script_type::plutus_v2:
                 if (protocol_major >= 11)
-                    return true;
+                    return batch <= 6;
                 if (protocol_major >= 10
                         && (tag == builtin_tag::integer_to_byte_string || tag == builtin_tag::byte_string_to_integer))
                     return true;
@@ -1265,8 +1277,10 @@ namespace turbo::plutus::builtins {
                 return batch <= 2;
             case script_type::plutus_v3:
                 if (protocol_major >= 11)
-                    return true;
+                    return batch <= 6;
                 return batch <= (protocol_major >= 10 ? 5 : 4);
+            case script_type::plutus_v4:
+                return batch <= 6;
             default: return false;
         }
     }
@@ -1277,6 +1291,8 @@ namespace turbo::plutus::builtins {
             return false;
         if (ver == version { 1, 0, 0 })
             return true;
+        if (ver == version { 1, 2, 0 })
+            return protocol_major >= 12;
         if (!(ver == version { 1, 1, 0 }))
             return false;
         return typ == cardano::script_type::plutus_v3 || protocol_major >= 11;

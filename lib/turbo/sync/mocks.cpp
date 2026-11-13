@@ -195,12 +195,12 @@ namespace turbo::sync {
             }
         }
         if (!intersection) {
-            handler(block_response_t { error_msg { "The requested from block is unknown!" } });
+            handler(block_response_t { std::make_exception_ptr(network::transient_error{"The requested from block is unknown!"}) });
             return;
         }
         for (auto it = *intersection; it != _blocks.end(); ++it) {
             if (_fail_gen(fmt::format("block #{}", numeric_cast<uint64_t>((**it)->height())))) {
-                handler("random failure");
+                handler(std::make_exception_ptr(network::transient_error{"random failure"}));
                 break;
             }
             if (!handler({ msg_block_t { (**it).raw() } }) || (**it)->hash() == to.hash)

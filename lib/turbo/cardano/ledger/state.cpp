@@ -5,6 +5,7 @@
 
 #include <turbo/cardano/ledger/babbage.hpp>
 #include <turbo/cardano/ledger/conway.hpp>
+#include <turbo/cardano/ledger/dijkstra.hpp>
 #include <turbo/cardano/ledger/state.hpp>
 #include <turbo/cardano/ledger/node-snapshot.hpp>
 #include <turbo/cardano/ledger/updates.hpp>
@@ -200,6 +201,7 @@ namespace turbo::cardano::ledger {
             _state->_apply_param_update({.protocol_ver=_cfg.initial_protocol_version});
             _transition_era(0, _cfg.initial_protocol_version.era());
             track_era(_cfg.initial_protocol_version.era(), 0);
+            _state->_initialize_genesis();
         }
     }
 
@@ -249,7 +251,7 @@ namespace turbo::cardano::ledger {
                     _state = std::make_unique<conway::state>(std::move(dynamic_cast<babbage::state &>(*_state)));
                     break;
                 case 8:
-                    // Dijkstra currently reuses the Conway ledger-state implementation.
+                    _state = std::make_unique<dijkstra::state>(std::move(dynamic_cast<conway::state &>(*_state)));
                     break;
                 [[unlikely]] default: throw error{"unsupported era: {}", new_era};
             }
@@ -276,7 +278,7 @@ namespace turbo::cardano::ledger {
                     _vrf_state = std::make_unique<conway::vrf_state>(std::move(dynamic_cast<babbage::vrf_state &>(*_vrf_state)));
                     break;
                 case 8:
-                    // Dijkstra currently reuses the Conway VRF-state implementation.
+                    // DijkstraNet retains Praos nonce evolution across the era boundary.
                     break;
                 [[unlikely]] default: throw error{"unsupported era: {}", new_era};
             }
@@ -285,6 +287,8 @@ namespace turbo::cardano::ledger {
 
     void state::_transition_era(const uint64_t from_era, const uint64_t to_era)
     {
+        if (from_era < 8 && to_era >= 8 && !_cfg.dijkstra_genesis) [[unlikely]]
+            throw error{"Dijkstra transition requires a verified Dijkstra genesis"};
         _transition_vrf_era(from_era, to_era);
         _transition_ledger_era(from_era, to_era);
     }

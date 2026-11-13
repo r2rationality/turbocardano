@@ -39,7 +39,7 @@ namespace turbo::sync::p2p {
         explicit inflight_budget(const uint64_t limit): _limit { limit }
         {
             if (!_limit) [[unlikely]]
-                throw error("the sync in-flight memory budget must be greater than zero");
+                throw error{ "the sync in-flight memory budget must be greater than zero" };
         }
 
         std::shared_ptr<lease> acquire(const uint64_t amount, const std::stop_token stop={})
@@ -50,7 +50,7 @@ namespace turbo::sync::p2p {
                 return storage::chunk_work_policy_t::can_admit(_used, amount, _limit);
             });
             if (stop.stop_requested())
-                throw error("sync memory-budget wait stopped");
+                throw error{ "sync memory-budget wait stopped" };
             _used += amount;
             return std::make_shared<lease>(shared_from_this(), amount);
         }
@@ -81,7 +81,7 @@ namespace turbo::sync::p2p {
 
         // Finds a peer and the best intersection point
         [[nodiscard]] std::shared_ptr<sync::peer_info> find_peer(std::optional<network::address> addr,
-            const version_config_t &versions, const std::stop_token stop={}) const
+            const version_config_t &versions, const std::stop_token stop={}, const optional_point &anchor={}) const
         {
             if (!addr)
                 addr = _parent.peer_list().next_cardano();
@@ -90,7 +90,7 @@ namespace turbo::sync::p2p {
             client->set_stop_token(stop);
             // Try to fit into a single packet of 1460 bytes : 37 * (33 + 5) + message header + segment header (8 bytes)
             static constexpr ptrdiff_t points_per_query = 37;
-            auto first_it = _parent.local_chain().cbegin();
+            auto first_it = anchor ? _parent.local_chain().find_block(*anchor) : _parent.local_chain().cbegin();
             auto last_it = _parent.local_chain().cend();
             std::optional<optional_point3> tip {};
             while (last_it - first_it > 1) {
@@ -109,6 +109,8 @@ namespace turbo::sync::p2p {
                 const auto isect_it = _parent.local_chain().find_block(*intersection.isect);
                 if (isect_it == _parent.local_chain().cend()) [[unlikely]]
                     throw error{"failed to find a local block {}:{}", intersection.isect->slot, intersection.isect->hash};
+                if (anchor && isect_it->end_offset() < anchor->end_offset)
+                    throw error{ "upstream intersection precedes the following immutable anchor" };
 
                 if (const auto next_last_it = isect_it + std::min(ptrdiff_t { step }, (last_it - isect_it)); next_last_it != _parent.local_chain().cend())
                     last_it = next_last_it;
@@ -126,6 +128,7 @@ namespace turbo::sync::p2p {
         {
             // target offset is unbounded since the cardano network protocol does not provide the size information
             _invalid_first_offset.store(no_recorded_value, std::memory_order_relaxed);
+            _parse_error = {};
             _next_chunk_offset = 0;
             _last_chunk.clear();
             _last_chunk_id.reset();
@@ -141,63 +144,66 @@ namespace turbo::sync::p2p {
 
         void follow(const std::stop_token stop, const std::function<void(const optional_point &)> &publish,
             const std::optional<network::address> &addr, const version_config_t &versions,
-            const std::chrono::seconds snapshot_interval)
+            const std::chrono::seconds snapshot_interval, const validator::validation_mode validation)
         {
             auto &cr = _parent.local_chain();
             if (!cr.continuous() || snapshot_interval.count() <= 0)
-                throw error("follow requires a continuous registry and a positive snapshot interval");
-            const auto previous_mode = cr.validation(validator::validation_mode::full);
-            scope_exit restore_mode { [&] {
-                if (!cr.tx())
-                    cr.validation(previous_mode);
-            }};
+                throw error{ "follow requires a continuous registry and a positive snapshot interval" };
+            if (validation != validator::validation_mode::full && validation != validator::validation_mode::turbo) [[unlikely]]
+                throw error{"following requires full or turbo validation"};
+            cr.validation(validation);
             auto last_snapshot = std::chrono::steady_clock::now();
             auto snapshot_tip = cr.tip();
             if (cr.save_state(false).partial_groups_merged)
                 publish(cr.tip());
             const auto maybe_save_state = [&] {
                 const auto now = std::chrono::steady_clock::now();
-                if (cr.tip() == snapshot_tip || now - last_snapshot < snapshot_interval) return;
+                if (cr.tip() == snapshot_tip || now - last_snapshot < snapshot_interval)
+                    return;
                 last_snapshot = now;
-                try {
-                    if (cr.save_state(false).partial_groups_merged)
-                        publish(cr.tip());
-                    snapshot_tip = cr.tip();
-                } catch (const std::exception &ex) {
-                    logger::error("live snapshot failed (will retry after the interval): {}", ex.what());
-                }
+                if (cr.save_state(false).partial_groups_merged)
+                    publish(cr.tip());
+                snapshot_tip = cr.tip();
             };
             while (!stop.stop_requested()) {
                 try {
-                    auto base_peer = find_peer(addr, versions, stop);
+                    const auto anchor = _follow_anchor();
+                    auto base_peer = find_peer(addr, versions, stop, anchor);
                     auto &peer = dynamic_cast<peer_info &>(*base_peer);
+                    if (anchor && !peer.intersection())
+                        throw error{ "upstream fork exceeds the following rollback limit" };
                     optional_point2_list points;
-                    if (peer.intersection()) points.emplace_back(*peer.intersection());
-                    points.emplace_back(); // Origin is always a valid intersection.
+                    if (peer.intersection())
+                        points.emplace_back(*peer.intersection());
+                    if (anchor)
+                        points.emplace_back(*anchor);
+                    else
+                        points.emplace_back();
                     const auto intersection = peer.client().find_intersection_sync(points);
-                    if (!intersection.found) throw error("upstream failed to intersect at origin");
+                    if (!intersection.found)
+                        throw error{ "upstream has no intersection within the following rollback limit" };
                     if (!intersection.tip && cr.tip())
-                        throw error("empty upstream cannot replace a populated local chain");
+                        throw error{ "empty upstream cannot replace a populated local chain" };
                     optional_point isect;
-                    if (intersection.isect) isect = cr.get_block_info(*intersection.isect).point();
+                    if (intersection.isect)
+                        isect = cr.get_block_info(*intersection.isect).point();
+                    _require_follow_rollback(isect);
                     auto highest_tip = cr.tip();
                     std::chrono::steady_clock::duration peer_wait {};
-                    if (isect != cr.tip()) {
-                        cr.truncate(isect);
-                        publish(isect);
-                    }
+                    // ChainSync rewinds a candidate cursor, never the committed chain.
+                    // A replacement suffix is installed by the existing journaled import.
                     while (!stop.stop_requested()) {
                         header_list headers;
                         optional_point3 remote_tip {};
                         bool bulk = false;
                         // Bound each transaction. At the tip, a single block is
                         // processed immediately instead of waiting for a full batch.
-                        while (headers.size() < 256 && !stop.stop_requested()) {
+                        while ((headers.size() < 256 || isect != cr.tip()) && !stop.stop_requested()) {
                             auto wait_started = std::chrono::steady_clock::now();
                             const auto check_progress = [&] {
                                 // Pinned peers may be idle; ChainSync/KeepAlive detect lost connections.
                                 if (!addr && peer_wait + (std::chrono::steady_clock::now() - wait_started) >= std::chrono::seconds{30}) [[unlikely]]
-                                    throw error{"peer supplied no advancing chain after 30 seconds waiting for headers"};
+                                    throw network::transient_error{"peer supplied no advancing chain after 30 seconds waiting for headers"};
                             };
                             const auto update = peer.client().next_header_sync(stop, [&] {
                                 const auto save_started = std::chrono::steady_clock::now();
@@ -215,35 +221,64 @@ namespace turbo::sync::p2p {
                                 } else {
                                     headers.clear();
                                     optional_point target;
-                                    if (update.point) target = cr.get_block_info(*update.point).point();
-                                    if (target != cr.tip()) {
-                                        cr.truncate(target);
-                                        publish(target);
-                                    }
+                                    if (update.point)
+                                        target = cr.get_block_info(*update.point).point();
+                                    _require_follow_rollback(target);
+                                    isect = target;
                                 }
-                                if (!headers.empty() && remote_tip && headers.back().hash == remote_tip->hash) break;
+                                if (isect == cr.tip() && !headers.empty() && remote_tip && headers.back().hash == remote_tip->hash)
+                                    break;
                                 continue;
                             }
-                            if (!update.point) throw error("RollForward without a header");
-                            if (!remote_tip) throw error("RollForward with a tip at origin");
+                            if (!update.point)
+                                throw error{ "RollForward without a header" };
+                            if (!remote_tip)
+                                throw error{ "RollForward with a tip at origin" };
                             headers.emplace_back(*update.point);
                             const auto local_height = cr.tip() ? cr.tip()->height : 0;
-                            if (headers.size() == 1 && remote_tip.height > local_height + 256) {
+                            if ((headers.size() == 1 && remote_tip.height > local_height + 256)
+                                    || (isect != cr.tip() && remote_tip.height >= local_height)) {
                                 // Preserve the existing parallel range import for catch-up.
                                 // Its terminal hash is fixed by this announcement.
                                 bulk = true;
                                 break;
                             }
-                            if (headers.back().hash == remote_tip->hash) break;
+                            if (isect == cr.tip() && headers.back().hash == remote_tip->hash)
+                                break;
+                            if (headers.size() > cr.config().shelley_security_param
+                                    && headers.size() - cr.config().shelley_security_param > 256)
+                                throw error{ "upstream candidate exceeds the following header buffer limit" };
                         }
-                        if (headers.empty() || stop.stop_requested()) break;
-                        const auto start = cr.tip();
+                        if (headers.empty() || stop.stop_requested())
+                            break;
+                        const auto committed_tip = cr.tip();
+                        const auto start = isect;
+                        _require_follow_rollback(start);
+                        const auto replaced_blocks = start == committed_tip ? 0
+                            : cr.cend() - (start ? cr.find_block(*start) + 1 : cr.cbegin());
                         point2 target = bulk ? remote_tip.value() : headers.back();
                         peer.intersection(start);
                         std::exception_ptr failure;
                         bool commit_requested = false;
                         {
                             scope_exit clear { [&] { cr.before_commit({}); _follow_range.reset(); } };
+                            bool fetched = false;
+                            cr.before_commit([&] {
+                                // Enforce this even after fetch failure, shutdown or a partial
+                                // commit request. Otherwise repeated short rollbacks could
+                                // walk the immutable boundary backwards, including on restart.
+                                if (replaced_blocks) {
+                                    const auto first = cr.find_by_offset(start ? start->end_offset : 0);
+                                    // Iterator addition stops at end; inspect at most k blocks.
+                                    if (first + (replaced_blocks - 1) == cr.cend())
+                                        throw error{ "following cannot commit a shorter selected chain" };
+                                }
+                                if (!fetched || stop.stop_requested())
+                                    return;
+                                const auto tip = cr.tip();
+                                if (!tip || (tip->hash != target.hash && !cr.commit_requested()))
+                                    throw network::transient_error{ "block fetch did not reach the announced boundary" };
+                            });
                             _follow_range = std::make_pair(headers.front(), target);
                             progress_point progress_target { target.slot };
                             progress_target.height = remote_tip.height;
@@ -251,20 +286,16 @@ namespace turbo::sync::p2p {
                                 sync_attempt(peer, target.slot, stop);
                                 // Commit may clear the request after saving state.
                                 commit_requested = cr.commit_requested();
-                                cr.before_commit([&] {
-                                    if (stop.stop_requested()) return;
-                                    const auto tip = cr.tip();
-                                    if (!tip || (tip->hash != target.hash && !cr.commit_requested()))
-                                        throw error("block fetch did not reach the announced boundary");
-                                });
+                                fetched = true;
                             });
                         }
                         if (const auto tip = cr.tip(); tip && (!highest_tip || tip->height > highest_tip->height)) {
                             highest_tip = tip;
                             peer_wait = {};
                         }
-                        if (cr.tip() != start)
+                        if (cr.tip() != committed_tip)
                             publish(start);
+                        isect = cr.tip();
                         if (stop.stop_requested()) {
                             break;
                         }
@@ -277,12 +308,10 @@ namespace turbo::sync::p2p {
                             // may also interrupt a short fetch and close its connection.
                             const auto found = peer.client().find_intersection_sync(optional_point2_list { target });
                             if (!found.isect || found.isect->hash != target.hash)
-                                throw error("upstream changed branch during catch-up");
+                                throw network::transient_error{ "upstream changed branch during catch-up" };
                         }
                     }
-                } catch (const validator::deferred_validation_error &) {
-                    throw;
-                } catch (const std::exception &ex) {
+                } catch (const network::transient_error &ex) {
                     if (stop.stop_requested()) {
                         break;
                     }
@@ -291,6 +320,10 @@ namespace turbo::sync::p2p {
                     publish(cr.tip());
                     for (size_t i = 0; i < 10 && !stop.stop_requested(); ++i)
                         std::this_thread::sleep_for(std::chrono::milliseconds { 100 });
+                } catch (...) {
+                    if (stop.stop_requested())
+                        break;
+                    throw;
                 }
             }
             logger::info("continuous sync stopped; saving final snapshot");
@@ -315,6 +348,32 @@ namespace turbo::sync::p2p {
     private:
         static constexpr uint64_t no_recorded_value = std::numeric_limits<uint64_t>::max();
 
+        // Exact block boundary, using only metadata in the last k blocks' chunks.
+        // The export-oriented chunk_registry::immutable_tip() rounds to a chunk.
+        optional_point _follow_anchor() const
+        {
+            auto remaining = _parent.local_chain().config().shelley_security_param;
+            const auto &chunks = _parent.local_chain().chunks();
+            for (auto it = chunks.rbegin(); it != chunks.rend(); ++it) {
+                const auto &blocks = it->second.blocks;
+                if (remaining < blocks.size())
+                    return blocks[blocks.size() - 1 - remaining].point();
+                remaining -= blocks.size();
+            }
+            return {};
+        }
+
+        // Targets have already been resolved by hash and slot in the selected chain.
+        // Its logical byte offsets strictly preserve block order; peer-provided or
+        // alternative-chain offsets must never be compared with this anchor.
+        void _require_follow_rollback(const optional_point &target) const
+        {
+            if (target == _parent.local_chain().tip())
+                return;
+            if (const auto anchor = _follow_anchor(); anchor && (!target || target->end_offset < anchor->end_offset))
+                throw error{"upstream rollback to {} precedes the following immutable anchor {}", target, anchor};
+        }
+
         syncer &_parent;
         client_manager &_client_manager;
         std::filesystem::path _raw_dir;
@@ -332,6 +391,7 @@ namespace turbo::sync::p2p {
 
         alignas(mutex::alignment) mutex::unique_lock::mutex_type _invalid_mutex{};
         std::atomic<uint64_t> _invalid_first_offset { no_recorded_value };
+        std::exception_ptr _parse_error;
 
         static void _record_monotonic(std::atomic<uint64_t> &target, const uint64_t value, auto should_replace)
         {
@@ -344,8 +404,11 @@ namespace turbo::sync::p2p {
             }
         }
 
-        void _record_invalid_offset(const uint64_t chunk_offset)
+        void _record_parse_error(const uint64_t chunk_offset, const std::exception_ptr &failure)
         {
+            mutex::scoped_lock lk { _invalid_mutex };
+            if (!_parse_error)
+                _parse_error = failure;
             _record_monotonic(_invalid_first_offset, chunk_offset, [](const auto candidate, const auto current) {
                 return candidate < current;
             });
@@ -379,12 +442,13 @@ namespace turbo::sync::p2p {
                 return;
             }
             if (!headers.empty() && (!max_slot || headers.front().slot <= *max_slot)) {
-                if (!tip) throw error("cannot fetch blocks from a tip at origin");
+                if (!tip)
+                    throw error{ "cannot fetch blocks from a tip at origin" };
                 _parse_start_chunk_id = cardano::slot { headers.front().slot, _parent.local_chain().config() }.chunk_id();
                 _parse_target_chunk_id = cardano::slot { max_slot.value_or(tip->slot), _parent.local_chain().config() }.chunk_id();
                 _parse_next_chunk_id = _parse_start_chunk_id;
                 // Completed batches preserve the connection; early stops close it promptly.
-                std::optional<std::string> err{};
+                std::exception_ptr err;
                 try {
                     peer.client().fetch_blocks(headers.front(), *tip, [&](auto resp) {
                         return std::visit([&](auto &&rv) -> bool {
@@ -393,7 +457,8 @@ namespace turbo::sync::p2p {
                                 err = std::move(rv);
                                 return false;
                             } else if constexpr (std::is_same_v<T, client::msg_block_t>) {
-                                if (stop.stop_requested() || _parent.local_chain().commit_requested()) return false;
+                                if (stop.stop_requested() || _parent.local_chain().commit_requested())
+                                    return false;
                                 std::unique_ptr<parsed_block> blk;
                                 try {
                                     blk = std::make_unique<parsed_block>(rv.bytes, _parent.local_chain().config());
@@ -420,10 +485,10 @@ namespace turbo::sync::p2p {
                                 _add_block(blk->blk);
                                 return true;
                             } else if constexpr (std::is_same_v<T, client::msg_compressed_blocks_t>) {
-                                if (stop.stop_requested() || _parent.local_chain().commit_requested()) return false;
-                                if (rv.encoding != T::encoding_zstd_fast && rv.encoding != T::encoding_zstd_max) [[unlikely]] {
-                                    logger::error("unsupported encoding: {}", rv.encoding);
+                                if (stop.stop_requested() || _parent.local_chain().commit_requested())
                                     return false;
+                                if (rv.encoding != T::encoding_zstd_fast && rv.encoding != T::encoding_zstd_max) [[unlikely]] {
+                                    throw error{"unsupported encoding: {}", rv.encoding};
                                 }
                                 if (_invalid_first_offset.load(std::memory_order_relaxed) != no_recorded_value
                                         || _slot_limit_reached.load(std::memory_order_relaxed))
@@ -436,20 +501,21 @@ namespace turbo::sync::p2p {
                                     max_slot && *max_slot < tip->slot ? max_slot : optional_slot {});
                                 return true;
                             } else {
-                                logger::error("unsupported message: {}", typeid(T).name());
-                                return false;
+                                throw error{"unsupported message: {}", typeid(T).name()};
                             }
                         }, std::move(resp));
                     });
-                } catch (const std::exception &ex) {
+                } catch (...) {
                     if (!err)
-                        err = ex.what();
+                        err = std::current_exception();
                 }
                 peer.client().process(&_parent.local_chain().sched());
                 _add_last_chunk_if_not_empty();
                 _parent.local_chain().sched().process();
+                if (_parse_error)
+                    std::rethrow_exception(_parse_error);
                 if (err && !stop.stop_requested()) [[unlikely]]
-                    throw error{"fetch_block has failed with error: {}", err};
+                    std::rethrow_exception(err);
             }
         }
 
@@ -520,7 +586,7 @@ namespace turbo::sync::p2p {
                         _report_chunk_download_progress(progress);
                     });
                     if (ex_ptr) [[unlikely]]
-                        _record_invalid_offset(chunk_offset);
+                        _record_parse_error(chunk_offset, ex_ptr);
                 });
         }
 
@@ -545,7 +611,7 @@ namespace turbo::sync::p2p {
                         _report_chunk_download_progress(progress);
                     });
                     if (ex_ptr) [[unlikely]]
-                        _record_invalid_offset(chunk_offset);
+                        _record_parse_error(chunk_offset, ex_ptr);
                 });
         }
 
@@ -553,7 +619,7 @@ namespace turbo::sync::p2p {
         {
             if (!_last_chunk.empty()) {
                 if (!_last_chunk_id) [[unlikely]]
-                    throw error("a non-empty sync chunk has no chunk id");
+                    throw error{ "a non-empty sync chunk has no chunk id" };
                 _add_chunk(std::move(_last_chunk), _parse_priority(*_last_chunk_id));
                 _last_chunk.clear();
                 _last_chunk_id.reset();
@@ -602,9 +668,9 @@ namespace turbo::sync::p2p {
 
     void syncer::follow(const std::stop_token stop, const std::function<void(const optional_point &)> &on_update,
         const std::optional<network::address> addr, const version_config_t &versions,
-        const std::chrono::seconds snapshot_interval)
+        const std::chrono::seconds snapshot_interval, const validator::validation_mode validation)
     {
-        _impl->follow(stop, on_update, addr, versions, snapshot_interval);
+        _impl->follow(stop, on_update, addr, versions, snapshot_interval, validation);
     }
 
     void syncer::cancel_tasks(const uint64_t max_valid_offset)

@@ -20,6 +20,11 @@ namespace turbo::cardano::dijkstra {
     const multi_mint_map &tx::mints() const { return _body.mints; }
     const tx_output_list &tx::outputs() const { return _body.outputs; }
     buffer tx::raw() const { return _raw; }
+    uint32_t tx::ledger_size() const
+    {
+        return numeric_cast<uint32_t>(1 + _body.raw.size() + witness_raw().size()
+            + (_auxiliary_data_raw.empty() ? 1 : _auxiliary_data_raw.size()));
+    }
     const input_set &tx::ref_inputs() const { return _body.ref_inputs; }
     const signer_set &tx::required_signers() const { return _body.required_signers; }
     std::optional<uint64_t> tx::current_treasury() const { return _body.current_treasury; }

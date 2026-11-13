@@ -18,6 +18,7 @@
 #include <turbo/cardano/common/common.hpp>
 #include <turbo/cardano/common/native-script.hpp>
 #include <turbo/cardano/babbage/block.hpp>
+#include <turbo/cardano/dijkstra/transaction.hpp>
 #include <turbo/cardano/ledger/state.hpp>
 #include <turbo/cardano/ledger/rules/utxow/reference-native.hpp>
 #include <turbo/cbor/zero2.hpp>

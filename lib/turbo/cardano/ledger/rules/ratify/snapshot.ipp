@@ -93,7 +93,6 @@
     void state::rotate_snapshots()
     {
         babbage::state::rotate_snapshots();
-        // Freeze defaults before POOLREAP, future pool parameters, and payouts.
         _snapshot_pool_default_votes();
     }
 

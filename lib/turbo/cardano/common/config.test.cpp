@@ -12,12 +12,259 @@
 using namespace turbo;
 using namespace turbo::cardano;
 
+namespace {
+    configs_mock::map_type dijkstra_config_files(const std::string_view network = "dijkstra")
+    {
+        const configs_dir source { configs_dir::network_path(network) };
+        configs_mock::map_type files;
+        for (const auto name: {"config", "byron-genesis", "shelley-genesis", "alonzo-genesis", "conway-genesis", "dijkstra-genesis"})
+            files.emplace(name, config_json { source.at(name) });
+        return files;
+    }
+
+    void replace_dijkstra_genesis(configs_mock::map_type &files, json::object genesis)
+    {
+        files.at("dijkstra-genesis") = config_json { std::move(genesis) };
+        auto node = files.at("config").json();
+        node.at("DijkstraGenesisHash") = fmt::format("{}",
+            crypto::blake2b::digest<block_hash>(files.at("dijkstra-genesis").bytes()));
+        files.at("config") = config_json { std::move(node) };
+    }
+
+    void replace_shelley_genesis(configs_mock::map_type &files, json::object genesis)
+    {
+        files.at("shelley-genesis") = config_json { std::move(genesis) };
+        auto node = files.at("config").json();
+        node.at("ShelleyGenesisHash") = fmt::format("{}",
+            crypto::blake2b::digest<block_hash>(files.at("shelley-genesis").bytes()));
+        files.at("config") = config_json { std::move(node) };
+    }
+}
+
 suite cardano_config_suite = [] {
     "cardano::config"_test = [] {
         static_assert(std::is_nothrow_move_constructible_v<cardano::config>);
         static_assert(std::is_nothrow_move_assignable_v<cardano::config>);
         static_assert(std::movable<cardano::config>);
         const cardano::config cfg {};
+        "embedded and legacy Shelley genesis injections agree"_test = [] {
+            auto files = dijkstra_config_files();
+            auto genesis = files.at("shelley-genesis").json();
+            auto &extra = genesis.at("extraConfig");
+            auto &pool = extra.at("stakePools").at("data").as_object().begin()->value();
+            const auto owner = extra.at("stakeCredentials").at("data").as_object().begin()->key();
+            pool.at("owners") = json::array { json::string { owner } };
+            pool.at("margin") = 0.25;
+            pool.at("metadata") = json::object {
+                { "url", "https://example.com/pool.json" }, { "hash", std::string(64, '0') }
+            };
+            pool.at("relays") = json::array {
+                json::object { { "single host address", json::object { { "port", 3001 }, { "IPv4", "127.0.0.1" }, { "IPv6", "::1" } } } },
+                json::object { { "single host name", json::object { { "dnsName", "relay.example.com" } } } },
+                json::object { { "multi host name", json::object { { "dnsName", "relays.example.com" } } } }
+            };
+            replace_shelley_genesis(files, json::object { genesis });
+            const cardano::config embedded { configs_mock { configs_mock::map_type { files } } };
+            const auto &params = embedded.shelley_initial_state.pools.begin()->second;
+            expect(params.margin == rational_u64 { 1, 4 });
+            expect_equal(params.owners.size(), 1ULL);
+            expect_equal(params.metadata->hash.size(), 32ULL);
+            expect_equal(params.relays.size(), 3ULL);
+            const auto &relay = std::get<relay_addr>(params.relays.at(0).val);
+            expect_equal(*relay.port, 3001);
+            expect(*relay.ipv4 == ipv4_addr { buffer { uint8_vector::from_hex("7F000001") } });
+            expect(*relay.ipv6 == ipv6_addr { buffer { uint8_vector::from_hex("00000000000000000000000000000001") } });
+            genesis.at("initialFunds") = extra.at("initialFunds").at("data");
+            genesis.at("staking").at("pools") = extra.at("stakePools").at("data");
+            genesis.at("staking").at("stake") = extra.at("stakeCredentials").at("data");
+            auto &legacy_pool = genesis.at("staking").at("pools").as_object().begin()->value().as_object();
+            const auto pool_id = legacy_pool.at("poolId");
+            const auto reward = legacy_pool.at("accountAddress");
+            legacy_pool.erase("poolId");
+            legacy_pool.erase("accountAddress");
+            legacy_pool.emplace("publicKey", pool_id);
+            legacy_pool.emplace("rewardAccount", reward);
+            genesis.erase("extraConfig");
+            replace_shelley_genesis(files, std::move(genesis));
+            const cardano::config legacy { configs_mock { std::move(files) } };
+            expect(legacy.shelley_initial_state.utxos == embedded.shelley_initial_state.utxos);
+            expect(legacy.shelley_initial_state.pools == embedded.shelley_initial_state.pools);
+            expect(legacy.shelley_initial_state.delegations == embedded.shelley_initial_state.delegations);
+        };
+        "invalid Shelley genesis injections fail during configuration loading"_test = [] {
+            for (size_t fault = 0; fault < 5; ++fault) {
+                auto files = dijkstra_config_files();
+                auto genesis = files.at("shelley-genesis").json();
+                auto &extra = genesis.at("extraConfig");
+                switch (fault) {
+                    case 0:
+                        genesis.at("initialFunds") = extra.at("initialFunds").at("data");
+                        break;
+                    case 1:
+                        extra.at("stakeCredentials").at("data").as_object().begin()->value() = std::string(56, '0');
+                        break;
+                    case 2:
+                        extra.at("initialFunds").at("data").as_object().begin()->value() = std::numeric_limits<uint64_t>::max();
+                        break;
+                    case 3:
+                        extra.at("initialFunds") = json::object { { "file", json::array { "funds.json" } }, { "hash", std::string(64, '0') } };
+                        break;
+                    case 4:
+                        genesis.at("networkId") = "Mainnet";
+                        break;
+                }
+                replace_shelley_genesis(files, std::move(genesis));
+                expect(throws<error>([&] { const cardano::config invalid { configs_mock { std::move(files) } }; })) << fault;
+            }
+        };
+        "Dijkstra genesis loads without activating Dijkstra rules"_test = [] {
+            const configs_dir files { configs_dir::network_path("dijkstra") };
+            const cardano::config network { files };
+            expect_equal(network.byron_protocol_magic, 6U);
+            expect_equal(network.initial_protocol_version.major, 11ULL);
+            expect_equal(network.shelley_start_epoch(), 0ULL);
+            expect(network.alonzo_protocol_params.ex_unit_prices.mem == rational_u64 { 577, 10000 });
+            expect(network.alonzo_protocol_params.ex_unit_prices.steps == rational_u64 { 721, 10000000 });
+            expect(network.dijkstra_genesis.has_value());
+            if (!network.dijkstra_genesis)
+                return;
+            const auto &genesis = *network.dijkstra_genesis;
+            expect(genesis.hash == block_hash::from_hex("ad58e282eff1f48c241faf6319f88ed54843821627a6be69470f05d7904e4601"));
+            expect(genesis.parameters == files.at("dijkstra-genesis").json());
+            expect_equal(genesis.leios_committee_size, 900ULL);
+            expect_equal(genesis.max_endorser_block_execution_units.mem, 720000000ULL);
+            expect_equal(genesis.max_endorser_block_execution_units.steps, 200000000000ULL);
+            expect(genesis.leios_quorum_stake_threshold == rational_u64 { 3, 4 });
+            expect(genesis.min_pool_margin == rational_u64 { 3, 200 });
+            expect(genesis.ref_script_cost_multiplier == rational_u64 { 6, 5 });
+            expect_equal(genesis.ref_script_cost_stride, 25600U);
+            expect(!genesis.max_pledge_leverage.has_value());
+            const auto &costs = files.at("dijkstra-genesis").at("plutusV4CostModel").as_array();
+            expect_equal(genesis.plutus_v4_cost_model.size(), costs.size());
+            for (size_t i = 0; i < costs.size(); ++i)
+                expect_equal(genesis.plutus_v4_cost_model[i], json::value_to<int64_t>(costs[i]));
+            cardano::config copy { network };
+            cardano::config moved { std::move(copy) };
+            expect(&moved.dijkstra_genesis == &network.dijkstra_genesis);
+            expect(&copy.dijkstra_genesis == &network.dijkstra_genesis);
+        };
+        "Dijkstra genesis references and hashes are required together"_test = [] {
+            for (const auto field: {"DijkstraGenesisFile", "DijkstraGenesisHash"}) {
+                auto files = dijkstra_config_files();
+                auto node = files.at("config").json();
+                node.erase(field);
+                files.at("config") = config_json { std::move(node) };
+                expect(throws([&] { const cardano::config invalid { configs_mock { std::move(files) } }; }));
+            }
+            for (const auto path: {"missing.json", "other/dijkstra-genesis.json", "../dijkstra-genesis.json", ""}) {
+                auto files = dijkstra_config_files();
+                auto node = files.at("config").json();
+                node.at("DijkstraGenesisFile") = path;
+                files.at("config") = config_json { std::move(node) };
+                expect(throws([&] { const cardano::config invalid { configs_mock { std::move(files) } }; }));
+            }
+            auto files = dijkstra_config_files();
+            auto genesis = files.at("dijkstra-genesis").json();
+            genesis.at("leiosCommitteeSize") = 901;
+            // Keep the old advertised hash: tampering must fail before parsing.
+            files.at("dijkstra-genesis") = config_json { std::move(genesis) };
+            expect(throws([&] { const cardano::config invalid { configs_mock { std::move(files) } }; }));
+        };
+        "Dijkstra genesis parses optional leverage and rejects malformed parameters"_test = [] {
+            auto files = dijkstra_config_files();
+            auto genesis = files.at("dijkstra-genesis").json();
+            genesis.at("maxPledgeLeverage") = 2.5;
+            replace_dijkstra_genesis(files, std::move(genesis));
+            const cardano::config network { configs_mock { std::move(files) } };
+            expect(network.dijkstra_genesis->max_pledge_leverage == std::optional { rational_u64 { 5, 2 } });
+            for (const auto field: {"leiosCommitteeSize", "plutusV4CostModel", "minPoolMargin"}) {
+                auto malformed = dijkstra_config_files();
+                auto data = malformed.at("dijkstra-genesis").json();
+                data.at(field) = "invalid";
+                replace_dijkstra_genesis(malformed, std::move(data));
+                expect(throws([&] { const cardano::config invalid { configs_mock { std::move(malformed) } }; }));
+            }
+            for (const auto field: {"plutusV4CostModel", "refScriptCostStride", "leiosQuorumStakeThreshold"}) {
+                auto malformed = dijkstra_config_files();
+                auto data = malformed.at("dijkstra-genesis").json();
+                if (std::string_view { field } == "plutusV4CostModel")
+                    data.at(field) = json::array {};
+                else if (std::string_view { field } == "refScriptCostStride")
+                    data.at(field) = 0;
+                else
+                    data.at(field) = json::object { {"numerator", 1}, {"denominator", 0} };
+                replace_dijkstra_genesis(malformed, std::move(data));
+                expect(throws([&] { const cardano::config invalid { configs_mock { std::move(malformed) } }; }));
+            }
+        };
+        "Dijkstra genesis enforces parameter widths and nullable upgrade fields"_test = [] {
+            for (const auto field: { "leiosAnnouncementPeriodLength", "leiosVotePeriodLength",
+                    "leiosDiffusionPeriodLength", "maxEndorserBlockReferencesSize", "maxEndorserBlockTxsSize",
+                    "perasMinCandidateBlockAge", "perasBootstrapRound" }) {
+                auto files = dijkstra_config_files();
+                auto genesis = files.at("dijkstra-genesis").json();
+                genesis.at(field) = uint64_t { 1 } << 32;
+                replace_dijkstra_genesis(files, std::move(genesis));
+                expect(throws([&] { const cardano::config invalid { configs_mock { std::move(files) } }; }));
+            }
+            for (const auto field: { "leiosCommitteeSize", "perasCertBoost", "perasTargetCommitteeSize" }) {
+                auto files = dijkstra_config_files();
+                auto genesis = files.at("dijkstra-genesis").json();
+                genesis.at(field) = 65536;
+                replace_dijkstra_genesis(files, std::move(genesis));
+                expect(throws([&] { const cardano::config invalid { configs_mock { std::move(files) } }; }));
+            }
+            for (const auto field: { "refScriptCostMultiplier", "perasHealingFactor" }) {
+                auto files = dijkstra_config_files();
+                auto genesis = files.at("dijkstra-genesis").json();
+                genesis.at(field) = 0;
+                replace_dijkstra_genesis(files, std::move(genesis));
+                expect(throws([&] { const cardano::config invalid { configs_mock { std::move(files) } }; }));
+            }
+            auto files = dijkstra_config_files();
+            auto genesis = files.at("dijkstra-genesis").json();
+            genesis.erase("maxPledgeLeverage");
+            genesis.at("perasBootstrapRound") = nullptr;
+            replace_dijkstra_genesis(files, std::move(genesis));
+            const cardano::config cfg { configs_mock { std::move(files) } };
+            expect(!cfg.dijkstra_genesis->max_pledge_leverage);
+            expect(!cfg.dijkstra_genesis->peras_bootstrap_round);
+        };
+        "epoch-zero Dijkstra requires its genesis"_test = [] {
+            auto files = dijkstra_config_files("musashi");
+            auto node = files.at("config").json();
+            node.erase("DijkstraGenesisFile");
+            node.erase("DijkstraGenesisHash");
+            files.at("config") = config_json { std::move(node) };
+            expect(throws([&] { const cardano::config invalid { configs_mock { std::move(files) } }; }));
+        };
+        "Dijkstra genesis loading follows configured filenames and bytes"_test = [] {
+            auto files = dijkstra_config_files();
+            const cardano::config original { configs_mock { dijkstra_config_files() } };
+            auto node = files.at("config").json();
+            node.at("DijkstraGenesisFile") = "./renamed.json";
+            node["TraceOptions"] = json::object {};
+            files.at("config") = config_json { std::move(node) };
+            files.emplace("renamed", config_json { files.at("dijkstra-genesis") });
+            const cardano::config renamed { configs_mock { std::move(files) } };
+            expect(renamed.dijkstra_genesis->hash == original.dijkstra_genesis->hash);
+            expect(renamed.dijkstra_genesis->parameters == original.dijkstra_genesis->parameters);
+            auto changed = dijkstra_config_files();
+            auto genesis = changed.at("dijkstra-genesis").json();
+            genesis.at("leiosCommitteeSize") = 901;
+            replace_dijkstra_genesis(changed, std::move(genesis));
+            const cardano::config respun { configs_mock { std::move(changed) } };
+            expect_equal(respun.byron_protocol_magic, original.byron_protocol_magic);
+            expect(respun.byron_genesis_hash == original.byron_genesis_hash);
+            expect(respun.dijkstra_genesis->hash != original.dijkstra_genesis->hash);
+            expect_equal(respun.dijkstra_genesis->leios_committee_size, 901ULL);
+        };
+        "existing networks load without Dijkstra genesis"_test = [] {
+            for (const auto name: {"mainnet", "preview", "preprod", "sanchonet"}) {
+                const cardano::config network { configs_dir { configs_dir::network_path(name) } };
+                expect(!network.dijkstra_genesis.has_value());
+            }
+        };
         "public testnet genesis"_test = [] {
             for (const auto name: {"preview", "preprod"}) {
                 const bool preview = std::string_view{name} == "preview";

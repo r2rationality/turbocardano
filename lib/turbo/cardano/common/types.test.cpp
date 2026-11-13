@@ -15,6 +15,22 @@ namespace {
 
 suite cardano_type_test = [] {
     "cardano::type"_test = [] {
+        "execution prices accept both genesis field-name pairs"_test = [] {
+            const json::value legacy = json::object {
+                {"prMem", json::object { {"numerator", 577}, {"denominator", 10000} }},
+                {"prSteps", json::object { {"numerator", 721}, {"denominator", 10000000} }}
+            };
+            const json::value current = json::object { {"priceMemory", 0.0577}, {"priceSteps", 0.0000721} };
+            for (const auto &prices: {legacy, current}) {
+                const auto parsed = ex_unit_prices::from_json(prices);
+                expect(parsed.mem == rational_u64 { 577, 10000 });
+                expect(parsed.steps == rational_u64 { 721, 10000000 });
+                for (const auto &[name, value]: prices.as_object()) {
+                    const json::value incomplete = json::object { {name, value} };
+                    expect(throws([&] { ex_unit_prices::from_json(incomplete); }));
+                }
+            }
+        };
         "TXO references retain their serialized field layout"_test = [] {
             const tx_out_ref ref {
                 tx_hash::from_hex("000102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F"), 0x1234

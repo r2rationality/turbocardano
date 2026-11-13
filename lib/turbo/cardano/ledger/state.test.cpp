@@ -87,6 +87,68 @@ namespace {
 suite cardano_ledger_state_suite = [] {
     using boost::ext::ut::v2_1_0::nothrow;
     "cardano::ledger::state"_test = [] {
+        "DijkstraNet and MusashiNet initialize funds and stake before epoch zero"_test = [] {
+            for (const auto name: { "dijkstra", "musashi" }) {
+                const configs_dir files { configs_dir::network_path(name) };
+                const cardano::config cfg { files };
+                state st { cfg };
+                expect(fatal(cfg.shelley_initial_state.pools.size() == 1 && cfg.shelley_initial_state.delegations.size() == 1));
+                const auto &[pool_id, pool] = *cfg.shelley_initial_state.pools.begin();
+                const auto &key = cfg.shelley_initial_state.delegations.begin()->first;
+                const cardano::stake_ident stake_id { key, false };
+                const auto check = [&](const state &value) {
+                    expect_equal(value.utxos().size(), 2ULL);
+                    expect_equal(value.utxo_balance(), 30'000'000'900'000'000ULL);
+                    expect_equal(value.reserves(), 14'999'999'100'000'000ULL);
+                    expect_equal(value.pool_params().size(), 1ULL);
+                    expect(value.pool_params().at(pool_id).params == pool);
+                    expect(value.has_stake(stake_id));
+                    expect_equal(value.stake_deposit(stake_id), cfg.shelley_protocol_params.key_deposit);
+                    expect(value.pointers().empty());
+                    const auto &dist = value.pool_stake_dist();
+                    expect_equal(dist.size(), 1ULL);
+                    expect_equal(dist.total_stake, 900'000'000ULL);
+                    expect_equal(dist.at(pool_id).active_stake, 900'000'000ULL);
+                    expect(dist.at(pool_id).rel_stake == rational_u64 { 1, 1 });
+                    expect(dist.at(pool_id).vrf_vkey == pool.vrf_vkey);
+                };
+                check(st);
+                const file::tmp_directory dir { "ledger-testnet-genesis" };
+                const auto path = dir.path() + "/state.bin";
+                st.save_zpp(path);
+                state loaded { cfg, scheduler::get(), state::init_mode::empty };
+                expect(loaded.utxos().empty());
+                loaded.load_zpp(path);
+                check(loaded);
+                expect(loaded == st);
+                st.start_epoch(0);
+                expect(st == loaded);
+                st.start_epoch(1);
+                check(st);
+                st.clear();
+                check(st);
+                st.save_zpp(path);
+                expect(st == loaded);
+            }
+        };
+        "unfunded genesis pools have no operating stake"_test = [] {
+            const configs_dir source { configs_dir::network_path("dijkstra") };
+            configs_mock::map_type files {};
+            for (const auto name: { "config", "byron-genesis", "shelley-genesis", "alonzo-genesis", "conway-genesis", "dijkstra-genesis" })
+                files.emplace(name, config_json { source.at(name) });
+            auto genesis = files.at("shelley-genesis").json();
+            genesis.at("extraConfig").at("initialFunds").at("data") = json::object {};
+            files.at("shelley-genesis") = config_json { std::move(genesis) };
+            auto node = files.at("config").json();
+            node.at("ShelleyGenesisHash") = fmt::format("{}",
+                crypto::blake2b::digest<cardano::block_hash>(files.at("shelley-genesis").bytes()));
+            files.at("config") = config_json { std::move(node) };
+            const cardano::config cfg { configs_mock { std::move(files) } };
+            state st { cfg };
+            expect_equal(st.pool_params().size(), 1ULL);
+            expect(st.pool_stake_dist().empty());
+            expect_equal(st.reserves(), cfg.shelley_max_lovelace_supply);
+        };
         "Preview starts in Alonzo and survives reset and reload"_test = [] {
             const configs_dir files{configs_dir::network_path("preview")};
             const cardano::config cfg{files};

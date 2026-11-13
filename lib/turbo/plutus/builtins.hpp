@@ -9,7 +9,7 @@
 
 namespace turbo::plutus {
     enum class builtin_semantics: uint8_t {
-        a, b, c, d, e
+        a, b, c, d, e, f, g
     };
 
     struct builtin_descriptor {

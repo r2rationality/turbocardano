@@ -152,6 +152,8 @@
                         tx_checks.conway.collect(*conway_tx, auxiliary);
                         tx_checks.collateral_return = conway_tx->collateral_return();
                         tx_checks.total_collateral = conway_tx->collateral_value();
+                    } else if (const auto *dijkstra_tx = dynamic_cast<const cardano::dijkstra::tx *>(&tx)) {
+                        tx_checks.tx_size = dijkstra_tx->ledger_size();
                     }
                     const auto witness_count = tx.witnesses().size();
                     tx_checks.signers.reserve(witness_count);
@@ -283,7 +285,7 @@
                     if (!tx.invalid())
                         donations += donation;
                     tx_checks.balances.out_coin += donation;
-                    if (const auto *c_tx = dynamic_cast<const cardano::conway::tx *>(&tx); c_tx) {
+                    if (const auto *c_tx = dynamic_cast<const cardano::conway::tx_base *>(&tx); c_tx) {
                         index::timed_update::conway_tx_prelude prelude {
                             .has_proposals=!c_tx->proposals().empty()
                         };

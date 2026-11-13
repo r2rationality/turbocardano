@@ -30,6 +30,18 @@ namespace turbo::cardano::dijkstra {
     void tx::to_cbor(era_encoder &enc) const
     {
         enc.array(3);
+        _encode_contents(enc);
+    }
+
+    void tx::to_cbor_for_block(era_encoder &enc) const
+    {
+        enc.array(4);
+        _encode_contents(enc);
+        enc.boolean(!invalid());
+    }
+
+    void tx::_encode_contents(era_encoder &enc) const
+    {
         enc.raw_cbor(_body.raw);
         enc.raw_cbor(witness_raw());
         if (!_auxiliary_data_raw.empty())

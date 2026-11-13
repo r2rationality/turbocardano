@@ -20,11 +20,13 @@ namespace turbo::plutus {
     struct machine::impl {
         impl(allocator &alloc, const costs::runtime_model &model, const optional_budget &budget,
                 const uint64_t protocol_major,
-                const builtin_semantics semantics_variant):
+                const builtin_semantics semantics_variant, const version &core_version):
             _alloc { alloc }, _cost_model { model }, _budget { budget },
             _protocol_major { protocol_major }, _semantics_variant { semantics_variant },
             _use_v2_semantics {
-                semantics_variant == builtin_semantics::c || semantics_variant == builtin_semantics::e }
+                semantics_variant == builtin_semantics::c || semantics_variant == builtin_semantics::e
+                    || semantics_variant == builtin_semantics::g },
+            _data_case { protocol_major >= 12 && core_version >= version { 1, 2, 0 } }
         {
         }
 
@@ -47,6 +49,7 @@ namespace turbo::plutus {
         uint64_t _protocol_major;
         builtin_semantics _semantics_variant;
         const bool _use_v2_semantics;
+        const bool _data_case;
 
         enum class step_kind: uint8_t {
             constant,
@@ -214,7 +217,7 @@ namespace turbo::plutus {
 
         void _check_ensurable_args(const builtin_tag tag, const value_args &args) const
         {
-            if (_semantics_variant != builtin_semantics::d && _semantics_variant != builtin_semantics::e)
+            if (_semantics_variant < builtin_semantics::d)
                 return;
             switch (tag) {
                 case builtin_tag::add_integer:
@@ -226,8 +229,10 @@ namespace turbo::plutus {
                 case builtin_tag::mod_integer:
                 case builtin_tag::less_than_integer:
                 case builtin_tag::less_than_equals_integer:
-                    _check_cardano_integer(_arg(args, 0));
-                    _check_cardano_integer(_arg(args, 1));
+                    if (_semantics_variant < builtin_semantics::f) {
+                        _check_cardano_integer(_arg(args, 0));
+                        _check_cardano_integer(_arg(args, 1));
+                    }
                     break;
                 case builtin_tag::append_byte_string:
                 case builtin_tag::equals_byte_string:
@@ -302,7 +307,7 @@ namespace turbo::plutus {
             _check_ensurable_args(tag, args);
             const auto &builtin_cost = _cost_model.builtin_costs.at(tag);
             const bool text_costed_by_byte_length =
-                _semantics_variant == builtin_semantics::d || _semantics_variant == builtin_semantics::e;
+                _semantics_variant >= builtin_semantics::d;
             cardano::ex_units cost {};
             try {
                 cost = costs::cost_builtin(builtin_cost, tag, args, text_costed_by_byte_length);
@@ -623,6 +628,19 @@ namespace turbo::plutus {
                     auto res = _case_branch(env, e, 0);
                     res = _apply(res, value { _alloc, v->first });
                     return _apply(res, value { _alloc, v->second });
+                } else if constexpr (std::is_same_v<T, data>) {
+                    if (!_data_case) [[unlikely]]
+                        throw error{"case on Data requires protocol version 12 and Plutus Core 1.2.0"};
+                    const auto *constr = std::get_if<data_constr>(&*v);
+                    if (!constr || *(*constr)->first < 0 || *(*constr)->first >= num_branches) [[unlikely]]
+                        throw error{"Data value has no matching constructor case branch"};
+                    auto res = _case_branch(env, e, static_cast<size_t>(*(*constr)->first));
+                    constant_list::list_type fields { _alloc };
+                    fields.reserve((*constr)->second.size());
+                    for (const auto &field: (*constr)->second)
+                        fields.emplace_back(_alloc, field);
+                    return _apply(res, value { _alloc, constant { _alloc,
+                        constant_list { _alloc, constant_type { _alloc, type_tag::data }, std::move(fields) } } });
                 } else {
                     throw error{"builtin constant type {} is not supported in case", typeid(T).name()};
                 }
@@ -662,15 +680,15 @@ namespace turbo::plutus {
     };
 
     machine::machine(allocator &alloc, const cardano::script_type typ, const optional_budget &budget,
-            const uint64_t protocol_major):
-        machine { alloc, costs::defaults().for_script(typ, builtins::semantics_variant(typ, protocol_major)), typ, budget, protocol_major }
+            const uint64_t protocol_major, const version &core_version):
+        machine { alloc, costs::defaults().for_script(typ, builtins::semantics_variant(typ, protocol_major)), typ, budget, protocol_major, core_version }
     {
     }
 
     machine::machine(allocator &alloc, const costs::runtime_model &model, const cardano::script_type typ,
-            const optional_budget &budget, const uint64_t protocol_major):
+            const optional_budget &budget, const uint64_t protocol_major, const version &core_version):
         _impl { std::make_unique<impl>(alloc, model, budget, protocol_major,
-            builtins::semantics_variant(typ, protocol_major)) }
+            builtins::semantics_variant(typ, protocol_major), core_version) }
     {
     }
 

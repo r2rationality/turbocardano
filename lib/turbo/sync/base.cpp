@@ -69,9 +69,7 @@ namespace turbo::sync {
                     const auto end_tip = _cr.tip();
                     const auto made_progress = end_tip && peer.intersection() < end_tip;
                     if (made_progress)
-                        logger::run_log_errors([&] {
-                            _cr.repack(chunk_registry::repack_mode_t::merge_closed, repack_fragment_threshold);
-                        });
+                        _cr.repack(chunk_registry::repack_mode_t::merge_closed, repack_fragment_threshold);
                     if (!ex_ptr) {
                         if (!limit_reached && made_progress && end_tip < target) {
                             peer.intersection(end_tip);
@@ -79,6 +77,12 @@ namespace turbo::sync {
                             continue;
                         }
                         break;
+                    }
+                    try {
+                        std::rethrow_exception(ex_ptr);
+                    } catch (const cardano::network::transient_error &) {
+                        if (!made_progress && num_retries == 1)
+                            throw;
                     }
                     // reset the retry count if made progress
                     if (made_progress) {

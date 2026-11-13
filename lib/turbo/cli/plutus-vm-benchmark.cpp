@@ -139,7 +139,7 @@ namespace turbo::cli::plutus_vm_benchmark {
         {
             allocator alloc {};
             flat::script script { alloc, bytes, plutus_language, protocol_major, false };
-            machine m { alloc, plutus_language, {}, protocol_major };
+            machine m { alloc, plutus_language, {}, protocol_major, script.version() };
             const auto result = m.evaluate(script.program());
             ankerl::nanobench::doNotOptimizeAway(result.expr);
         }

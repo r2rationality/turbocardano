@@ -23,6 +23,23 @@ namespace turbo::cardano {
         res |= max_ref_script_size_per_tx.has_value();
         res |= ref_script_cost_stride.has_value();
         res |= ref_script_cost_multiplier.has_value();
+        res |= leios_announcement_period_length.has_value();
+        res |= leios_vote_period_length.has_value();
+        res |= leios_diffusion_period_length.has_value();
+        res |= leios_committee_size.has_value();
+        res |= leios_quorum_stake_threshold.has_value();
+        res |= max_endorser_block_references_size.has_value();
+        res |= max_endorser_block_txs_size.has_value();
+        res |= max_endorser_block_ex_units.has_value();
+        res |= max_ref_script_size_per_endorser_block.has_value();
+        res |= peras_min_candidate_block_age.has_value();
+        res |= peras_healing_factor.has_value();
+        res |= peras_cert_boost.has_value();
+        res |= peras_target_committee_size.has_value();
+        res |= peras_bootstrap_round.has_value();
+        res |= peras_quorum_threshold_safety_margin.has_value();
+        res |= ref_inputs_cost_per_multi_asset_policy.has_value();
+        res |= ref_inputs_cost_per_datum_byte.has_value();
         return res;
     }
 
@@ -40,6 +57,21 @@ namespace turbo::cardano {
         res |= max_ref_script_size_per_tx.has_value();
         res |= ref_script_cost_stride.has_value();
         res |= ref_script_cost_multiplier.has_value();
+        res |= leios_announcement_period_length.has_value();
+        res |= leios_vote_period_length.has_value();
+        res |= leios_diffusion_period_length.has_value();
+        res |= leios_committee_size.has_value();
+        res |= leios_quorum_stake_threshold.has_value();
+        res |= max_endorser_block_references_size.has_value();
+        res |= max_endorser_block_txs_size.has_value();
+        res |= max_endorser_block_ex_units.has_value();
+        res |= max_ref_script_size_per_endorser_block.has_value();
+        res |= peras_min_candidate_block_age.has_value();
+        res |= peras_healing_factor.has_value();
+        res |= peras_cert_boost.has_value();
+        res |= peras_target_committee_size.has_value();
+        res |= peras_bootstrap_round.has_value();
+        res |= peras_quorum_threshold_safety_margin.has_value();
         return res;
     }
 
@@ -57,6 +89,8 @@ namespace turbo::cardano {
         res |= ex_unit_prices.has_value();
         res |= min_fee_ref_script_cost_per_byte.has_value();
         res |= min_pool_margin.has_value();
+        res |= ref_inputs_cost_per_multi_asset_policy.has_value();
+        res |= ref_inputs_cost_per_datum_byte.has_value();
         return res;
     }
 

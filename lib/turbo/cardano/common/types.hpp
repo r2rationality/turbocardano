@@ -1861,6 +1861,23 @@ namespace turbo::cardano {
         rational_u64 ref_script_cost_multiplier { 1, 1 };
         nil_optional_t<rational_u64> max_pledge_leverage {};
         rational_u64 min_pool_margin { 0, 1 };
+        uint32_t leios_announcement_period_length = 0;
+        uint32_t leios_vote_period_length = 0;
+        uint32_t leios_diffusion_period_length = 0;
+        uint16_t leios_committee_size = 0;
+        rational_u64 leios_quorum_stake_threshold { 0, 1 };
+        uint32_t max_endorser_block_references_size = 0;
+        uint32_t max_endorser_block_txs_size = 0;
+        ex_units max_endorser_block_ex_units {};
+        uint32_t max_ref_script_size_per_endorser_block = 0;
+        uint32_t peras_min_candidate_block_age = 0;
+        rational_u64 peras_healing_factor { 1, 1 };
+        uint16_t peras_cert_boost = 0;
+        uint16_t peras_target_committee_size = 0;
+        nil_optional_t<uint32_t> peras_bootstrap_round {};
+        rational_u64 peras_quorum_threshold_safety_margin { 0, 1 };
+        uint64_t ref_inputs_cost_per_multi_asset_policy = 0;
+        uint64_t ref_inputs_cost_per_datum_byte = 0;
 
         static constexpr auto serialize(auto &archive, auto &self)
         {
@@ -1887,7 +1904,24 @@ namespace turbo::cardano {
                 self.ref_script_cost_stride,
                 self.ref_script_cost_multiplier,
                 self.max_pledge_leverage,
-                self.min_pool_margin
+                self.min_pool_margin,
+                self.leios_announcement_period_length,
+                self.leios_vote_period_length,
+                self.leios_diffusion_period_length,
+                self.leios_committee_size,
+                self.leios_quorum_stake_threshold,
+                self.max_endorser_block_references_size,
+                self.max_endorser_block_txs_size,
+                self.max_endorser_block_ex_units,
+                self.max_ref_script_size_per_endorser_block,
+                self.peras_min_candidate_block_age,
+                self.peras_healing_factor,
+                self.peras_cert_boost,
+                self.peras_target_committee_size,
+                self.peras_bootstrap_round,
+                self.peras_quorum_threshold_safety_margin,
+                self.ref_inputs_cost_per_multi_asset_policy,
+                self.ref_inputs_cost_per_datum_byte
             );
         }
 
@@ -1923,7 +1957,24 @@ namespace turbo::cardano {
                 && ref_script_cost_stride == o.ref_script_cost_stride
                 && ref_script_cost_multiplier == o.ref_script_cost_multiplier
                 && max_pledge_leverage == o.max_pledge_leverage
-                && min_pool_margin == o.min_pool_margin;
+                && min_pool_margin == o.min_pool_margin
+                && leios_announcement_period_length == o.leios_announcement_period_length
+                && leios_vote_period_length == o.leios_vote_period_length
+                && leios_diffusion_period_length == o.leios_diffusion_period_length
+                && leios_committee_size == o.leios_committee_size
+                && leios_quorum_stake_threshold == o.leios_quorum_stake_threshold
+                && max_endorser_block_references_size == o.max_endorser_block_references_size
+                && max_endorser_block_txs_size == o.max_endorser_block_txs_size
+                && max_endorser_block_ex_units == o.max_endorser_block_ex_units
+                && max_ref_script_size_per_endorser_block == o.max_ref_script_size_per_endorser_block
+                && peras_min_candidate_block_age == o.peras_min_candidate_block_age
+                && peras_healing_factor == o.peras_healing_factor
+                && peras_cert_boost == o.peras_cert_boost
+                && peras_target_committee_size == o.peras_target_committee_size
+                && peras_bootstrap_round == o.peras_bootstrap_round
+                && peras_quorum_threshold_safety_margin == o.peras_quorum_threshold_safety_margin
+                && ref_inputs_cost_per_multi_asset_policy == o.ref_inputs_cost_per_multi_asset_policy
+                && ref_inputs_cost_per_datum_byte == o.ref_inputs_cost_per_datum_byte;
         }
 
         void clear()

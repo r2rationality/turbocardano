@@ -5,6 +5,11 @@
 #include <turbo/cardano/dijkstra/block.hpp>
 
 namespace turbo::cardano::dijkstra {
+    void header_version_info_t::to_cbor(era_encoder &enc) const
+    {
+        enc.array(2).uint(highest_supported_major_version).uint(self_reported_software_tag);
+    }
+
     void eb_announcement_t::to_cbor(era_encoder &enc) const
     {
         enc.array(2).bytes(hash).uint(size);

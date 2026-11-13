@@ -33,8 +33,10 @@
                 logger::debug("delta_ireserves: {} delta_itreasury: {}", delta_ireserves, delta_itreasury);
             }
             _transfer_potential_rewards(prev_params);
-            rotate_snapshots();
-            _prep_op_stake_dist();
+            if (!_snapshots_after_epoch()) {
+                rotate_snapshots();
+                _prep_op_stake_dist(_set);
+            }
             _apply_future_pool_params();
             _nonmyopic = std::move(_nonmyopic_next);
             _nonmyopic_reward_pot = _reward_pot;

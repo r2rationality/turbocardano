@@ -8,7 +8,19 @@
 
     void state::start_epoch(const std::optional<uint64_t> new_epoch)
     {
+        if (_cfg.initial_protocol_version.major >= 2 && _state->_epoch == 0 && !_state->_end_offset
+                && new_epoch.value_or(0) == 0 && _state->_params.protocol_ver == _cfg.initial_protocol_version)
+            return;
         const auto prev_pv = _state->_params.protocol_ver;
+        auto transition_from = prev_pv.era();
+        if (transition_from == 7
+                && new_epoch.value_or(_state->_end_offset ? _state->_epoch + 1 : 0) == _state->_epoch + 1) {
+            const auto next_pv = dynamic_cast<conway::state &>(*_state).next_protocol_version();
+            if (next_pv.era() == 8) {
+                _transition_era(transition_from, next_pv.era());
+                transition_from = next_pv.era();
+            }
+        }
         _state->start_epoch(new_epoch);
         if (!_vrf_state->kes_counters().empty())
             _vrf_state->finish_epoch(_state->_params.extra_entropy);
@@ -16,7 +28,7 @@
         if (new_pv != prev_pv) {
             if (new_pv < prev_pv) [[unlikely]]
                 throw error{"protocol downgrades are not supported: went from {} to {}", prev_pv, new_pv};
-            _transition_era(prev_pv.era(), new_pv.era());
+            _transition_era(transition_from, new_pv.era());
             const auto tip_slot = slot::from_epoch(_state->_epoch, _state->_epoch_slot, _cfg);
             track_era(new_pv.era(), tip_slot);
         }

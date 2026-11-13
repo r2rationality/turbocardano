@@ -129,7 +129,6 @@ namespace turbo::cli::test_cbor_dataset {
             cbor::zero2::decoder dec { source };
             auto &body = dec.read().array();
             static_cast<void>(body.read().data_raw());
-            static_cast<void>(body.read().data_raw());
             const bool contains_leios_certificate = !body.read().is_null();
             cbor::encoder enc {};
             enc.array(2);
@@ -140,6 +139,21 @@ namespace turbo::cli::test_cbor_dataset {
         static uint8_vector encode(const cardano::dijkstra::block &value) {
             cardano::era_encoder enc { cardano::era_t::dijkstra };
             value.body_to_cbor(enc);
+            return std::move(enc.cbor());
+        }
+    };
+
+    struct dijkstra_block_transaction_codec: block_codec<cardano::era_t::dijkstra, cardano::dijkstra::block> {
+        static uint8_vector prepare(buffer source) {
+            cbor::encoder enc {};
+            enc.array(2);
+            encode_dijkstra_test_header(enc, false);
+            enc.array(3).array(1).raw_cbor(source).s_null().s_null();
+            return std::move(enc.cbor());
+        }
+        static uint8_vector encode(const cardano::dijkstra::block &value) {
+            cardano::era_encoder enc { cardano::era_t::dijkstra };
+            static_cast<const cardano::dijkstra::tx &>(*value.txs().at(0)).to_cbor_for_block(enc);
             return std::move(enc.cbor());
         }
     };
@@ -218,6 +232,7 @@ namespace turbo::cli::test_cbor_dataset {
             {"auxiliary_data", check_sample<cbor_codec<cardano::era_t::dijkstra, cardano::decoded_cbor_t<cardano::dijkstra::auxiliary_data_t>>, true>},
             {"block", check_sample<block_codec<cardano::era_t::dijkstra, cardano::dijkstra::block>>},
             {"block_body", check_sample<dijkstra_block_body_codec>},
+            {"block_transaction", check_sample<dijkstra_block_transaction_codec>},
             {"certificate", check_sample<cbor_codec<cardano::era_t::dijkstra, cardano::dijkstra::certificate_t>>},
             {"certificates", check_sample<cbor_codec<cardano::era_t::dijkstra, cardano::dijkstra::certificates_t>>},
             {"cost_models", check_sample<cbor_codec<cardano::era_t::dijkstra, cardano::conway::cost_models_t>>},
@@ -227,6 +242,10 @@ namespace turbo::cli::test_cbor_dataset {
             {"gov_action", check_sample<cbor_codec<cardano::era_t::dijkstra, cardano::dijkstra::governance_action_t>>},
             {"header", check_sample<header_codec<cardano::era_t::dijkstra, cardano::dijkstra::block_header>, true>},
             {"header_body", check_sample<header_body_codec<cardano::era_t::dijkstra, cardano::dijkstra::block_header>>},
+            {"header_version_info", check_sample<cbor_codec<cardano::era_t::dijkstra, cardano::dijkstra::header_version_info_t>>},
+            {"eb_references_announcement", check_sample<cbor_codec<cardano::era_t::dijkstra, cardano::dijkstra::eb_announcement_t>>},
+            {"leios_certificate", check_sample<cbor_codec<cardano::era_t::dijkstra, cardano::dijkstra::leios_certificate_t>>},
+            {"mempool_transaction", check_sample<cbor_codec<cardano::era_t::dijkstra, cardano::dijkstra::transaction_t>>},
             {"native_script", check_sample<cbor_codec<cardano::era_t::dijkstra, cardano::decoded_cbor_t<cardano::dijkstra::native_script_t>>, true>},
             {"plutus_data", check_sample<cbor_codec<cardano::era_t::dijkstra, cardano::dijkstra::plutus_data_t>, true>},
             {"proposal_procedure", check_sample<dijkstra_proposal_codec>},

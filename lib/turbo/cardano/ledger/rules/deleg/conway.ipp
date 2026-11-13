@@ -39,9 +39,10 @@
     {
         if (!has_stake(id)) [[unlikely]]
             throw error("withdrawal requires a registered reward account");
-        // PRE-CERT requires input vote delegation after the PV9 bootstrap phase.
-        // Historical PV9 withdrawals remain valid without a vote delegation.
-        if (!_params.protocol_ver.bootstrap_phase() && !id.script && !_accounts.at(id).vote_deleg) [[unlikely]]
+        // Conway PRE-CERT requires input vote delegation after the PV9 bootstrap
+        // phase. CIP-181 removes this requirement starting with Dijkstra (PV12).
+        if (_params.protocol_ver.major < 12 && !_params.protocol_ver.bootstrap_phase()
+                && !id.script && !_accounts.at(id).vote_deleg) [[unlikely]]
             throw error("key reward withdrawal requires an input vote delegation");
         babbage::state::withdraw_reward(id, amount);
     }

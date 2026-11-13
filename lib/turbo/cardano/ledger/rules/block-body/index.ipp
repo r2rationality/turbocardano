@@ -13,10 +13,7 @@
             blk->foreach_tx([&](const auto &tx) {
                 if (blk->era() > 1) // byron era validation does not require access to fees, which itself are harder to compute
                     fees += tx.fee();
-                if (const auto *c_tx = dynamic_cast<const cardano::conway::tx *>(&tx); c_tx) {
-                    if (const auto d = c_tx->donation(); d)
-                        donations += d;
-                }
+                donations += tx.donation();
             });
             idx.emplace_back(blk->slot(), blk->issuer_hash(), fees, donations, blk.offset() + blk.size(), numeric_cast<uint8_t>(blk->era()));
         }

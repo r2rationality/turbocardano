@@ -8,6 +8,8 @@
 #include <turbo/cardano/ledger/state.hpp>
 #include <turbo/cardano/common/block-producer.hpp>
 #include <turbo/index/utxo.hpp>
+#include <turbo/index/block-fees.hpp>
+#include <turbo/index/timed-update.hpp>
 #include <turbo/storage/test.hpp>
 #include <turbo/sync/mocks.hpp>
 #include "validator.hpp"
@@ -23,6 +25,152 @@ suite txwit_validator_suite = [] {
         const chunk_registry cr { src_dir, chunk_registry_settings_t { .mode=chunk_registry::mode::store } };
         const cardano::optional_point target { cr.find_block_by_slot(7167).point() };
         expect_equal(txwit::validate(cr, {}, target), target);
+
+        "Dijkstra witness failure cannot be swallowed by the error callback"_test = [] {
+            using namespace cardano;
+            const configs_dir files { configs_dir::network_path("musashi") };
+            const cardano::config cfg { files };
+            cbor::encoder body {};
+            body.array(3).array(1).array(4)
+                .map(3).uint(0).array(1).array(2).bytes(tx_hash {}).uint(0)
+                .uint(1).array(0).uint(2).uint(0)
+                .map(1).uint(0).array(1).array(2).bytes(vkey {}).bytes(signature {})
+                .s_null().boolean(true).s_null().s_null();
+            cbor::encoder block {};
+            block.array(2).uint(8).array(2).array(2).array(12)
+                .uint(0).uint(0).s_null().bytes(vkey {}).bytes(vrf_vkey {})
+                .array(2).bytes(vrf_result {}).bytes(vrf_proof {}).uint(body.cbor().size())
+                .bytes(crypto::blake2b::digest<block_hash>(body.cbor()))
+                .array(4).bytes(kes_vkey {}).uint(0).uint(0).bytes(signature {})
+                .array(2).uint(12).uint(0).boolean(false).s_null()
+                .bytes(cardano_kes_signature_data {}).raw_cbor(body.cbor());
+            const file::tmp_directory dir { "dijkstra-invalid-witness" };
+            storage::chunk_fixture_t fixture { dir.path(), cfg };
+            fixture.add(0, block.cbor());
+            fixture.save();
+            scheduler sched { 4 };
+            const chunk_registry source { dir.path(), chunk_registry_settings_t {
+                .mode=chunk_registry::mode::store, .ccfg=cfg, .sched=sched
+            } };
+            ledger::state st { cfg, sched };
+            bool reported = false;
+            txwit::processor proc { source, st, [&](const std::string &message) {
+                reported |= message.find("shelley vkey witness failed") != std::string::npos;
+            } };
+            expect(throws([&] { proc.apply({ &source.chunks().begin()->second }); }));
+            expect(reported);
+            expect_equal(st.end_offset(), uint64_t { 0 });
+        };
+
+        "Dijkstra proposals, votes and donations survive validation and indexing"_test = [] {
+            using namespace cardano;
+            const configs_dir files { configs_dir::network_path("musashi") };
+            const cardano::config cfg { files };
+            scheduler sched { 4 };
+            ledger::state st { cfg, sched };
+            const auto initial_balance = st.utxo_balance();
+            const auto seed = crypto::blake2b::digest<crypto::ed25519::seed>(std::string_view { "dijkstra-governance" });
+            const auto sk = crypto::ed25519::create_sk_from_seed(seed);
+            const auto vk = crypto::ed25519::extract_vk(sk);
+            const auto key = crypto::blake2b::digest<key_hash>(vk);
+            uint8_vector address { static_cast<uint8_t>(0x60 | cfg.shelley_network_id) };
+            address << key;
+            uint8_vector reward_address { static_cast<uint8_t>(0xE0 | cfg.shelley_network_id) };
+            reward_address << key;
+            constexpr uint64_t fee = 1'000'000, donation = 123, output = 5'000'000;
+            cbor::encoder tx_body {};
+            tx_body.map(6).uint(0).array(1).array(2).bytes(tx_hash {}).uint(0)
+                .uint(1).array(1).array(2).bytes(address).uint(output)
+                .uint(2).uint(fee)
+                .uint(4).array(2).array(3).uint(7).array(2).uint(0).bytes(key).uint(st.params().key_deposit)
+                .array(4).uint(16).array(2).uint(0).bytes(key).uint(st.params().drep_deposit).s_null()
+                .uint(20).array(1).array(4).uint(st.params().gov_action_deposit).bytes(reward_address)
+                .array(1).uint(6).array(2).text("https://example.com/proposal").bytes(datum_hash {})
+                .uint(22).uint(donation);
+            const auto tx_id = crypto::blake2b::digest<tx_hash>(tx_body.cbor());
+            crypto::ed25519::signature sig {};
+            crypto::ed25519::sign(sig, tx_id, sk);
+            cbor::encoder vote_body {};
+            vote_body.map(4).uint(0).array(1).array(2).bytes(tx_id).uint(0)
+                .uint(1).array(1).array(2).bytes(address).uint(output - fee)
+                .uint(2).uint(fee)
+                .uint(19).map(1).array(2).uint(2).bytes(key)
+                .map(1).array(2).bytes(tx_id).uint(0).array(2).uint(1).s_null();
+            crypto::ed25519::signature vote_sig {};
+            crypto::ed25519::sign(vote_sig, crypto::blake2b::digest<tx_hash>(vote_body.cbor()), sk);
+            cbor::encoder body {};
+            body.array(3).array(2).array(4).raw_cbor(tx_body.cbor())
+                .map(1).uint(0).array(1).array(2).bytes(vk).bytes(sig)
+                .s_null().boolean(true)
+                .array(4).raw_cbor(vote_body.cbor())
+                .map(1).uint(0).array(1).array(2).bytes(vk).bytes(vote_sig)
+                .s_null().boolean(true).s_null().s_null();
+            cbor::encoder block {};
+            block.array(2).uint(8).array(2).array(2).array(10)
+                .uint(0).uint(0).s_null().bytes(vkey {}).bytes(vrf_vkey {})
+                .array(2).bytes(vrf_result {}).bytes(vrf_proof {}).uint(body.cbor().size())
+                .bytes(crypto::blake2b::digest<block_hash>(body.cbor()))
+                .array(4).bytes(kes_vkey {}).uint(0).uint(0).bytes(signature {})
+                .array(2).uint(12).uint(0)
+                .bytes(cardano_kes_signature_data {}).raw_cbor(body.cbor());
+            const parsed_block parsed { block.cbor(), cfg };
+            const file::tmp_directory dir { "dijkstra-governance" };
+            index::timed_update::indexer updates { dir.path(), "timed-update", sched };
+            index::block_fees::indexer fees { dir.path(), "block-fees", sched };
+            {
+                indexer::chunk_indexer_list_t indices;
+                indices.emplace_back(updates.make_chunk_indexer("update", 0));
+                indices.emplace_back(fees.make_chunk_indexer("update", 0));
+                indices.index_block(parsed.blk);
+            }
+            std::vector<index::timed_update::item> indexed_updates;
+            turbo::zpp::load_zstd(indexed_updates, updates.chunk_path("update", 0) + ".bin");
+            expect_equal(indexed_updates.size(), 6);
+            expect(std::ranges::any_of(indexed_updates, [&](const auto &item) {
+                const auto *proposal = std::get_if<proposal_t>(&item.update);
+                if (!proposal)
+                    return false;
+                return std::ranges::equal(proposal->id.tx_id, tx_id)
+                    && proposal->procedure.deposit == st.params().gov_action_deposit;
+            }));
+            expect(std::ranges::any_of(indexed_updates, [](const auto &item) {
+                const auto *prelude = std::get_if<index::timed_update::conway_tx_prelude>(&item.update);
+                return prelude && prelude->has_proposals;
+            }));
+            expect(std::ranges::any_of(indexed_updates, [&](const auto &item) {
+                const auto *vote = std::get_if<conway::vote_info_t>(&item.update);
+                if (!vote)
+                    return false;
+                return vote->action_id == gov_action_id_t { tx_id, 0 } && std::ranges::equal(vote->voter.hash, key);
+            }));
+            expect(std::ranges::any_of(indexed_updates, [&](const auto &item) {
+                const auto *prelude = std::get_if<index::timed_update::conway_tx_prelude>(&item.update);
+                return prelude && prelude->voting_dreps.contains(credential_t { key, false });
+            }));
+            std::vector<index::block_fees::item> indexed_fees;
+            turbo::zpp::load_zstd(indexed_fees, fees.chunk_path("update", 0) + ".bin");
+            expect(fatal(indexed_fees.size() == 1));
+            expect_equal(indexed_fees.front().donations, donation);
+            expect_equal(indexed_fees.front().fees, 2 * fee);
+
+            storage::chunk_fixture_t fixture { dir.path(), cfg };
+            fixture.add(0, block.cbor());
+            fixture.save();
+            const chunk_registry source { dir.path(), chunk_registry_settings_t {
+                .mode=chunk_registry::mode::store, .ccfg=cfg, .sched=sched
+            } };
+            ledger::utxo_update_list initial(1);
+            initial[0].try_emplace(tx_out_ref { {}, 0 }, tx_out_data { .address_raw=address,
+                .coin=output + fee + donation + st.params().key_deposit
+                    + st.params().drep_deposit + st.params().gov_action_deposit });
+            st.process_utxo_updates(std::move(initial));
+            txwit::processor proc { source, st };
+            proc.apply({ &source.chunks().begin()->second });
+            expect_equal(st.end_offset(), block.cbor().size());
+            expect_equal(st.utxo_balance(), initial_balance + output - fee);
+            expect(st.has_stake(stake_ident { key, false }));
+            expect(st.has_drep(credential_t { key, false }));
+        };
 
         "body size limits exclude the header and require its declared size"_test = [] {
             for (const auto [limit, declared]: { std::pair{4U, 4U}, {3U, 4U}, {4U, 5U} }) {

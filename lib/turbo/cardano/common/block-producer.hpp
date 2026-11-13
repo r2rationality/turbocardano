@@ -63,6 +63,24 @@ namespace turbo::cardano {
             enc.cbor() << tx_bodies << tx_wits << data << inval;
             return enc.cbor();
         }
+        [[nodiscard]] uint8_vector empty_dijkstra_cbor() const
+        {
+            if (!txs.empty()) [[unlikely]]
+                throw error{"empty Dijkstra block producer cannot contain transactions"};
+            cbor::encoder body {};
+            body.array(3).array(0).s_null().s_null();
+            cbor::encoder header {};
+            header.array(10).uint(height).uint(slot).bytes(prev_hash).bytes(_cold_vk).bytes(_vrf_vk);
+            _gen_vrf_result(header);
+            header.uint(body.cbor().size()).bytes(crypto::blake2b::digest<block_hash>(body.cbor()));
+            _gen_op_cert(header);
+            header.array(2).uint(12).uint(0);
+            cbor::encoder enc {};
+            enc.array(2).uint(8).array(2).array(2).raw_cbor(header.cbor());
+            _gen_kes_signature(enc, header.cbor());
+            enc.raw_cbor(body.cbor());
+            return enc.cbor();
+        }
     private:
         crypto::ed25519::skey _cold_sk;
         crypto::ed25519::vkey _cold_vk;

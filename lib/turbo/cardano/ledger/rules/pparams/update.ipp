@@ -95,6 +95,23 @@
         _apply_one_param_update(ref_script_cost_multiplier, update_desc, upd.ref_script_cost_multiplier, "ref_script_cost_multiplier");
         _apply_one_param_update(max_pledge_leverage, update_desc, upd.max_pledge_leverage, "max_pledge_leverage");
         _apply_one_param_update(min_pool_margin, update_desc, upd.min_pool_margin, "min_pool_margin");
+        _apply_one_param_update(leios_announcement_period_length, update_desc, upd.leios_announcement_period_length, "leios_announcement_period_length");
+        _apply_one_param_update(leios_vote_period_length, update_desc, upd.leios_vote_period_length, "leios_vote_period_length");
+        _apply_one_param_update(leios_diffusion_period_length, update_desc, upd.leios_diffusion_period_length, "leios_diffusion_period_length");
+        _apply_one_param_update(leios_committee_size, update_desc, upd.leios_committee_size, "leios_committee_size");
+        _apply_one_param_update(leios_quorum_stake_threshold, update_desc, upd.leios_quorum_stake_threshold, "leios_quorum_stake_threshold");
+        _apply_one_param_update(max_endorser_block_references_size, update_desc, upd.max_endorser_block_references_size, "max_endorser_block_references_size");
+        _apply_one_param_update(max_endorser_block_txs_size, update_desc, upd.max_endorser_block_txs_size, "max_endorser_block_txs_size");
+        _apply_one_param_update(max_endorser_block_ex_units, update_desc, upd.max_endorser_block_ex_units, "max_endorser_block_ex_units");
+        _apply_one_param_update(max_ref_script_size_per_endorser_block, update_desc, upd.max_ref_script_size_per_endorser_block, "max_ref_script_size_per_endorser_block");
+        _apply_one_param_update(peras_min_candidate_block_age, update_desc, upd.peras_min_candidate_block_age, "peras_min_candidate_block_age");
+        _apply_one_param_update(peras_healing_factor, update_desc, upd.peras_healing_factor, "peras_healing_factor");
+        _apply_one_param_update(peras_cert_boost, update_desc, upd.peras_cert_boost, "peras_cert_boost");
+        _apply_one_param_update(peras_target_committee_size, update_desc, upd.peras_target_committee_size, "peras_target_committee_size");
+        _apply_one_param_update(peras_bootstrap_round, update_desc, upd.peras_bootstrap_round, "peras_bootstrap_round");
+        _apply_one_param_update(peras_quorum_threshold_safety_margin, update_desc, upd.peras_quorum_threshold_safety_margin, "peras_quorum_threshold_safety_margin");
+        _apply_one_param_update(ref_inputs_cost_per_multi_asset_policy, update_desc, upd.ref_inputs_cost_per_multi_asset_policy, "ref_inputs_cost_per_multi_asset_policy");
+        _apply_one_param_update(ref_inputs_cost_per_datum_byte, update_desc, upd.ref_inputs_cost_per_datum_byte, "ref_inputs_cost_per_datum_byte");
         return update_desc;
     }
 

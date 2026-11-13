@@ -20,7 +20,7 @@ namespace turbo::cardano::dijkstra {
         {
             auto res = rational_u64::from_cbor(v);
             if (!res.denominator || (positive_numerator && !res.numerator) || (unit && res.numerator > res.denominator)) [[unlikely]]
-                throw error("invalid Dijkstra protocol parameter interval");
+                throw error{"invalid Dijkstra protocol parameter interval"};
             return res;
         }
     }
@@ -34,7 +34,7 @@ namespace turbo::cardano::dijkstra {
         while (!it.done()) {
             auto &key = it.read_key();
             const auto type = key.uint();
-            if (type > 39) [[unlikely]]
+            if (type > 56) [[unlikely]]
                 throw error{"unsupported Dijkstra protocol parameter key: {}", type};
             const auto mask = uint64_t { 1 } << type;
             if (seen_low & mask) [[unlikely]]
@@ -77,7 +77,7 @@ namespace turbo::cardano::dijkstra {
                 case 36: {
                     const auto stride = numeric_cast<uint32_t>(value.uint());
                     if (!stride) [[unlikely]]
-                        throw error("refScript cost stride must be positive");
+                        throw error{"refScript cost stride must be positive"};
                     upd.ref_script_cost_stride = stride;
                     break;
                 }
@@ -93,6 +93,31 @@ namespace turbo::cardano::dijkstra {
                     break;
                 }
                 case 39: upd.min_pool_margin = interval_from_cbor(value, true, false); break;
+                case 40: upd.leios_announcement_period_length = numeric_cast<uint32_t>(value.uint()); break;
+                case 41: upd.leios_vote_period_length = numeric_cast<uint32_t>(value.uint()); break;
+                case 42: upd.leios_diffusion_period_length = numeric_cast<uint32_t>(value.uint()); break;
+                case 43: upd.leios_committee_size = numeric_cast<uint16_t>(value.uint()); break;
+                case 44: upd.leios_quorum_stake_threshold = interval_from_cbor(value, true, false); break;
+                case 45: upd.max_endorser_block_references_size = numeric_cast<uint32_t>(value.uint()); break;
+                case 46: upd.max_endorser_block_txs_size = numeric_cast<uint32_t>(value.uint()); break;
+                case 47: upd.max_endorser_block_ex_units = ex_units::from_cbor(value); break;
+                case 48: upd.max_ref_script_size_per_endorser_block = numeric_cast<uint32_t>(value.uint()); break;
+                case 49: upd.peras_min_candidate_block_age = numeric_cast<uint32_t>(value.uint()); break;
+                case 50: upd.peras_healing_factor = interval_from_cbor(value, false, true); break;
+                case 51: upd.peras_cert_boost = numeric_cast<uint16_t>(value.uint()); break;
+                case 52: upd.peras_target_committee_size = numeric_cast<uint16_t>(value.uint()); break;
+                case 53: {
+                    nil_optional_t<uint32_t> round {};
+                    if (value.is_null())
+                        static_cast<void>(value.special());
+                    else
+                        round.emplace(numeric_cast<uint32_t>(value.uint()));
+                    upd.peras_bootstrap_round.emplace(std::move(round));
+                    break;
+                }
+                case 54: upd.peras_quorum_threshold_safety_margin = interval_from_cbor(value, true, false); break;
+                case 55: upd.ref_inputs_cost_per_multi_asset_policy = value.uint(); break;
+                case 56: upd.ref_inputs_cost_per_datum_byte = value.uint(); break;
                 [[unlikely]] default:
                     throw error{"unsupported Dijkstra protocol parameter key: {}", type};
             }

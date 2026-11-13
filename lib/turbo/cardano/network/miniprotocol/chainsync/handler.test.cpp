@@ -195,8 +195,10 @@ suite cardano_network_miniprotocol_chainsync_suite = [] {
             auto source = std::make_shared<chain_source>(live);
             chainsync::handler h { source };
             mock_response_processor_t<chainsync::msg_t> resp { decode };
+            expect(h.can_receive());
             h.data(encode(chainsync::msg_request_next_t {}), std::ref(resp));
             expect(fatal(std::holds_alternative<chainsync::msg_await_reply_t>(resp.at(0))));
+            expect(!h.can_receive());
             h.poll(std::ref(resp));
             expect_equal(resp.size(), 1);
             live->accept_anything_or_throw({}, *chain.tip, [&] { live->add_buffer(0, chain.data); });
@@ -205,6 +207,7 @@ suite cardano_network_miniprotocol_chainsync_suite = [] {
             source->publish({});
             h.poll(std::ref(resp));
             expect(fatal(std::holds_alternative<chainsync::msg_roll_forward_t>(resp.at(1))));
+            expect(h.can_receive());
             for (size_t i = 1; i < chain.blocks.size(); ++i)
                 h.data(encode(chainsync::msg_request_next_t {}), std::ref(resp));
             h.data(encode(chainsync::msg_request_next_t {}), std::ref(resp));

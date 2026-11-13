@@ -63,6 +63,8 @@ namespace turbo::cardano::ledger::conway::rules::gov {
                 return false;
             if (pv.major >= 11 && upd.n_opt && *upd.n_opt == 0)
                 return false;
+            if (pv.major >= 12 && upd.e_max && *upd.e_max == 0)
+                return false;
 
             has(upd.min_fee_a);
             has(upd.min_fee_b);
@@ -90,6 +92,25 @@ namespace turbo::cardano::ledger::conway::rules::gov {
             has(upd.ref_script_cost_multiplier);
             has(upd.max_pledge_leverage);
             has(upd.min_pool_margin);
+            if (pv.major >= 12) {
+                has(upd.leios_announcement_period_length);
+                has(upd.leios_vote_period_length);
+                has(upd.leios_diffusion_period_length);
+                has(upd.leios_committee_size);
+                has(upd.leios_quorum_stake_threshold);
+                has(upd.max_endorser_block_references_size);
+                has(upd.max_endorser_block_txs_size);
+                has(upd.max_endorser_block_ex_units);
+                has(upd.max_ref_script_size_per_endorser_block);
+                has(upd.peras_min_candidate_block_age);
+                has(upd.peras_healing_factor);
+                has(upd.peras_cert_boost);
+                has(upd.peras_target_committee_size);
+                has(upd.peras_bootstrap_round);
+                has(upd.peras_quorum_threshold_safety_margin);
+                has(upd.ref_inputs_cost_per_multi_asset_policy);
+                has(upd.ref_inputs_cost_per_datum_byte);
+            }
             return has_update;
         }
 

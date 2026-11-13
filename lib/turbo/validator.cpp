@@ -6,6 +6,7 @@
 #include <turbo/common/mutex.hpp>
 #include <boost/multiprecision/cpp_int.hpp>
 #include <turbo/cardano/common/common.hpp>
+#include <turbo/cardano/dijkstra/block.hpp>
 #include <turbo/cardano/ledger/state.hpp>
 #include <turbo/cardano/ledger/updates.hpp>
 #include <turbo/chunk-registry.hpp>
@@ -82,6 +83,7 @@ namespace turbo::validator {
         };
         if (obj.contains("blockHash") && !obj.at("blockHash").is_null())
             snap.block_hash = cardano::block_hash::from_hex(json::value_to<std::string>(obj.at("blockHash")));
+        snap.full_validation = obj.contains("fullValidation") && json::value_to<bool>(obj.at("fullValidation"));
         return snap;
     }
 
@@ -117,6 +119,7 @@ namespace turbo::validator {
             { "trustedAuthorityEpoch", trusted_authority_epoch
                 ? json::value(*trusted_authority_epoch) : json::value(nullptr) },
             { "certifiedCoreOffset", certified_core_offset },
+            { "fullValidation", full_validation },
             { "formatVersion", format_version },
             { "blockHash", block_hash ? json::value(fmt::format("{}", *block_hash)) : json::value(nullptr) }
         };
@@ -174,12 +177,12 @@ namespace turbo::validator {
     }
 
     struct incremental::impl {
-        impl(chunk_registry &cr, const storage::chunk_map &chunks, const bool validate_vrf)
+        impl(chunk_registry &cr, const storage::chunk_map &chunks, const bool validate_vrf, const std::optional<validation_mode> mode)
         : _cr { cr }, _validate_vrf { validate_vrf },
             _validate_dir { chunk_registry::init_db_dir((_cr.data_dir() / "validate").string()) },
             _state_path { (_validate_dir / "state.json").string() },
             _state { _cr.config(), _cr.sched(), cardano::ledger::state::init_mode::empty },
-            _witnesses { _cr, _state }, _mode { cr.continuous() ? validation_mode::full : validation_mode::none }
+            _witnesses { _cr, _state }, _mode { mode.value_or(cr.continuous() ? validation_mode::full : validation_mode::none) }
         {
             _load_state(chunks, false);
             if (!std::filesystem::exists(_state_path)) {
@@ -203,8 +206,9 @@ namespace turbo::validator {
             if (_state.truncate_subchains(max_end_offset))
                 logger::debug("validator truncated pending subchains at end_offset {}", max_end_offset);
             // A failed batch can mutate state without advancing its offset.
-            if (_replay_failed || _state.end_offset() > max_end_offset
+            if (_replay_failed || _validation_failed || _state.end_offset() > max_end_offset
                     || (!_snapshots.empty() && _snapshots.rbegin()->end_offset > max_end_offset)) {
+                _validation_failed = false;
                 for (auto it = _snapshots.begin(); it != _snapshots.end(); ) {
                     if (it->end_offset > max_end_offset) {
                         _cr.remover().mark(_storage_path("ledger", it->end_offset));
@@ -219,6 +223,7 @@ namespace turbo::validator {
                     _load_state_snapshot(last_snapshot);
                 } else {
                     _state.clear();
+                    _full_validation = true;
                     _trusted_shelley_authority_epoch.reset();
                     _certified_core.reset();
                     _certified_core_offset = 0;
@@ -239,13 +244,26 @@ namespace turbo::validator {
         validation_mode validation(const validation_mode mode)
         {
             if (_cr.tx())
-                throw error("cannot change validation mode during an import");
-            return std::exchange(_mode, mode);
+                throw error{"cannot change validation mode during an import"};
+            const auto previous = std::exchange(_mode, mode);
+            if (mode == validation_mode::full && !_full_validation && _state.end_offset()) {
+                try {
+                    _load_state(_cr.chunks(), true);
+                    recover();
+                } catch (...) {
+                    _mode = previous;
+                    _load_state(_cr.chunks(), true);
+                    recover();
+                    throw;
+                }
+            }
+            return previous;
         }
 
         void my_start_tx()
         {
             _replay_failed = false;
+            _validation_failed = false;
             _next_end_offset = _state.end_offset();
             _next_tasks.clear();
             _snapshot_tip_height = _cr.tx()->target ? _cr.tx()->target->height : std::nullopt;
@@ -261,6 +279,8 @@ namespace turbo::validator {
                 _schedule_validation(std::move(lk), false);
                 _cr.sched().process(true);
             }
+            if (_validation_failed) [[unlikely]]
+                throw error("cannot commit after a validation failure");
             if (my_end_offset() != _state.end_offset()) [[unlikely]] {
                 throw error{"validation reached offset {} but the ledger reached {}",
                     my_end_offset(), _state.end_offset()};
@@ -326,6 +346,14 @@ namespace turbo::validator {
                 _apply_ledger_updates_fast();
                 _remove_temporary_data();
             }
+        }
+
+        std::optional<uint64_t> prepare_prefix_recovery()
+        {
+            if (_mode != validation_mode::full || !_validation_failed)
+                return {};
+            _replay_failed = true;
+            return my_end_offset();
         }
 
         void my_rollback_tx()
@@ -499,6 +527,7 @@ namespace turbo::validator {
         cardano::ledger::state _state;
         txwit::processor _witnesses;
         validation_mode _mode;
+        bool _full_validation = true;
         bool _replay_witnesses = false;
         bool _replay_failed = false;
         cardano::optional_point _witness_from {};
@@ -507,6 +536,7 @@ namespace turbo::validator {
         cardano::optional_point _certified_core {};
         uint64_t _certified_core_offset = 0;
         std::atomic_bool _validation_running { false };
+        std::atomic_bool _validation_failed { false };
         mutable mutex::unique_lock::mutex_type _next_task_mutex alignas(mutex::alignment) {};
         uint64_t _next_end_offset = 0;
         epoch_task_map _next_tasks {};
@@ -754,6 +784,7 @@ namespace turbo::validator {
         {
             uint64_t end_offset = 0;
             bool loaded = false;
+            _full_validation = true;
             _trusted_shelley_authority_epoch.reset();
             _certified_core.reset();
             _certified_core_offset = 0;
@@ -774,6 +805,8 @@ namespace turbo::validator {
                 for (const auto &j_s: j_snapshots) {
                     try {
                         auto snap = snapshot::from_json(j_s.as_object());
+                        if (_mode == validation_mode::full && !snap.full_validation)
+                            continue;
                         if (!snap.matches(chunks)) [[unlikely]] {
                             logger::warn("ignoring inconsistent validator snapshot {}", snap);
                             continue;
@@ -803,6 +836,7 @@ namespace turbo::validator {
                         known_files.erase(_storage_path("ledger", snap_it->end_offset));
                         _snapshots.erase(snap_it);
                         _state.clear(cardano::ledger::state::init_mode::empty);
+                        _full_validation = true;
                         _trusted_shelley_authority_epoch.reset();
                         _certified_core.reset();
                         _certified_core_offset = 0;
@@ -818,8 +852,10 @@ namespace turbo::validator {
                     }
                 }
             }
-            if (!loaded)
+            if (!loaded) {
                 _state.clear();
+                _full_validation = true;
+            }
             for (auto &e: std::filesystem::directory_iterator(_validate_dir)) {
                 const auto canon_path = std::filesystem::weakly_canonical(e.path()).string();
                 if (e.is_regular_file() && !known_files.contains(canon_path))
@@ -827,6 +863,7 @@ namespace turbo::validator {
             }
             _applied_offset.store(_state.end_offset(), std::memory_order_release);
             _validation_running = false;
+            _validation_failed = false;
             _witnesses.reset();
             logger::info("validator snapshot has data up to offset: {}", end_offset);
         }
@@ -853,6 +890,7 @@ namespace turbo::validator {
             _trusted_shelley_authority_epoch = snap.trusted_authority_epoch;
             _certified_core.reset();
             _certified_core_offset = snap.certified_core_offset;
+            _full_validation = snap.full_validation;
             return _state.end_offset();
         }
 
@@ -866,6 +904,7 @@ namespace turbo::validator {
                 _load_state_snapshot(*selected);
             else {
                 _state.clear();
+                _full_validation = true;
                 _witnesses.reset();
                 _trusted_shelley_authority_epoch.reset();
                 _certified_core.reset();
@@ -942,6 +981,7 @@ namespace turbo::validator {
             snapshot latest { _state, _trusted_shelley_authority_epoch,
                 _certified_core_offset };
             latest.block_hash = _cr.find_block_by_offset(latest.end_offset - 1).hash;
+            latest.full_validation = _full_validation && _validate_vrf;
             _snapshots.emplace(std::move(latest));
         }
 
@@ -1069,9 +1109,12 @@ namespace turbo::validator {
                         const auto replay_data = static_cast<buffer>(raw_data).subbuf(chunk.offset - raw_offset, chunk.data_size);
                         storage::block_reader_t reader { replay_data, chunk.offset, _cr.config() };
                         while (!reader.done()) {
-                            chunk_indexers.index_block(reader.next());
+                            const auto block = reader.next();
+                            if (_mode == validation_mode::full || _replay_witnesses)
+                                my_on_block_validate(*block);
+                            chunk_indexers.index_block(block);
                         }
-                        my_on_chunk_add(chunk, true);
+                        my_on_chunk_add(chunk, _mode != validation_mode::full && !_replay_witnesses);
                     });
                 }
             }
@@ -1082,6 +1125,8 @@ namespace turbo::validator {
         {
             // move, so that it unlocks on stack unrolling
             mutex::unique_lock lk{std::move(next_task_lk)};
+            if (_validation_failed)
+                return;
             bool exp_false = false;
             if (_validation_running.compare_exchange_strong(exp_false, true)) {
                 static const std::string task_name{validate_task};
@@ -1107,7 +1152,12 @@ namespace turbo::validator {
                         }
                         _validation_running = false;
                     } catch (const std::exception &ex) {
+                        _validation_failed = true;
                         logger::error("validation has failed: {}", ex.what());
+                        _validation_running = false;
+                        throw;
+                    } catch (...) {
+                        _validation_failed = true;
                         _validation_running = false;
                         throw;
                     }
@@ -1201,14 +1251,17 @@ namespace turbo::validator {
                         authority_controls = _authority_controls(updates.timed);
                         return true;
                     };
-                    if ((!fast && _mode == validation_mode::full) || _replay_witnesses) {
+                    if (_mode == validation_mode::full || _replay_witnesses) {
                         _witnesses.apply(work.chunks, _witness_from, {}, txwit::witness_type::all, prepare_epoch);
+                        if (_witness_from && _witness_from->end_offset > last_offset)
+                            _full_validation = false;
                     } else {
                         if (!prepare_epoch())
                             return;
                         const auto utxo_chunks = dynamic_cast<index::utxo::indexer &>(*_cr.indexer().indexers().at("utxo")).chunks(slots);
                         _load_utxo_updates(updates, e, last_offset, "utxo", utxo_chunks);
                         _state.process_updates(std::move(updates));
+                        _full_validation = false;
                     }
                     if (!min_epoch_offset)
                         return;
@@ -1217,7 +1270,8 @@ namespace turbo::validator {
                     const auto vrf_chunks = dynamic_cast<index::vrf::indexer &>(*_cr.indexer().indexers().at("vrf")).chunks(slots);
                     if (!vrf_chunks.empty()) {
                         turbo::timer t { fmt::format("validator epoch {} process vrf update chunks: {}", e, vrf_chunks.size()), logger::level::trace };
-                        _process_vrf_update_chunks(*min_epoch_offset, vrf_chunks, fast);
+                        _process_vrf_update_chunks(*min_epoch_offset, vrf_chunks,
+                            fast && _mode != validation_mode::full && !_replay_witnesses);
                     }
                     _applied_offset.store(_state.end_offset(), std::memory_order_release);
 
@@ -1348,8 +1402,8 @@ namespace turbo::validator {
                     } else {
                         if (!cardano::vrf_leader_is_eligible(cardano::vrf_leader_value(item.leader_result),
                                 _cr.config().shelley_active_slots_coeff, rel_stake)) [[unlikely]]
-                            throw error{"era 6 Leader-eligibility check failed for block at slot {} issued by {}: leader_result: {} rel_stake: {}",
-                                item.slot, item.pool_id, item.leader_result, rel_stake};
+                            throw error{"era {} Leader-eligibility check failed for block at slot {} issued by {}: leader_result: {} rel_stake: {}",
+                                item.era, item.slot, item.pool_id, item.leader_result, rel_stake};
                     }
                 }
             }
@@ -1393,8 +1447,13 @@ namespace turbo::validator {
                     for (size_t start = 0; start < vrf_updates_ptr->size(); start += batch_size) {
                         auto end = std::min(start + batch_size, vrf_updates_ptr->size());
                         _cr.sched().submit(task_name, -static_cast<int64_t>(epoch), [this, epoch, epoch_min_offset, vrf_updates_ptr, pool_dist_ptr, genesis_delegs_ptr, decentralization, active_protocol_ver, nonce_epoch, uc_nonce, uc_leader, start, end] {
-                            _validate_epoch_leaders(epoch, epoch_min_offset, vrf_updates_ptr, pool_dist_ptr, genesis_delegs_ptr,
-                                decentralization, active_protocol_ver, nonce_epoch, uc_nonce, uc_leader, start, end);
+                            try {
+                                _validate_epoch_leaders(epoch, epoch_min_offset, vrf_updates_ptr, pool_dist_ptr, genesis_delegs_ptr,
+                                    decentralization, active_protocol_ver, nonce_epoch, uc_nonce, uc_leader, start, end);
+                            } catch (...) {
+                                _validation_failed = true;
+                                throw;
+                            }
                         }, chunk_offset_t { epoch_min_offset });
                     }
                 }
@@ -1408,8 +1467,9 @@ namespace turbo::validator {
         }
     };
 
-    incremental::incremental(chunk_registry &cr, const storage::chunk_map &chunks, const bool validate_vrf)
-        : _impl { std::make_unique<impl>(cr, chunks, validate_vrf) }
+    incremental::incremental(chunk_registry &cr, const storage::chunk_map &chunks, const bool validate_vrf,
+            const std::optional<validation_mode> mode)
+        : _impl { std::make_unique<impl>(cr, chunks, validate_vrf, mode) }
     {
     }
 
@@ -1469,6 +1529,11 @@ namespace turbo::validator {
     void incremental::recover()
     {
         _impl->recover();
+    }
+
+    std::optional<uint64_t> incremental::prepare_prefix_recovery()
+    {
+        return _impl->prepare_prefix_recovery();
     }
 
     void incremental::save_snapshot(const bool force)

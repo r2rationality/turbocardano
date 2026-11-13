@@ -31,6 +31,14 @@
                 case 7:
                     // do nothing here, the block signer's eligibility is tested later process_vrf_chunks
                     break;
+                case 8: {
+                    const auto &dijkstra = dynamic_cast<const cardano::dijkstra::block &>(blk);
+                    if (dijkstra.header().leios() || dijkstra.leios_certificate() || dijkstra.peras_certificate()) [[unlikely]]
+                        throw error{"Leios/Peras consensus validation is not supported by the DijkstraNet Praos profile"};
+                    if (dijkstra.header().body_size() != dijkstra.body_size()) [[unlikely]]
+                        throw error{"Dijkstra block body size differs from its header"};
+                    break;
+                }
                 [[unlikely]] default:
                     throw error{"unsupported block era: {}", blk.era()};
             }

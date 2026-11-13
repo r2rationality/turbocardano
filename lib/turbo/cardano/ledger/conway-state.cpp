@@ -25,6 +25,21 @@ namespace turbo::cardano::ledger::conway {
 
 #include <turbo/cardano/ledger/transition/conway.ipp>
 
+    protocol_version state::next_protocol_version()
+    {
+        complete_pulsers();
+        return _ratify_state.new_state.params.protocol_ver;
+    }
+
+    void state::_initialize_genesis()
+    {
+        babbage::state::_initialize_genesis();
+        _conway_start_epoch = 0;
+        _num_dormant_epochs = 0;
+        _ratify_ready = false;
+        _gov_make_pulsing_snapshot();
+    }
+
 #include <turbo/cardano/ledger/rules/certs/conway.ipp>
 
     bool state::has_drep(const credential_t &id) const

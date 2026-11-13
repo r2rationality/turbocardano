@@ -16,7 +16,11 @@ namespace turbo::cardano::dijkstra {
     uint64_t block_header::height() const { return _block_number; }
     uint64_t block_header::slot() const { return _slot; }
     buffer block_header::issuer_vkey() const { return _issuer_vkey; }
-    protocol_version block_header::protocol_ver() const { return _node_ver; }
+    protocol_version block_header::protocol_ver() const
+    {
+        return _protocol_version;
+    }
+    const header_version_info_t &block_header::version_info() const { return _version_info; }
     const cardano::vrf_vkey &block_header::vrf_vkey() const { return _vrf_vkey; }
     const vrf_cert &block_header::nonce_vrf() const { return _nonce_vrf; }
     const vrf_cert &block_header::leader_vrf() const { return _nonce_vrf; }
@@ -31,7 +35,7 @@ namespace turbo::cardano::dijkstra {
     const std::optional<eb_announcement_t> &block_header::eb_announcement() const { return _eb_announcement; }
 
     uint32_t block::body_size() const { return numeric_cast<uint32_t>(_body_raw.size()); }
-    const cardano::block_header_base &block::header() const { return _header; }
+    const block_header &block::header() const { return _header; }
     const block_hash &block::body_hash() const
     {
         if (!_body_hash)
@@ -40,4 +44,6 @@ namespace turbo::cardano::dijkstra {
     }
     const tx_list &block::txs() const { return _transactions->txs_view; }
     const invalid_tx_set &block::invalid_txs() const { return _invalid_transactions; }
+    const std::optional<leios_certificate_t> &block::leios_certificate() const { return _leios_certificate; }
+    const std::optional<uint8_vector> &block::peras_certificate() const { return _peras_certificate; }
 }

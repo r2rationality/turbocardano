@@ -135,6 +135,7 @@ namespace turbo::plutus::costs {
         variants v1 {};
         variants v2 {};
         variants v3 {};
+        std::optional<runtime_model> v4 {};
 
         const runtime_model &for_script(cardano::script_type typ, builtin_semantics semantics) const;
     };

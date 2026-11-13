@@ -183,6 +183,7 @@ namespace turbo::cardano::ledger::conway {
         bool has_drep(const credential_t &id) const override;
         void process_cert(const cert_t &, const cert_loc_t &loc) override;
         void complete_pulsers() override;
+        protocol_version next_protocol_version();
 
         void process_cert(const stake_dereg_cert &, const cert_loc_t &) override;
         virtual void process_cert(const reg_cert &, const cert_loc_t &);
@@ -290,6 +291,7 @@ namespace turbo::cardano::ledger::conway {
 
         void _add_encode_task(cbor_encoder &, const encode_cbor_func &) const override;
         void _apply_conway_params(protocol_params &p) const;
+        void _initialize_genesis() override;
         bool _proposal_valid(const proposal_t &, const cert_loc_t &) const;
         bool _action_valid(const gov_action_t &, uint64_t epoch) const;
         bool _action_well_formed(const gov_action_t &) const;

@@ -47,7 +47,7 @@ namespace turbo::cardano::conway {
 
 namespace turbo::cardano {
     template<std::integral T>
-    size_t param_encode(era_encoder &enc, const size_t id, std::optional<T> val)
+    size_t param_encode(era_encoder &enc, const size_t id, const std::optional<T> &val)
     {
         if (val) {
             enc.uint(id);
@@ -58,7 +58,7 @@ namespace turbo::cardano {
     }
 
     template<typename T>
-    size_t param_encode(era_encoder &enc, const size_t id, std::optional<T> val)
+    size_t param_encode(era_encoder &enc, const size_t id, const std::optional<T> &val)
     {
         if (val) {
             enc.uint(id);
@@ -108,6 +108,25 @@ namespace turbo::cardano {
         cnt += param_encode(l_enc, 37, ref_script_cost_multiplier);
         cnt += param_encode(l_enc, 38, max_pledge_leverage);
         cnt += param_encode(l_enc, 39, min_pool_margin);
+        if (enc.era() == era_t::dijkstra) {
+            cnt += param_encode(l_enc, 40, leios_announcement_period_length);
+            cnt += param_encode(l_enc, 41, leios_vote_period_length);
+            cnt += param_encode(l_enc, 42, leios_diffusion_period_length);
+            cnt += param_encode(l_enc, 43, leios_committee_size);
+            cnt += param_encode(l_enc, 44, leios_quorum_stake_threshold);
+            cnt += param_encode(l_enc, 45, max_endorser_block_references_size);
+            cnt += param_encode(l_enc, 46, max_endorser_block_txs_size);
+            cnt += param_encode(l_enc, 47, max_endorser_block_ex_units);
+            cnt += param_encode(l_enc, 48, max_ref_script_size_per_endorser_block);
+            cnt += param_encode(l_enc, 49, peras_min_candidate_block_age);
+            cnt += param_encode(l_enc, 50, peras_healing_factor);
+            cnt += param_encode(l_enc, 51, peras_cert_boost);
+            cnt += param_encode(l_enc, 52, peras_target_committee_size);
+            cnt += param_encode(l_enc, 53, peras_bootstrap_round);
+            cnt += param_encode(l_enc, 54, peras_quorum_threshold_safety_margin);
+            cnt += param_encode(l_enc, 55, ref_inputs_cost_per_multi_asset_policy);
+            cnt += param_encode(l_enc, 56, ref_inputs_cost_per_datum_byte);
+        }
         enc.map_compact(cnt, [&] {
             enc << l_enc;
         });

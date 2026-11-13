@@ -26,6 +26,142 @@ namespace {
 
 suite validator_suite = [] {
     "validator"_test = [] {
+        "Dijkstra Praos imports, rollback and restart in both validation modes"_test = [] {
+            using namespace cardano;
+            const auto seed = crypto::blake2b::digest<crypto::ed25519::seed>(std::string_view { "dijkstra-validator" });
+            const auto sk = crypto::ed25519::create_sk_from_seed(seed);
+            const auto vrf_sk = vrf03_create_sk_from_seed(seed);
+            const auto pool_id = fmt::format("{}", crypto::blake2b::digest<pool_hash>(crypto::ed25519::extract_vk(sk)));
+            const configs_dir source { configs_dir::network_path("dijkstra") };
+            configs_mock::map_type files {};
+            for (const auto name: { "config", "byron-genesis", "shelley-genesis", "alonzo-genesis", "conway-genesis", "dijkstra-genesis" })
+                files.emplace(name, config_json { source.at(name) });
+            auto genesis = files.at("shelley-genesis").json();
+            genesis.at("activeSlotsCoeff") = 1.0;
+            genesis.at("securityParam") = 2;
+            genesis.at("protocolParams").at("protocolVersion") = json::object { { "major", 12 }, { "minor", 0 } };
+            auto &extra = genesis.at("extraConfig");
+            auto &pools = extra.at("stakePools").at("data").as_object();
+            auto pool = pools.begin()->value();
+            pool.at("poolId") = pool_id;
+            pool.at("vrf") = fmt::format("{}", crypto::blake2b::digest<vrf_vkey>(vrf03_extract_vk(vrf_sk)));
+            pools.clear();
+            pools.emplace(pool_id, std::move(pool));
+            for (auto &entry: extra.at("stakeCredentials").at("data").as_object())
+                entry.value() = pool_id;
+            files.at("shelley-genesis") = config_json { std::move(genesis) };
+            auto node = files.at("config").json();
+            node["TestDijkstraHardForkAtEpoch"] = 0;
+            node.at("ShelleyGenesisHash") = fmt::format("{}", crypto::blake2b::digest<block_hash>(files.at("shelley-genesis").bytes()));
+            files.at("config") = config_json { std::move(node) };
+            const configs_mock configs { std::move(files) };
+            const cardano::config cfg { configs };
+            block_producer producer { sk, seed, vrf_sk };
+            producer.prev_hash = cfg.byron_genesis_hash;
+            producer.vrf_nonce = cfg.shelley_genesis_hash;
+            producer.slots_per_kes_period = cfg.shelley_slots_per_kes_period;
+            uint8_vector bytes {};
+            std::vector<point> points {};
+            for (size_t i = 0; i < 12; ++i) {
+                producer.height = i;
+                producer.slot = i * 2;
+                const auto raw = producer.empty_dijkstra_cbor();
+                const parsed_block parsed { raw, cfg };
+                bytes << raw;
+                producer.prev_hash = parsed.blk->hash();
+                points.emplace_back(point { parsed.blk->hash(), producer.slot, producer.height, bytes.size() });
+            }
+            for (const auto mode: { validator::validation_mode::full, validator::validation_mode::turbo }) {
+                const file::tmp_directory dir { "validator-dijkstra-modes" };
+                file_remover remover;
+                const chunk_registry_settings_t settings { .continuous=true, .ccfg=cfg, .fr=remover, .validation=mode };
+                {
+                    chunk_registry cr { dir.path(), settings };
+                    expect_equal(cr.validator().state().utxos().size(), 2ULL);
+                    expect_equal(cr.validator().state().utxo_balance(), 30'000'000'900'000'000ULL);
+                    expect_equal(cr.validator().state().pool_stake_dist().at(pool_hash::from_hex(pool_id)).active_stake, 900'000'000ULL);
+                    cr.accept_anything_or_throw({}, points.back(), [&] { cr.add_buffer(0, uint8_vector { bytes }); });
+                    expect_equal(cr.valid_end_offset(), bytes.size());
+                    cr.save_state();
+                    expect(fatal(!cr.validator().snapshots().empty()));
+                    if (mode == validator::validation_mode::full)
+                        expect(cr.validator().snapshots().rbegin()->full_validation);
+                    else
+                        expect(cr.core_tip().has_value());
+                }
+                {
+                    chunk_registry cr { dir.path(), settings };
+                    expect_equal(cr.tip(), optional_point { points.back() });
+                    if (mode == validator::validation_mode::turbo) {
+                        expect(cr.validation(validator::validation_mode::full) == mode);
+                        expect_equal(cr.valid_end_offset(), bytes.size());
+                        cr.save_state();
+                        expect(cr.validator().snapshots().rbegin()->full_validation);
+                        cr.validation(mode);
+                    }
+                    cr.truncate(points.at(10));
+                    const auto accepted = cr.tip();
+                    producer.height = 11;
+                    producer.slot = 22;
+                    producer.prev_hash = accepted->hash;
+                    producer.vrf_nonce = cardano::vrf_nonce {};
+                    expect(throws([&] {
+                        cr.accept_anything_or_throw(accepted, points.back(), [&] {
+                            cr.add_buffer(accepted->end_offset, producer.empty_dijkstra_cbor());
+                        });
+                    }));
+                    expect_equal(cr.tip(), accepted);
+                    producer.vrf_nonce = cfg.shelley_genesis_hash;
+                    producer.op_seq_no = 2;
+                    expect(throws([&] {
+                        cr.accept_anything_or_throw(accepted, points.back(), [&] {
+                            cr.add_buffer(accepted->end_offset, producer.empty_dijkstra_cbor());
+                        });
+                    }));
+                    producer.op_seq_no = 0;
+                    expect_equal(cr.tip(), accepted);
+                    cr.save_state();
+                }
+                {
+                    auto full_settings = settings;
+                    full_settings.validation = validator::validation_mode::full;
+                    chunk_registry cr { dir.path(), full_settings };
+                    expect_equal(cr.tip(), optional_point { points.at(10) });
+                    cr.save_state();
+                    expect(fatal(!cr.validator().snapshots().empty()));
+                    expect(cr.validator().snapshots().rbegin()->full_validation);
+                }
+            }
+        };
+        "failed Full mode promotion restores the previous state and mode"_test = [] {
+            const auto chain = gen_chain({ .height=1 });
+            const auto seed = crypto::blake2b::digest<crypto::ed25519::seed>(std::string_view { "mode-promotion" });
+            const auto sk = crypto::ed25519::create_sk_from_seed(seed);
+            uint8_vector address { 0x61 };
+            address << crypto::blake2b::digest<key_hash>(crypto::ed25519::extract_vk(sk));
+            block_producer block { sk, seed, vrf03_create_sk_from_seed(seed) };
+            block.prev_hash = chain.cardano_cfg.byron_genesis_hash;
+            block.txs.push_back({ {}, {{address, 1}} });
+            const auto bytes = block.cbor();
+            const parsed_block parsed { bytes, chain.cardano_cfg };
+            const point tip { parsed.blk->hash(), 0, 0, bytes.size() };
+            const file::tmp_directory dir { "validator-mode-promotion" };
+            chunk_registry cr { dir.path(), chunk_registry_settings_t {
+                .validate_vrf=false, .continuous=true, .ccfg=chain.cardano_cfg, .validation=validator::validation_mode::none
+            } };
+            cr.accept_anything_or_throw({}, tip, [&] { cr.add_buffer(0, uint8_vector { bytes }); });
+            cr.save_state();
+            cardano::ledger::state expected { chain.cardano_cfg };
+            cr.validator().load_snapshot(expected, *cr.validator().snapshots().rbegin());
+            expect(throws([&] { cr.validation(validator::validation_mode::full); }));
+            expect_equal(cr.tip(), optional_point { tip });
+            expect(cr.validator().state() == expected);
+            expect(cr.validation(validator::validation_mode::none) == validator::validation_mode::none);
+            cr.truncate({});
+            cr.validation(validator::validation_mode::full);
+            cr.accept_anything_or_throw({}, *chain.tip, [&] { cr.add_buffer(0, uint8_vector { chain.data }); });
+            expect_equal(cr.valid_end_offset(), chain.data.size());
+        };
         static std::string data_dir { "tmp/validator" };
         "success"_test = [&] {
             std::filesystem::remove_all(data_dir);
@@ -249,6 +385,116 @@ suite validator_suite = [] {
                 expect_equal(reloaded.validator().state().end_offset(), expected.end_offset);
                 expect(reloaded.validator().state().utxos().empty());
                 expect(std::filesystem::last_write_time(snapshot_path) == snapshot_time);
+            }
+        };
+        "Full validation failures commit only a validated prefix and survive restart"_test = [] {
+            const auto chain = gen_chain({ .height=2 });
+            auto prefix = *chain.tip;
+            prefix.end_offset = chain.data.size();
+            const point start { chain.blocks.front()->blk->hash(), chain.blocks.front()->blk->slot(),
+                chain.blocks.front()->blk->height(), chain.blocks.front()->blk.raw().size() };
+            const auto seed = crypto::blake2b::digest<crypto::ed25519::seed>(std::string_view { "1" });
+            const auto sk = crypto::ed25519::create_sk_from_seed(seed);
+            const auto vk = crypto::ed25519::extract_vk(sk);
+            struct scenario {
+                bool committed_start = false;
+                bool fail_first = false;
+                bool fail_consensus = false;
+                bool fail_recovery = false;
+                bool drain_failure = false;
+            };
+            for (const auto test: { scenario {}, scenario { .committed_start=true },
+                    scenario { .fail_first=true }, scenario { .fail_consensus=true },
+                    scenario { .committed_start=true, .fail_recovery=true }, scenario { .drain_failure=true } }) {
+                const file::tmp_directory dir { "validator-full-prefix-recovery" };
+                const file::tmp_directory baseline_dir { "validator-full-prefix-baseline" };
+                const chunk_registry_settings_t settings {
+                    .continuous=true, .ccfg=chain.cardano_cfg, .validation=validator::validation_mode::full
+                };
+                const optional_point expected = test.fail_first ? optional_point {}
+                    : optional_point { test.fail_recovery ? start : prefix };
+                chunk_registry baseline { baseline_dir.path(), settings };
+                if (expected) {
+                    baseline.accept_anything_or_throw({}, *expected, [&] {
+                        baseline.add_buffer(0, uint8_vector { static_cast<buffer>(chain.data).subbuf(0, expected->end_offset) });
+                    });
+                }
+                block_producer block { sk, seed, vrf03_create_sk_from_seed(seed) };
+                block.height = test.fail_first ? 0 : 2;
+                block.slot = test.fail_first ? 0 : chain.cardano_cfg.shelley_epoch_length;
+                block.prev_hash = test.fail_first ? chain.cardano_cfg.byron_genesis_hash : prefix.hash;
+                block.vrf_nonce = test.fail_consensus ? cardano::vrf_nonce {} : chain.cardano_cfg.shelley_genesis_hash;
+                if (!test.fail_consensus)
+                    block.txs.push_back({ { { {}, 0, sk, vk } }, {} });
+                const auto bytes = block.cbor();
+                const parsed_block parsed { bytes, chain.cardano_cfg };
+                progress_point target { point { parsed.blk->hash(), block.slot, block.height,
+                    (test.fail_first ? 0 : prefix.end_offset) + bytes.size() } };
+                target.height = block.height + chain.cardano_cfg.shelley_security_param + 1;
+                {
+                    chunk_registry cr { dir.path(), settings };
+                    if (test.committed_start) {
+                        cr.accept_anything_or_throw({}, start, [&] {
+                            cr.add_buffer(0, uint8_vector { chain.blocks.front()->blk.raw() });
+                        });
+                        cr.save_state();
+                    }
+                    bool recovery_attempted = false;
+                    chunk_processor observer {
+                        .truncate=[&](const auto &tip, bool track) {
+                            if (!track && tip == optional_point { prefix })
+                                recovery_attempted = true;
+                        },
+                        .stage_tx=[&] {
+                            if (test.fail_recovery)
+                                throw error("injected Full prefix recovery failure");
+                        }
+                    };
+                    cr.register_processor(observer);
+                    const auto failure = cr.accept_progress(cr.tip(), target, [&] {
+                        if (!test.fail_first) {
+                            const auto offset = cr.num_bytes();
+                            cr.add_buffer(offset, uint8_vector { static_cast<buffer>(chain.data).subbuf(offset) });
+                        }
+                        cr.add_buffer(cr.num_bytes(), uint8_vector { bytes });
+                        if (test.drain_failure) {
+                            expect(throws([&] {
+                                cr.sched().process(true);
+                                const_cast<validator::incremental &>(cr.validator()).flush();
+                            }));
+                            block.prev_hash = parsed.blk->hash();
+                            ++block.height;
+                            block.slot += chain.cardano_cfg.shelley_epoch_length;
+                            block.txs.clear();
+                            cr.add_buffer(cr.num_bytes(), block.cbor());
+                        }
+                    });
+                    cr.remove_processor(observer);
+                    expect(static_cast<bool>(failure));
+                    expect_equal(recovery_attempted, !test.fail_first);
+                    expect_equal(cr.tip(), expected);
+                    expect_equal(cr.valid_end_offset(), expected ? expected->end_offset : 0);
+                    expect(cr.validator().state() == baseline.validator().state());
+                    expect(!cr.tx());
+                    if (expected) {
+                        const auto *snap = cr.validator().snapshots().at_offset(expected->end_offset);
+                        expect(fatal(snap != nullptr));
+                        expect(snap->full_validation);
+                    }
+                }
+                std::optional<std::filesystem::file_time_type> saved_time;
+                const auto snapshot_path = std::filesystem::path { dir.path() } / "validate"
+                    / fmt::format("ledger-{:013}.bin", expected ? expected->end_offset : 0);
+                if (expected) {
+                    std::filesystem::last_write_time(snapshot_path,
+                        std::filesystem::file_time_type::clock::now() - std::chrono::hours { 24 });
+                    saved_time = std::filesystem::last_write_time(snapshot_path);
+                }
+                chunk_registry reloaded { dir.path(), settings };
+                expect_equal(reloaded.tip(), expected);
+                expect(reloaded.validator().state() == baseline.validator().state());
+                if (saved_time)
+                    expect(std::filesystem::last_write_time(snapshot_path) == *saved_time);
             }
         };
         "maintenance reconstructs a missing ledger with the full-validation result"_test = [] {
@@ -592,10 +838,12 @@ suite validator_suite = [] {
             for (const bool continuous: { false, true }) {
                 const file::tmp_directory dir { continuous ? "validator-two-live" : "validator-two-batch" };
                 file_remover remover;
+                const chunk_registry_settings_t registry_settings {
+                    .validate_vrf=false, .continuous=continuous, .ccfg=cfg, .fr=remover, .validation=validator::validation_mode::none
+                };
                 std::vector<cardano::point> tips;
                 {
-                    chunk_registry cr { dir.path(), chunk_registry_settings_t { .validate_vrf=false, .continuous=continuous, .ccfg=cfg, .fr=remover } };
-                    cr.validation(validator::validation_mode::none);
+                    chunk_registry cr { dir.path(), registry_settings };
                     block_producer block { crypto::ed25519::create_sk_from_seed(seed), seed, vrf03_create_sk_from_seed(seed) };
                     block.prev_hash = cfg.byron_genesis_hash;
                     block.vrf_nonce = cfg.shelley_genesis_hash;
@@ -633,7 +881,7 @@ suite validator_suite = [] {
                     expect_equal(cr.tip(), cardano::optional_point { tips.at(7) });
                     expect_equal(cr.validator().state().end_offset(), tips.at(7).end_offset);
                 }
-                chunk_registry restored { dir.path(), chunk_registry_settings_t { .validate_vrf=false, .continuous=continuous, .ccfg=cfg, .fr=remover } };
+                chunk_registry restored { dir.path(), registry_settings };
                 expect_equal(restored.tip(), cardano::optional_point { tips.at(7) });
                 restored.save_state();
                 const auto points = snapshot_points(restored);
@@ -751,6 +999,54 @@ suite validator_suite = [] {
                     expect_equal(recovered.indexer().slices().back().end_offset(), target->end_offset);
                     expect(!std::filesystem::exists(source));
                 }
+            }
+        };
+        "replay rediscovers Shelley before closing a fragmented epoch"_test = [] {
+            const auto chain = gen_chain({ .height=0 });
+            const auto &cfg = chain.cardano_cfg;
+            expect(!cfg.shelley_start_known());
+            const auto seed = crypto::blake2b::digest<crypto::ed25519::seed>(std::string_view { "1" });
+            for (const auto mode: { validator::validation_mode::full, validator::validation_mode::turbo }) {
+                const file::tmp_directory dir { "validator-replay-shelley-boundary" };
+                file_remover remover;
+                const chunk_registry_settings_t settings {
+                    .validate_vrf=false, .continuous=true, .ccfg=cfg, .fr=remover, .validation=mode
+                };
+                cardano::optional_point target;
+                {
+                    chunk_registry cr { dir.path(), settings };
+                    block_producer block { crypto::ed25519::create_sk_from_seed(seed), seed, vrf03_create_sk_from_seed(seed) };
+                    block.prev_hash = cfg.byron_genesis_hash;
+                    block.vrf_nonce = cfg.shelley_genesis_hash;
+                    cr.accept_anything_or_throw({}, progress_point { cfg.shelley_epoch_length + 2 }, [&] {
+                        for (const uint64_t slot: { uint64_t { 0 }, cfg.byron_epoch_length + 2, cfg.shelley_epoch_length + 2 }) {
+                            block.slot = slot;
+                            auto bytes = block.cbor();
+                            const parsed_block parsed { bytes, cfg };
+                            block.prev_hash = parsed.blk->hash();
+                            cr.add_buffer(cr.num_bytes(), std::move(bytes));
+                            ++block.height;
+                        }
+                    });
+                    expect_equal(cr.chunks().size(), 3);
+                    target = cr.tip();
+                    const auto first_epoch_tip = cr.find_block_by_slot(cfg.byron_epoch_length + 2).point();
+                    size_t commits = 0;
+                    cr.before_commit([&] {
+                        expect_equal(cr.tip(), ++commits == 1 ? cardano::optional_point { first_epoch_tip } : target);
+                    });
+                    cr.revalidate(target, std::chrono::seconds { 0 });
+                    cr.before_commit({});
+                    expect_equal(commits, 2);
+                    expect_equal(cr.tip(), target);
+                }
+                json::save_pretty(dir.path() + "/validate/state.json", json::array {});
+                chunk_registry recovered { dir.path(), settings };
+                expect_equal(recovered.tip(), target);
+                expect_equal(recovered.validator().state().end_offset(), target->end_offset);
+                expect_equal(recovered.valid_end_offset(), recovered.num_bytes());
+                expect(fatal(!recovered.indexer().slices().empty()));
+                expect_equal(recovered.indexer().slices().back().end_offset(), target->end_offset);
             }
         };
         "revalidation selects a registered chunk boundary or genesis"_test = [] {
@@ -984,6 +1280,12 @@ suite validator_suite = [] {
                 validator::snapshot_format_version
             };
             expect_equal(original, validator::snapshot::from_json(original.to_json()));
+            auto fully_validated = original;
+            fully_validated.full_validation = true;
+            expect_equal(fully_validated, validator::snapshot::from_json(fully_validated.to_json()));
+            auto unclassified = fully_validated.to_json();
+            unclassified.erase("fullValidation");
+            expect(!validator::snapshot::from_json(unclassified).full_validation);
             const validator::snapshot without_core {
                 7, 1234, 567, true, std::nullopt, 0, validator::snapshot_format_version
             };

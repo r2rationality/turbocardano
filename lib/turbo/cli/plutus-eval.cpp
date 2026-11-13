@@ -98,7 +98,7 @@ namespace turbo::cli::plutus_eval {
             try {
                 allocator alloc {};
                 const S script { alloc, file::read(path), typ, protocol_major };
-                machine m { alloc, typ, {}, protocol_major };
+                machine m { alloc, typ, {}, protocol_major, script.version() };
                 const auto [res, costs] = m.evaluate(script.program());
                 logger::info("{} costs: {}", path, costs);
                 logger::info("{} result: {}", path, res);

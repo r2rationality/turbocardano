@@ -19,6 +19,7 @@ namespace turbo::cardano::network::miniprotocol::chainsync
         void failed(std::string_view) override;
         void stopped() override;
         void poll(const protocol_send_func &) override;
+        bool can_receive() const override;
     private:
         struct impl;
         std::unique_ptr<impl> _impl;

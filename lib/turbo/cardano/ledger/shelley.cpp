@@ -142,8 +142,11 @@ namespace turbo::cardano::ledger::shelley {
             _lab_prev_hash = item.prev_hash;
             _slot_last = item.slot;
             //logger::debug("VRF update slot: {} eta: {} new nonce_evolving_nonce: {} new_lab_nonce: {} nonce_candidate: {}", item_slot, nonce_block, _nonce_evolving, _lab_prev_hash, _nonce_candidate);
-            auto [kes_it, kes_created] = _kes_counters.try_emplace(item.pool_id, item.kes_counter);
-            if (!kes_created) {
+            auto [kes_it, kes_created] = _kes_counters.try_emplace(item.pool_id, item.era == 8 ? 0 : item.kes_counter);
+            if (item.era == 8 && item.kes_counter > kes_it->second && item.kes_counter - kes_it->second > 1) [[unlikely]]
+                throw error{"slot: {} operational certificate counter {} exceeds previous counter {} by more than one",
+                    item.slot, item.kes_counter, kes_it->second};
+            if (!kes_created || item.era == 8) {
                 if (item.kes_counter > kes_it->second)
                     kes_it->second = item.kes_counter;
                 else if (item.kes_counter < kes_it->second) [[unlikely]]
@@ -186,6 +189,50 @@ namespace turbo::cardano::ledger::shelley {
             clear_partitions(_utxo, _sched, "shelley-state:destroy-utxo");
         if (!_accounts.empty())
             clear_partitions(_accounts, _sched, "shelley-state:destroy-accounts");
+    }
+
+    void state::_initialize_genesis()
+    {
+        const auto &initial = _cfg.shelley_initial_state;
+        _pulsing_snapshot_slot = _cfg.shelley_randomness_stabilization_window;
+        if (initial.utxos.empty() && initial.pools.empty() && initial.delegations.empty())
+            return;
+        for (const auto &[id, output]: initial.utxos) {
+            if (output.coin > _reserves) [[unlikely]]
+                throw error{"Shelley genesis funds exceed the remaining reserves"};
+            if (!_utxo.try_emplace(id, output).second) [[unlikely]]
+                throw error{"duplicate genesis output: {}", id};
+            _reserves -= output.coin;
+            const auto addr = output.addr();
+            if (addr.has_stake_id())
+                update_stake(addr.stake_id(), static_cast<int64_t>(output.coin));
+            else if (addr.has_pointer() && _params.protocol_ver.keep_pointers())
+                update_pointer(addr.pointer(), static_cast<int64_t>(output.coin));
+        }
+        for (const auto &[id, params]: initial.pools) {
+            _active_pool_params.try_emplace(id, params);
+            // Genesis records refundable deposits without charging the deposited pot.
+            _pool_deposits.emplace(id, _params.pool_deposit);
+            _active_pool_dist.create(id);
+        }
+        size_t index = 0;
+        for (const auto &[key, pool]: initial.delegations) {
+            const stake_ident id { key, false };
+            auto &acc = _accounts[id];
+            acc.deposit = _params.key_deposit;
+            if (_params.protocol_ver.keep_pointers()) {
+                acc.ptr.emplace(0, index >> 16, index & 0xFFFF);
+                _ptr_to_stake.emplace(*acc.ptr, id);
+            } else {
+                acc.ptr.emplace();
+            }
+            delegate_stake(id, pool);
+            ++index;
+        }
+        if (_params.protocol_ver.major >= 11)
+            _populate_pool_vrf_key_hashes();
+        rotate_snapshots();
+        _prep_op_stake_dist(_mark);
     }
 
     void state::_add_encode_task(cbor_encoder &ser, const encode_cbor_func &t) const

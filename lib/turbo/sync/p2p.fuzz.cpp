@@ -84,7 +84,7 @@ namespace {
                 }
             }
             if (!intersection) {
-                handler(block_response { {}, error_msg { "The requested from block is unknown!" } });
+                handler(block_response { {}, std::make_exception_ptr(network::transient_error{"The requested from block is unknown!"}) });
                 return;
             }
             for (auto it = *intersection; it != _blocks.end(); ++it) {

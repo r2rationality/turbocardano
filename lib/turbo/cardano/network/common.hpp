@@ -7,15 +7,21 @@
 #include <turbo/common/scheduler-fwd.hpp>
 #include <turbo/asio.hpp>
 #include <stop_token>
+#include <exception>
 #include <turbo/cardano/common/config.hpp>
 #include <turbo/cardano/network/miniprotocol/blockfetch/messages.hpp>
 
 namespace turbo::cardano::network {
     typedef turbo::error error;
 
+    struct transient_error: error {
+        using error::error;
+    };
+
     struct version_config_t {
         uint64_t min=14;
         uint64_t max=999;
+        size_t max_compressed_message_size=256U << 20;
     };
 
     enum class protocol_t: uint8_t {
@@ -110,11 +116,12 @@ namespace turbo::cardano::network {
     using header_list = point2_list;
 
     struct client {
-        using error_msg = std::string;
+        using error_msg = std::exception_ptr;
 
         struct find_response {
             address addr {};
-            std::variant<intersection_info_t, error_msg> res { "No response or error has yet been assigned" };
+            std::variant<intersection_info_t, error_msg> res {
+                std::make_exception_ptr(error{"No response or error has yet been assigned"}) };
         };
         using find_handler = std::function<void(find_response &&)>;
 
@@ -186,7 +193,7 @@ namespace turbo::cardano::network {
             _find_intersection_impl({}, [&](auto &&r) { iresp = std::move(r); });
             process();
             if (std::holds_alternative<error_msg>(iresp.res)) [[unlikely]]
-                throw error{"find_tip error: {}", std::get<error_msg>(iresp.res)};
+                std::rethrow_exception(std::get<error_msg>(iresp.res));
             return variant::get_nice<intersection_info_t>(iresp.res).tip;
         }
 
@@ -196,7 +203,7 @@ namespace turbo::cardano::network {
             _find_intersection_impl(points, [&](auto &&r) { iresp = std::move(r); });
             process();
             if (std::holds_alternative<error_msg>(iresp.res)) [[unlikely]]
-                throw error{"find_intersection error: {}", std::get<error_msg>(iresp.res)};
+                std::rethrow_exception(std::get<error_msg>(iresp.res));
             return variant::get_nice<intersection_info_t>(iresp.res);
         }
 
@@ -208,7 +215,7 @@ namespace turbo::cardano::network {
             });
             process();
             if (std::holds_alternative<client::error_msg>(iresp.res)) [[unlikely]]
-                throw error{"fetch_headers error: {}", std::get<client::error_msg>(iresp.res)};
+                std::rethrow_exception(std::get<client::error_msg>(iresp.res));
             if (!iresp.tip) [[unlikely]]
                 throw error("no tip information received!");
             const auto &headers = std::get<header_list>(iresp.res);
@@ -282,6 +289,7 @@ namespace turbo::cardano::network {
     };
 
     struct client_connection: client {
+        // Requests on one connection must not overlap; an overlapping request throws synchronously.
         explicit client_connection(const address &addr, const version_config_t &, const cardano::config &cfg=cardano::config::get(), const asio::worker_ptr &asio_worker=asio::worker::get());
         ~client_connection() override;
         void set_stop_token(std::stop_token) override;

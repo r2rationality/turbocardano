@@ -14,7 +14,7 @@ namespace turbo::cardano::dijkstra {
     {
         enc.array_compact(txs.size(), [&] {
             for (const auto &transaction: txs)
-                transaction.to_cbor(enc);
+                transaction.to_cbor_for_block(enc);
         });
     }
 
@@ -27,19 +27,6 @@ namespace turbo::cardano::dijkstra {
     {
         enc.array(2);
         _header.to_cbor(enc);
-        enc.array(4);
-        if (_invalid_transactions.empty())
-            enc.s_null();
-        else
-            _invalid_transactions.to_cbor(enc);
-        _transactions->to_cbor(enc);
-        if (_leios_certificate)
-            _leios_certificate->to_cbor(enc);
-        else
-            enc.s_null();
-        if (_peras_certificate)
-            enc.bytes(*_peras_certificate);
-        else
-            enc.s_null();
+        body_to_cbor(enc);
     }
 }

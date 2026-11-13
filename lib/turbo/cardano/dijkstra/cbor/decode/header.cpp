@@ -5,26 +5,26 @@
 #include <turbo/cardano/dijkstra/block.hpp>
 
 namespace turbo::cardano::dijkstra {
-    namespace {
-        protocol_version protocol_version_from_cbor(cbor::zero2::value &v)
-        {
-            auto &it = v.array();
-            protocol_version res { it.read().uint(), numeric_cast<uint32_t>(it.read().uint()) };
-            if (res.major > 13) [[unlikely]]
-                throw error{"unsupported Dijkstra protocol major version: {}", res.major};
-            if (!it.done()) [[unlikely]]
-                throw error("unexpected trailing Dijkstra protocol version elements");
-            return res;
-        }
+    header_version_info_t header_version_info_t::from_cbor(cbor::zero2::value &v)
+    {
+        auto &it = v.array();
+        header_version_info_t res {
+            numeric_cast<uint32_t>(it.read().uint()), numeric_cast<uint32_t>(it.read().uint())
+        };
+        if (!it.done()) [[unlikely]]
+            throw error{"unexpected trailing Dijkstra header version information elements"};
+        return res;
+    }
 
+    namespace {
         vrf_cert vrf_cert_from_cbor(cbor::zero2::value &v)
         {
             auto &it = v.array();
             vrf_cert result { it.read().bytes(), it.read().bytes() };
             if (result.result.size() != sizeof(vrf_result)) [[unlikely]]
-                throw error("Dijkstra VRF output must contain exactly 64 bytes");
+                throw error{"Dijkstra VRF output must contain exactly 64 bytes"};
             if (!it.done()) [[unlikely]]
-                throw error("unexpected trailing Dijkstra VRF certificate elements");
+                throw error{"unexpected trailing Dijkstra VRF certificate elements"};
             return result;
         }
 
@@ -35,7 +35,7 @@ namespace turbo::cardano::dijkstra {
                 it.read().bytes(), it.read().uint(), it.read().uint(), it.read().bytes()
             };
             if (!it.done()) [[unlikely]]
-                throw error("unexpected trailing Dijkstra operational certificate elements");
+                throw error{"unexpected trailing Dijkstra operational certificate elements"};
             return result;
         }
     }
@@ -48,7 +48,7 @@ namespace turbo::cardano::dijkstra {
             numeric_cast<uint32_t>(it.read().uint())
         };
         if (!it.done()) [[unlikely]]
-            throw error("unexpected trailing epoch-block announcement elements");
+            throw error{"unexpected trailing endorser-block references announcement elements"};
         return res;
     }
 
@@ -71,19 +71,27 @@ namespace turbo::cardano::dijkstra {
         _body_size = numeric_cast<uint32_t>(it.read().uint());
         _body_hash = it.read().bytes();
         _op_cert = operational_cert_from_cbor(it.read());
-        _node_ver = protocol_version_from_cbor(it.read());
-        _contains_leios_certificate = it.read().boolean();
-        auto &announcement = it.read();
-        if (!announcement.is_null())
-            _eb_announcement.emplace(eb_announcement_t::from_cbor(announcement));
-        else
-            static_cast<void>(announcement.special());
+        auto &version = it.read().array();
+        _protocol_version = { version.read().uint(), version.read().uint() };
+        if (!version.done()) [[unlikely]]
+            throw error{"unexpected trailing Dijkstra header version elements"};
+        _leios = !it.done();
+        if (_leios) {
+            _version_info = { numeric_cast<uint32_t>(_protocol_version.major), numeric_cast<uint32_t>(_protocol_version.minor) };
+            _protocol_version.minor = 0;
+            _contains_leios_certificate = it.read().boolean();
+            auto &announcement = it.read();
+            if (!announcement.is_null())
+                _eb_announcement.emplace(eb_announcement_t::from_cbor(announcement));
+            else
+                static_cast<void>(announcement.special());
+        }
         if (!it.done()) [[unlikely]]
-            throw error("unexpected trailing Dijkstra header body elements");
+            throw error{"unexpected trailing Dijkstra header body elements"};
         _body_raw = body.data_raw();
         _signature = header_it.read().bytes();
         if (!header_it.done()) [[unlikely]]
-            throw error("unexpected trailing Dijkstra header elements");
+            throw error{"unexpected trailing Dijkstra header elements"};
         _raw = v.data_raw();
     }
 }

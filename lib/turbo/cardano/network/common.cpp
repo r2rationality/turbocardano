@@ -5,16 +5,15 @@
 
 #include <exception>
 
-#ifdef _MSC_VER
-#   include <SDKDDKVer.h>
-#endif
 #include <boost/asio.hpp>
 #include <boost/asio/experimental/awaitable_operators.hpp>
 
 #include <turbo/common/mutex.hpp>
 #include <turbo/common/scheduler.hpp>
+#include <turbo/common/scope-exit.hpp>
 #include <turbo/cardano.hpp>
 #include <turbo/cardano/network/common.hpp>
+#include <turbo/cardano/network/message-buffer.hpp>
 #include <turbo/cardano/network/miniprotocol/blockfetch/messages.hpp>
 #include <turbo/cardano/network/miniprotocol/chainsync/messages.hpp>
 #include <turbo/cardano/network/miniprotocol/handshake/messages.hpp>
@@ -41,32 +40,37 @@ namespace turbo::cardano::network {
         {
         }
 
+        auto acquire_request()
+        {
+            if (_request_active.exchange(true, std::memory_order_acquire)) [[unlikely]]
+                throw error{"a client request is already in progress"};
+            return scope_exit { [this] { _request_active.store(false, std::memory_order_release); } };
+        }
+
         ~impl()
         {
-            process_impl(nullptr, _asio_worker.get());
+            logger::run_log_errors([&] { process_impl(nullptr, _asio_worker.get()); });
         }
 
         void find_intersection_impl(const optional_point2_list &points, const find_handler &handler)
         {
-            std::scoped_lock lk { _futures_mutex };
-            _futures.emplace_back(boost::asio::co_spawn(_strand, _find_intersection(points, handler), boost::asio::use_future));
+            _start_request(_find_intersection(points, handler));
         }
 
         void fetch_headers_impl(const optional_point2_list &points, const size_t max_blocks, const header_handler &handler)
         {
-            std::scoped_lock lk { _futures_mutex };
-            _futures.emplace_back(boost::asio::co_spawn(_strand, _fetch_headers(points, max_blocks, handler), boost::asio::use_future));
+            _start_request(_fetch_headers(points, max_blocks, handler));
         }
 
         void fetch_blocks_impl(const point2 &from, const point2 &to, const block_handler &handler)
         {
             logger::debug("fetch_blocks from: {} to: {}", from, to);
-            std::scoped_lock lk { _futures_mutex };
-            _futures.emplace_back(boost::asio::co_spawn(_strand, _fetch_blocks(from, to, handler), boost::asio::use_future));
+            _start_request(_fetch_blocks(from, to, handler));
         }
 
         chain_update next_header_sync(const std::stop_token stop, const std::function<void()> &idle)
         {
+            auto active_request = acquire_request();
             std::stop_source request;
             std::stop_callback forward_stop { stop, [&] { request.request_stop(); } };
             auto f = boost::asio::co_spawn(_strand, _next_header(request.get_token()), boost::asio::use_future);
@@ -87,7 +91,13 @@ namespace turbo::cardano::network {
                 _conn.reset();
                 std::rethrow_exception(idle_failure);
             }
-            return f.get();
+            _check_stop(stop);
+            _check_stop(_stop);
+            try {
+                return f.get();
+            } catch (const boost::system::system_error &ex) {
+                _rethrow_transport_error(ex);
+            }
         }
 
         void process_impl(scheduler *sched, asio::worker *iow)
@@ -102,18 +112,34 @@ namespace turbo::cardano::network {
                         iow->io_context().run_for(wait_period);
                 }
             }
+            std::exception_ptr failure;
+            for (auto &f: _futures) {
+                try {
+                    f.get();
+                } catch (...) {
+                    if (!failure)
+                        failure = std::current_exception();
+                }
+            }
             _futures.clear();
+            if (failure)
+                std::rethrow_exception(failure);
         }
 
         void reset_impl()
         {
+            auto active_request = acquire_request();
             std::scoped_lock lk { _futures_mutex };
             if (!_futures.empty()) [[unlikely]]
                 throw error{"a client instances can be reset only when there are no active requests but there are: {}", _futures.size()};
             _conn.reset();
         }
 
-        void set_stop_token(const std::stop_token stop) { _stop = stop; }
+        void set_stop_token(const std::stop_token stop)
+        {
+            auto active_request = acquire_request();
+            _stop = stop;
+        }
     private:
         struct perf_stats {
             std::atomic<std::chrono::system_clock::time_point> last_report_time = std::chrono::system_clock::now();
@@ -145,10 +171,27 @@ namespace turbo::cardano::network {
         boost::asio::strand<boost::asio::io_context::executor_type> _strand { boost::asio::make_strand(_asio_worker->io_context()) };
         std::shared_ptr<tcp::resolver> _resolver = std::make_shared<tcp::resolver>(_strand);
         std::shared_ptr<tcp::socket> _conn {};
+        std::map<mini_protocol, message_buffer_t> _responses {};
+        size_t _block_message_limit = 2'500'000;
         std::stop_token _stop {};
+        std::atomic_bool _request_active { false };
         perf_stats _stats {};
         std::mutex _futures_mutex alignas(mutex::alignment) {};
         std::vector<std::future<void>> _futures {};
+
+        void _start_request(boost::asio::awaitable<void> action)
+        {
+            auto guard = acquire_request();
+            std::scoped_lock lk { _futures_mutex };
+            if (_futures.size() == _futures.capacity())
+                _futures.reserve(std::max(size_t { 1 }, _futures.capacity() * 2));
+            const auto run = [](auto guard, boost::asio::awaitable<void> action) -> boost::asio::awaitable<void> {
+                auto active_request = std::move(guard);
+                co_await std::move(action);
+            };
+            _futures.emplace_back(boost::asio::co_spawn(_strand,
+                run(std::move(guard), std::move(action)), boost::asio::use_future));
+        }
 
         // Queued cancellation owns its targets even if the operation finishes first.
         static auto _cancel_on_stop(const std::stop_token stop, const std::shared_ptr<tcp::socket> &socket,
@@ -165,24 +208,57 @@ namespace turbo::cardano::network {
 
         static void _check_stop(const std::stop_token stop)
         {
-            if (stop.stop_requested()) throw error("network operation stopped");
+            if (stop.stop_requested())
+                throw error{"network operation stopped"};
         }
 
-        static boost::asio::awaitable<uint8_vector> _read_response(tcp::socket &socket, const mini_protocol mp_id)
+        std::exception_ptr _current_request_error() const
         {
-            const auto deadline = std::chrono::steady_clock::now() + response_timeout;
-            segment_info recv_info {};
-            co_await _wait_with_deadline(boost::asio::async_read(socket, boost::asio::buffer(&recv_info, sizeof(recv_info)), boost::asio::use_awaitable));
-            uint8_vector recv_payload(recv_info.payload_size());
-            co_await _wait_with_deadline(boost::asio::async_read(socket, boost::asio::buffer(recv_payload.data(), recv_payload.size()), boost::asio::use_awaitable),
-                deadline - std::chrono::steady_clock::now());
-            if (recv_info.mode() != channel_mode::responder || recv_info.mini_protocol_id() != mp_id) [[unlikely]] {
-                logger::error("unexpected message: mode: {} mini_protocol_id: {} body size: {} body: {}",
-                    static_cast<int>(recv_info.mode()), static_cast<uint16_t>(recv_info.mini_protocol_id()), recv_payload.size(),
-                    cbor::zero2::parse(recv_payload).get().to_string());
-                throw error{"unexpected message: mode: {} protocol_id: {}", static_cast<int>(recv_info.mode()), static_cast<uint16_t>(recv_info.mini_protocol_id())};
+            if (_stop.stop_requested())
+                return std::make_exception_ptr(error{"network operation stopped"});
+            return std::current_exception();
+        }
+
+        [[noreturn]] static void _rethrow_transport_error(const boost::system::system_error &ex)
+        {
+            using namespace boost::asio::error;
+            const auto &code = ex.code();
+            if (code == eof || code == connection_reset || code == connection_aborted
+                    || code == connection_refused || code == broken_pipe || code == timed_out
+                    || code == network_down || code == network_reset || code == network_unreachable
+                    || code == host_unreachable || code == host_not_found_try_again || code == try_again
+                    || code == would_block || code == interrupted || code == not_connected || code == shut_down)
+                throw transient_error{ex.what()};
+            throw;
+        }
+
+        message_buffer_t &_response_buffer(const mini_protocol mp_id)
+        {
+            const auto limit = mp_id == mini_protocol::block_fetch ? _block_message_limit
+                : mp_id == mini_protocol::keep_alive ? size_t { 32 } : message_buffer_t::max_segment_size;
+            return _responses.try_emplace(mp_id, limit).first->second;
+        }
+
+        boost::asio::awaitable<buffer> _read_response(tcp::socket &socket, const mini_protocol mp_id,
+            const size_t limit=message_buffer_t::max_segment_size)
+        {
+            auto &messages = _response_buffer(mp_id);
+            for (;;) {
+                if (const auto message = messages.next(limit))
+                    co_return *message;
+                const auto deadline = std::chrono::steady_clock::now() + response_timeout;
+                segment_info recv_info {};
+                co_await _wait_with_deadline(boost::asio::async_read(socket, boost::asio::buffer(&recv_info, sizeof(recv_info)), boost::asio::use_awaitable),
+                    deadline - std::chrono::steady_clock::now());
+                if (recv_info.mode() != channel_mode::responder || recv_info.mini_protocol_id() != mp_id) [[unlikely]]
+                    throw error{"unexpected message: mode: {} protocol_id: {}", static_cast<int>(recv_info.mode()), static_cast<uint16_t>(recv_info.mini_protocol_id())};
+                const auto recv_payload = messages.prepare(recv_info.payload_size());
+                co_await _wait_with_deadline(boost::asio::async_read(socket, boost::asio::buffer(recv_payload.data(), recv_payload.size()), boost::asio::use_awaitable),
+                    deadline - std::chrono::steady_clock::now());
+                if (mp_id == mini_protocol::handshake)
+                    message_buffer_t::check_handshake(recv_payload);
+                messages.commit(recv_payload.size());
             }
-            co_return recv_payload;
         }
 
         static boost::asio::awaitable<void> _write_request(tcp::socket &socket, const mini_protocol mp_id, const buffer &data)
@@ -198,7 +274,7 @@ namespace turbo::cardano::network {
             co_await _wait_with_deadline(async_write(socket, boost::asio::const_buffer { segment.data(), segment.size() }, boost::asio::use_awaitable));
         }
 
-        static boost::asio::awaitable<uint8_vector> _send_request(tcp::socket &socket, const mini_protocol mp_id, const buffer &data)
+        boost::asio::awaitable<buffer> _send_request(tcp::socket &socket, const mini_protocol mp_id, const buffer &data)
         {
             co_await _write_request(socket, mp_id, data);
             co_return co_await _read_response(socket, mp_id);
@@ -207,6 +283,7 @@ namespace turbo::cardano::network {
         boost::asio::awaitable<std::shared_ptr<tcp::socket>> _connect_and_handshake()
         {
             _check_stop(_stop);
+            _responses.clear();
             auto socket = std::make_shared<tcp::socket>(_strand);
             auto cancel = _cancel_on_stop(_stop, socket, _resolver);
             auto results = co_await _wait_with_deadline(_resolver->async_resolve(_addr.host, _addr.port, boost::asio::use_awaitable));
@@ -216,7 +293,7 @@ namespace turbo::cardano::network {
             co_await _wait_with_deadline(socket->async_connect(*results.begin(), boost::asio::use_awaitable));
             _check_stop(_stop);
             if (!socket->is_open()) [[unlikely]] {
-                throw error{"failed to connect to {} within the allotted timeframe", _addr};
+                throw transient_error{"failed to connect to {} within the allotted timeframe", _addr};
             }
 
             cbor::encoder enc {};
@@ -242,6 +319,7 @@ namespace turbo::cardano::network {
                             || mv.version < _version_cfg.min || mv.version > _version_cfg.max) [[unlikely]]
                         throw error{"peer at {}:{} ignored the requested protocol version range and returned {}!", _addr.host, _addr.port, mv.version};
                     logger::info("outbound peer {}: negotiated protocol version {}", _addr, mv.version);
+                    _block_message_limit = mv.version == 999 ? _version_cfg.max_compressed_message_size : 2'500'000;
                 } else {
                     throw error{"peer at {}:{} refused the requested protocol versions!", _addr.host, _addr.port};
                 }
@@ -284,12 +362,9 @@ namespace turbo::cardano::network {
             try {
                 auto isect = co_await _find_intersection_do(std::move(points));
                 handler(find_response { _addr, std::move(isect) });
-            } catch (const std::exception &ex) {
-                handler(find_response { _addr, fmt::format("query_tip error: {}", ex.what()) });
-                _conn.reset();
             } catch (...) {
-                handler(find_response { _addr, "query_tip unknown error!" });
                 _conn.reset();
+                handler(find_response { _addr, _current_request_error() });
             }
         }
 
@@ -307,7 +382,7 @@ namespace turbo::cardano::network {
         {
             using namespace boost::asio::experimental::awaitable_operators;
             if (deadline <= std::chrono::steady_clock::duration::zero())
-                throw error("network response deadline expired");
+                throw transient_error{"network response deadline expired"};
             std::exception_ptr failure;
             std::optional<std::conditional_t<std::is_void_v<T>, std::monostate, T>> result;
             const auto complete = [&]() -> boost::asio::awaitable<void> {
@@ -324,46 +399,41 @@ namespace turbo::cardano::network {
             };
             auto res = co_await (complete() || _wait_for_timer(deadline));
             if (std::holds_alternative<timer_stopped_t>(res)) [[unlikely]]
-                throw error{"network operation timed out after {} ms", std::chrono::duration_cast<std::chrono::milliseconds>(deadline).count()};
-            if (failure)
-                std::rethrow_exception(failure);
+                throw transient_error{"network operation timed out after {} ms", std::chrono::duration_cast<std::chrono::milliseconds>(deadline).count()};
+            if (failure) {
+                try {
+                    std::rethrow_exception(failure);
+                } catch (const boost::system::system_error &ex) {
+                    _rethrow_transport_error(ex);
+                }
+            }
             if constexpr (!std::is_same_v<T, void>)
                 co_return std::move(*result);
         }
 
         // True means BatchDone was received; an interrupted stream cannot be reused.
-        boost::asio::awaitable<bool> _receive_blocks(tcp::socket &socket, uint8_vector parse_buf, const block_handler &handler)
+        boost::asio::awaitable<bool> _receive_blocks(tcp::socket &socket, const block_handler &handler)
         {
             bool batch_done = false;
             for (;;) {
                 _check_stop(_stop);
-                while (!parse_buf.empty()) {
-                    _check_stop(_stop);
-                    try {
-                        auto resp_cbor = cbor::zero2::parse(parse_buf);
-                        auto msg = miniprotocol::blockfetch::msg_t::from_cbor(resp_cbor.get());
-                        const auto go_on = std::visit([&](auto &&mv) -> bool {
-                            using T = std::decay_t<decltype(mv)>;
-                            if constexpr (std::is_same_v<T, miniprotocol::blockfetch::msg_block_t>) {
-                                return handler(block_response_t { std::move(mv) });
-                            } else if constexpr (std::is_same_v<T, miniprotocol::blockfetch::msg_compressed_blocks_t>) {
-                                return handler(block_response_t { std::move(mv) });
-                            } else if constexpr (std::is_same_v<T, miniprotocol::blockfetch::msg_batch_done_t>) {
-                                batch_done = true;
-                                return false;
-                            } else {
-                                throw error{"unexpected blockfetch message: {}!", msg.index()};
-                            }
-                        }, std::move(msg));
-                        if (!go_on)
-                            co_return batch_done;
-                        parse_buf.erase(parse_buf.begin(), parse_buf.begin() + resp_cbor.get().data_raw().size());
-                    } catch (const cbor::zero2::incomplete_error &) {
-                        // exit the while loop and wait for more data
-                        break;
+                const auto bytes = co_await _read_response(socket, mini_protocol::block_fetch, _block_message_limit);
+                auto resp_cbor = cbor::zero2::parse(bytes);
+                auto msg = miniprotocol::blockfetch::msg_t::from_cbor(resp_cbor.get());
+                const auto go_on = std::visit([&](auto &&mv) -> bool {
+                    using T = std::decay_t<decltype(mv)>;
+                    if constexpr (std::is_same_v<T, miniprotocol::blockfetch::msg_block_t>
+                            || std::is_same_v<T, miniprotocol::blockfetch::msg_compressed_blocks_t>) {
+                        return handler(block_response_t { std::move(mv) });
+                    } else if constexpr (std::is_same_v<T, miniprotocol::blockfetch::msg_batch_done_t>) {
+                        batch_done = true;
+                        return false;
+                    } else {
+                        throw error{"unexpected blockfetch message: {}!", msg.index()};
                     }
-                }
-                parse_buf << co_await _read_response(socket, mini_protocol::block_fetch);
+                }, std::move(msg));
+                if (!go_on)
+                    co_return batch_done;
             }
         }
 
@@ -378,12 +448,9 @@ namespace turbo::cardano::network {
                 cbor::encoder enc {};
                 miniprotocol::blockfetch::msg_request_range_t { from, to }.to_cbor(enc);
                 auto resp = co_await _send_request(*_conn, mini_protocol::block_fetch, enc.cbor());
-                auto resp_cbor = cbor::zero2::parse(resp);
-                auto &resp_items = resp_cbor.get().array();
-                switch (const auto typ = resp_items.read().uint(); typ) {
+                switch (const auto typ = cbor::zero2::parse(resp).get().array().read().uint(); typ) {
                     case 2: {
-                        resp.erase(resp.begin(), resp.begin() + resp_cbor.get().data_raw().size());
-                        const auto completed = co_await _receive_blocks(*_conn, std::move(resp), [&](block_response_t blk) {
+                        const auto completed = co_await _receive_blocks(*_conn, [&](block_response_t blk) {
                             std::visit([&](const auto &rv) {
                                 using T = std::decay_t<decltype(rv)>;
                                 if constexpr (std::is_same_v<T, miniprotocol::blockfetch::msg_block_t>) {
@@ -401,18 +468,14 @@ namespace turbo::cardano::network {
                         break;
                     }
                     case 3: {
-                        handler(block_response_t { "fetch_blocks do not have all requested blocks!" });
-                        break;
+                        throw transient_error{"fetch_blocks do not have all requested blocks!"};
                     }
                     [[unlikely]] default:
                         throw error{"unexpected chain_sync message: {}!", typ};
                 }
-            } catch (const std::exception &ex) {
-                handler(block_response_t { fmt::format("fetch_blocks error: {}", ex.what()) });
-                _conn.reset();
             } catch (...) {
-                handler(block_response_t { "fetch_blocks unknown error!" });
                 _conn.reset();
+                handler(block_response_t { _current_request_error() });
             }
         }
 
@@ -422,13 +485,13 @@ namespace turbo::cardano::network {
         {
             _check_stop(stop);
             if (!_conn)
-                throw error("ChainSync requires an established intersection");
+                throw error{"ChainSync requires an established intersection"};
             auto cancel = _cancel_on_stop(stop, _conn);
             cbor::encoder req {};
             miniprotocol::chainsync::msg_request_next_t {}.to_cbor(req);
             co_await _write_request(*_conn, mini_protocol::chain_sync, req.cbor());
-            uint8_vector pending {};
-            uint8_vector keepalive_bytes {};
+            auto &pending = _response_buffer(mini_protocol::chain_sync);
+            auto &keepalive = _response_buffer(mini_protocol::keep_alive);
             bool awaiting = false;
             std::optional<chain_update> result;
             bool keepalive_pending = false;
@@ -436,49 +499,49 @@ namespace turbo::cardano::network {
             const auto request_started = last_keepalive;
             for (;;) {
                 if (stop.stop_requested())
-                    throw error("ChainSync stopped");
-                while (!pending.empty()) {
-                    try {
-                        auto parsed = cbor::zero2::parse(pending);
-                        auto &items = parsed.get().array();
-                        const auto type = items.read().uint();
-                        std::optional<chain_update> update;
-                        switch (type) {
-                            case 1:
-                                break;
-                            case 2: {
-                                const auto header = parsed_header::from_cbor(items.read(), _cfg);
-                                auto tip = optional_point3::from_cbor(items.read());
-                                if (!tip) throw error("RollForward with a tip at origin");
-                                update = chain_update { false, point2 { header->slot(), header->hash() }, std::move(tip) };
-                                break;
-                            }
-                            case 3: {
-                                const auto target = optional_point2::from_cbor(items.read());
-                                update = chain_update { true, target, optional_point3::from_cbor(items.read()) };
-                                break;
-                            }
-                            default: throw error("unexpected persistent ChainSync response");
-                        }
-                        const auto consumed = parsed.get().data_raw().size();
-                        if (type == 1) {
-                            if (awaiting) throw error("duplicate AwaitReply");
+                    throw error{"ChainSync stopped"};
+                while (const auto message = pending.next()) {
+                    if (result) [[unlikely]]
+                        throw error{"unsolicited ChainSync response"};
+                    auto parsed = cbor::zero2::parse(*message);
+                    auto &items = parsed.get().array();
+                    switch (items.read().uint()) {
+                        case 1:
+                            if (awaiting) [[unlikely]]
+                                throw error{"duplicate AwaitReply"};
                             awaiting = true;
-                        } else {
-                            result = std::move(update);
+                            break;
+                        case 2: {
+                            const auto header = parsed_header::from_cbor(items.read(), _cfg);
+                            auto tip = optional_point3::from_cbor(items.read());
+                            if (!tip) [[unlikely]]
+                                throw error{"RollForward with a tip at origin"};
+                            result = chain_update { false, point2 { header->slot(), header->hash() }, std::move(tip) };
+                            break;
                         }
-                        pending.erase(pending.begin(), pending.begin() + consumed);
-                    } catch (const cbor::zero2::incomplete_error &) {
-                        // A CBOR message may span mux segments.
-                        break;
+                        case 3: {
+                            const auto target = optional_point2::from_cbor(items.read());
+                            result = chain_update { true, target, optional_point3::from_cbor(items.read()) };
+                            break;
+                        }
+                        default:
+                            throw error{"unexpected persistent ChainSync response"};
                     }
-                    if (result && !keepalive_pending) co_return *result;
                 }
+                while (const auto message = keepalive.next()) {
+                    auto response = cbor::zero2::parse(*message);
+                    auto &items = response.get().array();
+                    if (!keepalive_pending || items.read().uint() != 1 || items.read().uint() != 0) [[unlikely]]
+                        throw error{"unexpected KeepAlive response"};
+                    keepalive_pending = false;
+                }
+                if (result && !keepalive_pending)
+                    co_return *result;
                 const auto now = std::chrono::steady_clock::now();
                 if (!awaiting && now - request_started >= response_timeout)
-                    throw error("ChainSync response timed out");
+                    throw transient_error{"ChainSync response timed out"};
                 if (keepalive_pending && now - last_keepalive >= response_timeout)
-                    throw error("KeepAlive response timed out");
+                    throw transient_error{"KeepAlive response timed out"};
                 if (!result && awaiting && !keepalive_pending && now - last_keepalive >= response_timeout) {
                     cbor::encoder enc {};
                     enc.array(2).uint(0).uint(0);
@@ -492,41 +555,27 @@ namespace turbo::cardano::network {
                     using namespace boost::asio::experimental::awaitable_operators;
                     const auto ready = co_await (_conn->async_wait(tcp::socket::wait_read, boost::asio::use_awaitable)
                         || timer.async_wait(boost::asio::use_awaitable));
-                    if (ready.index() != 0) continue;
+                    if (ready.index() != 0)
+                        continue;
                 }
                 auto deadline = std::chrono::steady_clock::now() + response_timeout;
-                if (!awaiting) deadline = std::min(deadline, request_started + response_timeout);
-                if (keepalive_pending) deadline = std::min(deadline, last_keepalive + response_timeout);
+                if (!awaiting)
+                    deadline = std::min(deadline, request_started + response_timeout);
+                if (keepalive_pending)
+                    deadline = std::min(deadline, last_keepalive + response_timeout);
                 segment_info hdr {};
                 co_await _wait_with_deadline(boost::asio::async_read(*_conn, boost::asio::buffer(&hdr, sizeof(hdr)), boost::asio::use_awaitable),
                     deadline - std::chrono::steady_clock::now());
-                uint8_vector bytes(hdr.payload_size());
+                if (hdr.mode() != channel_mode::responder)
+                    throw error{"unexpected mux direction"};
+                const auto mp_id = hdr.mini_protocol_id();
+                if (mp_id != mini_protocol::chain_sync && mp_id != mini_protocol::keep_alive)
+                    throw error{"unexpected mini-protocol while following"};
+                auto &messages = mp_id == mini_protocol::chain_sync ? pending : keepalive;
+                const auto bytes = messages.prepare(hdr.payload_size());
                 co_await _wait_with_deadline(boost::asio::async_read(*_conn, boost::asio::buffer(bytes.data(), bytes.size()), boost::asio::use_awaitable),
                     deadline - std::chrono::steady_clock::now());
-                if (hdr.mode() != channel_mode::responder)
-                    throw error("unexpected mux direction");
-                if (hdr.mini_protocol_id() == mini_protocol::chain_sync) {
-                    pending << bytes;
-                    if (pending.size() > (1U << 20))
-                        throw error("oversized ChainSync response");
-                } else if (hdr.mini_protocol_id() == mini_protocol::keep_alive) {
-                    keepalive_bytes << bytes;
-                    if (keepalive_bytes.size() > 32)
-                        throw error("oversized KeepAlive response");
-                    try {
-                        auto response = cbor::zero2::parse(keepalive_bytes);
-                        auto &items = response.get().array();
-                        if (!keepalive_pending || items.read().uint() != 1 || items.read().uint() != 0)
-                            throw error("unexpected KeepAlive response");
-                        keepalive_bytes.clear();
-                        keepalive_pending = false;
-                        if (result) co_return *result;
-                    } catch (const cbor::zero2::incomplete_error &) {
-                        // KeepAlive messages can also span mux segments.
-                    }
-                } else {
-                    throw error("unexpected mini-protocol while following");
-                }
+                messages.commit(bytes.size());
             }
         }
 
@@ -566,12 +615,9 @@ namespace turbo::cardano::network {
                         break;
                 }
                 handler(header_response { _addr, isect.isect, isect.tip, std::move(headers) });
-            } catch (const std::exception &ex) {
-                handler(header_response { .addr=_addr, .res=fmt::format("fetch_headers error: {}", ex.what()) });
-                _conn.reset();
             } catch (...) {
-                handler(header_response { .addr=_addr, .res="fetch_headers unknown error!" });
                 _conn.reset();
+                handler(header_response { .addr=_addr, .res=_current_request_error() });
             }
         }
     };

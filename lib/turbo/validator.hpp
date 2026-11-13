@@ -26,7 +26,7 @@ namespace turbo::validator {
     static constexpr std::string_view validate_task{"validate"};
     static constexpr std::string_view validate_leaders_task{"validate-epoch"};
     // Protocol parameters now persist the Conway fields, previously omitted.
-    static constexpr uint64_t snapshot_format_version = 10;
+    static constexpr uint64_t snapshot_format_version = 12;
 
     struct snapshot_policy {
         static constexpr auto catchup_interval = std::chrono::minutes { 10 };
@@ -57,6 +57,7 @@ namespace turbo::validator {
         uint64_t certified_core_offset;
         uint64_t format_version = snapshot_format_version;
         std::optional<cardano::block_hash> block_hash {};
+        bool full_validation = false;
 
         static snapshot from_json(const json::value &j);
         snapshot(const cardano::ledger::state &st, std::optional<uint64_t> trusted_authority_epoch_,
@@ -74,7 +75,7 @@ namespace turbo::validator {
             return epoch == o.epoch && end_offset == o.end_offset && last_slot == o.last_slot
                 && exportable == o.exportable && trusted_authority_epoch == o.trusted_authority_epoch
                 && certified_core_offset == o.certified_core_offset && format_version == o.format_version
-                && block_hash == o.block_hash;
+                && block_hash == o.block_hash && full_validation == o.full_validation;
         }
 
         bool operator<(const snapshot &b) const
@@ -97,7 +98,8 @@ namespace turbo::validator {
     extern indexer::indexer_map default_indexers(const std::string &data_dir, scheduler &sched=scheduler::get());
 
     struct incremental {
-        explicit incremental(chunk_registry &cr, const storage::chunk_map &chunks, bool validate_vrf=true);
+        explicit incremental(chunk_registry &cr, const storage::chunk_map &chunks, bool validate_vrf=true,
+            std::optional<validation_mode> mode={});
         ~incremental();
         [[nodiscard]] cardano::amount unspent_reward(const cardano::stake_ident &id) const;
         [[nodiscard]] cardano::optional_point core_tip() const;
@@ -112,6 +114,8 @@ namespace turbo::validator {
         void load_snapshot(cardano::ledger::state &st, const snapshot &snap) const;
         void save_snapshot(bool force=true);
         void recover();
+        // Requires all scheduled validation to have finished.
+        std::optional<uint64_t> prepare_prefix_recovery();
         void flush();
         void request_commit();
         validation_mode validation(validation_mode);

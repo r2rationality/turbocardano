@@ -10,7 +10,7 @@
     {
         try {
             const auto &pv = _require_protocol_ver();
-            machine m { ps.alloc, cost_models().for_script(ps.typ, builtins::semantics_variant(ps.typ, pv.major)), ps.typ, ps.budget, pv.major };
+            machine m { ps.alloc, cost_models().for_script(ps.typ, builtins::semantics_variant(ps.typ, pv.major)), ps.typ, ps.budget, pv.major, ps.ver };
             return m.evaluate_no_res(ps.expr);
         } catch (const error &ex) {
             throw error{"script {} {}: {}", ps.typ, ps.hash, ex.what()};

@@ -164,6 +164,10 @@
         if (dormant)
             ++_num_dormant_epochs;
 
+        if (_snapshots_after_epoch()) {
+            rotate_snapshots();
+            _prep_op_stake_dist(_set);
+        }
         _gov_make_pulsing_snapshot(true);
         _ratify_ready = false;
     }

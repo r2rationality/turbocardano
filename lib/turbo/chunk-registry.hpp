@@ -192,6 +192,7 @@ namespace turbo {
         // Existing committed state is authoritative unless salvage is requested.
         // A database without registry state is salvaged automatically.
         bool recover_orphans = false;
+        std::optional<validator::validation_mode> validation {};
     };
 
     struct chunk_registry {
@@ -412,6 +413,7 @@ namespace turbo {
         repack_stats_t _commit_repack(repack_plan_t &plan);
 
         const bool _continuous;
+        const validator::validation_mode _recovery_validation;
         uint64_t _last_repack_snapshot_offset = 0;
         std::atomic_bool _commit_requested { false };
         std::function<void()> _before_commit {};

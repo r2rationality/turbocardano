@@ -59,6 +59,10 @@ namespace turbo::cardano {
 
     ex_unit_prices ex_unit_prices::from_json(const json::value &j)
     {
+        // Newer genesis files use the ledger names; retain the original Alonzo names.
+        const auto &obj = j.as_object();
+        if (obj.contains("priceMemory") || obj.contains("priceSteps"))
+            return { decltype(mem)::from_json(obj.at("priceMemory")), decltype(steps)::from_json(obj.at("priceSteps")) };
         return { decltype(mem)::from_json(j.at("prMem")), decltype(steps)::from_json(j.at("prSteps")) };
     }
 

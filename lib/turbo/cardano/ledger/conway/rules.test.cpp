@@ -236,7 +236,7 @@ suite cardano_ledger_conway_rules_suite = [] {
         expect(st._accounts.at(id).vote_deleg.has_value());
     };
 
-    "withdrawal vote delegation is required from PV10 in batched updates"_test = [] {
+    "withdrawal vote delegation is required only at PV10 and PV11 in batched updates"_test = [] {
         const auto reward = gap_reward(1);
         const stake_ident id = reward;
         const auto updates = [](const reward_id_t &reward_id) {
@@ -246,17 +246,17 @@ suite cardano_ledger_conway_rules_suite = [] {
             auto &first = result.emplace_back();
             first.loc = { 0, 1, 0 };
             first.update = std::move(prelude);
-            // Indexing emits both forms; PV9/10 use the legacy update, PV11 the prelude.
+            // Indexing emits both forms; PV9/10 use the legacy update, PV11+ the prelude.
             auto &legacy = result.emplace_back();
             legacy.loc = { 0, 1, 0 };
             legacy.update = turbo::index::timed_update::stake_withdraw { static_cast<stake_ident>(reward_id), 25 };
             return result;
         };
-        for (const auto major: { 9U, 10U, 11U }) {
+        for (const auto major: { 9U, 10U, 11U, 12U }) {
             gap_test_state st {};
             st._params.protocol_ver.major = major;
             st.seed(id, 25);
-            if (major == 9) {
+            if (major == 9 || major == 12) {
                 expect(nothrow([&] { st._process_timed_updates(updates(reward)); }));
                 expect(st._accounts.at(id).reward == 0_u);
             } else {
@@ -293,6 +293,42 @@ suite cardano_ledger_conway_rules_suite = [] {
         expect(st._accounts.at(id).reward == 25_u);
         expect(nothrow([&] { st.withdraw_reward(id, 25); }));
         expect(st._accounts.at(id).reward == 0_u);
+    };
+
+    "CIP-181 permits undelegated withdrawals at the PV12 boundary"_test = [] {
+        const stake_ident id = gap_reward(1);
+        for (const uint64_t amount: { 0ULL, 25ULL }) {
+            gap_test_state st {};
+            st.seed(id, amount);
+            // PV11 still rejects even a zero withdrawal without vote delegation.
+            expect(throws([&] { st.withdraw_reward(id, amount); }));
+            expect_equal(st._accounts.at(id).reward, amount);
+            st._params.protocol_ver = { 12, 0 };
+            expect(nothrow([&] { st.withdraw_reward(id, amount); }));
+            expect(st._accounts.at(id).reward == 0_u);
+            expect(!st._accounts.at(id).vote_deleg.has_value());
+        }
+    };
+
+    "CIP-181 retains registration and available balance checks"_test = [] {
+        for (const bool script: { false, true }) {
+            auto reward = gap_reward(1);
+            if (script)
+                reward[0] = 0xF1;
+            const stake_ident id = reward;
+            gap_test_state st {};
+            st._params.protocol_ver = { 12, 0 };
+            expect(throws([&] { st.withdraw_reward(id, 0); }));
+            // Cached account data does not establish stake registration.
+            st._accounts[id].reward = 25;
+            expect(throws([&] { st.withdraw_reward(id, 25); }));
+            expect(st._accounts.at(id).reward == 25_u);
+            st.seed(id, 25);
+            expect(throws([&] { st.withdraw_reward(id, 26); }));
+            expect(st._accounts.at(id).reward == 25_u);
+            expect(nothrow([&] { st.withdraw_reward(id, 25); }));
+            expect(st._accounts.at(id).reward == 0_u);
+        }
     };
 
     "RATIFY freezes pool defaults across subsequent delegation changes"_test = [] {

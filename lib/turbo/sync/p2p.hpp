@@ -74,11 +74,12 @@ namespace turbo::sync::p2p {
             const cardano::network::version_config_t &versions={}) const;
         void cancel_tasks(uint64_t max_valid_offset) override;
         bool sync_attempt(sync::peer_info &peer, cardano::optional_slot max_slot) override;
-        // on_update runs on the chain writer after a fully validated commit.
+        // on_update runs on the chain writer after the selected mode commits.
         void follow(std::stop_token, const std::function<void(const cardano::optional_point &)> &on_update,
             std::optional<cardano::network::address> addr={},
             const cardano::network::version_config_t &versions={},
-            std::chrono::seconds snapshot_interval=std::chrono::seconds { 600 });
+            std::chrono::seconds snapshot_interval=std::chrono::seconds { 600 },
+            validator::validation_mode validation=validator::validation_mode::full);
     private:
         struct impl;
         std::unique_ptr<impl> _impl;

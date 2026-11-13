@@ -3,10 +3,12 @@
  * Copyright (c) 2024-2026 R2 Rationality OÜ (info at r2rationality dot com)
  * License: https://github.com/r2rationality/turbocardano/blob/main/LICENSE */
 
+#include <boost/circular_buffer.hpp>
 #include <turbo/common/mutex.hpp>
 #include <turbo/common/logger.hpp>
 #include <turbo/cardano/network/miniprotocol/handshake/handler.hpp>
 #include <turbo/cardano/network/multiplexer.hpp>
+#include <turbo/cardano/network/message-buffer.hpp>
 
 namespace turbo::cardano::network {
     inline bool atomic_set_true(std::atomic_bool &av, const std::function<bool()> &on_update)
@@ -29,12 +31,12 @@ namespace turbo::cardano::network {
             if (it == _config.end()) [[unlikely]]
                 throw error("mini_protocol::handshake must be set in any multiplexer config!");
             miniprotocol::handshake::result_t dummy_res {};
-            const auto [p_it, created] = _protocols.try_emplace(it->first, it->second(dummy_res));
+            const auto [p_it, created] = _protocols.try_emplace(it->first, it->second(dummy_res), it->first);
             dynamic_cast<miniprotocol::handshake::observer_t &>(*p_it->second.observer.get()).on_success([&](const auto &res) {
                 logger::info("inbound connection: negotiated protocol version {}", res.version);
                 for (const auto &[mp, factory]: _config) {
                     if (mp != mini_protocol::handshake) {
-                        const auto [it, created] = _protocols.try_emplace(mp, factory(res));
+                        const auto [it, created] = _protocols.try_emplace(mp, factory(res), mp);
                         if (!created) [[unlikely]]
                             throw error{"mini protocol has already been registered with the connection: {}", mp};
                     }
@@ -56,7 +58,7 @@ namespace turbo::cardano::network {
                     p.packet.clear();
                     p.generator = std::move(generator);
                     if (p.generator->resume()) {
-                        p.buffer = p.generator->result();
+                        p.load_buffer();
                         // Publish the prepared generator and buffer. ready also lets
                         // exactly one sender claim the next packet.
                         p.ready.store(true, std::memory_order_release);
@@ -76,8 +78,9 @@ namespace turbo::cardano::network {
                 if (!p.busy.load(std::memory_order_acquire))
                     p.observer->poll([this, id](data_generator_t &&data) {
                         if (!try_send(id, std::move(data)))
-                            throw error("cannot send a pending protocol response");
+                            throw error{"cannot send a pending protocol response"};
                     });
+                _drain_ingress(id, p);
             }
         }
 
@@ -135,17 +138,26 @@ namespace turbo::cardano::network {
     private:
         struct protocol_data {
             protocol_observer_ptr observer;
+            message_buffer_t ingress;
             std::atomic_bool busy { false };
             std::atomic_bool ready { false };
             std::optional<data_generator_t> generator {};
             // the last item returned from the generator or empty
-            uint8_vector buffer {};
+            boost::circular_buffer<uint8_t> buffer {};
             // the last packet created from the most recent buffer
             uint8_vector packet {};
 
-            protocol_data(const protocol_observer_ptr &o):
-                observer { o }
+            protocol_data(const protocol_observer_ptr &o, const mini_protocol mp):
+                observer { o },
+                ingress { mp == mini_protocol::tx_submission ? 2'500'000
+                    : mp == mini_protocol::keep_alive ? 32 : message_buffer_t::max_segment_size }
             {
+            }
+
+            void load_buffer()
+            {
+                const auto bytes = generator->result();
+                buffer.assign(std::max(buffer.capacity(), bytes.size()), bytes.begin(), bytes.end());
             }
 
             bool empty() const noexcept
@@ -194,11 +206,11 @@ namespace turbo::cardano::network {
             void done() override
             {
                 const auto packet_sz = _data.packet.size() - sizeof(segment_info);
-                _data.buffer.erase(_data.buffer.begin(), _data.buffer.begin() + packet_sz);
+                _data.buffer.erase_begin(packet_sz);
                 _data.packet.clear();
                 if (_data.buffer.empty()) {
                     if (_data.generator->resume()) {
-                        _data.buffer = _data.generator->result();
+                        _data.load_buffer();
                         if (_data.buffer.empty()) [[unlikely]] {
                             _parent._notify_send_observer(&op_observer_t::failed, "the provided generator returned an empty buffer!"sv);
                             return;
@@ -248,7 +260,13 @@ namespace turbo::cardano::network {
 
             void done() override
             {
-                _parent._recv_payload.resize(_parent._recv_header.payload_size());
+                const auto mp_id = _parent._recv_header.mini_protocol_id();
+                if (_parent._recv_header.mode() != channel_mode::initiator) [[unlikely]]
+                    throw error{"unexpected mux direction"};
+                const auto p_it = _parent._protocols.find(mp_id);
+                if (p_it == _parent._protocols.end()) [[unlikely]]
+                    throw error{"a client has requested an unsupported mini protocol: {}", mp_id};
+                _parent._recv_payload = p_it->second.ingress.prepare(_parent._recv_header.payload_size());
                 _parent._conn->async_read(_parent._recv_payload, _parent._recv_payload_observer);
             }
         };
@@ -280,16 +298,11 @@ namespace turbo::cardano::network {
             void done() override
             {
                 const auto mp_id = _parent._recv_header.mini_protocol_id();
-                const auto p_it = _parent._protocols.find(mp_id);
-                if (p_it == _parent._protocols.end()) [[unlikely]]
-                    throw error{"a client has requested an unsupported mini protocol: {}", mp_id};
-                p_it->second.observer->data(_parent._recv_payload, [&, mp_id](data_generator_t &&gen) {
-                    if (!_parent.try_send(mp_id, std::move(gen))) [[unlikely]] {
-                        const auto msg = fmt::format("mini protocol {} can't schedule data submission while another one is in progress!", mp_id);
-                        logger::warn(msg);
-                        throw error(msg);
-                    }
-                });
+                if (mp_id == mini_protocol::handshake)
+                    message_buffer_t::check_handshake(_parent._recv_payload);
+                auto &protocol = _parent._protocols.at(mp_id);
+                protocol.ingress.commit(_parent._recv_payload.size());
+                _parent._drain_ingress(mp_id, protocol);
                 std::scoped_lock lk { _parent._recv_observer_mutex };
                 if (_parent._recv_observer) {
                     _parent._recv_observer->done();
@@ -317,9 +330,22 @@ namespace turbo::cardano::network {
         mutable std::mutex _recv_observer_mutex alignas(mutex::alignment) {};
         op_observer_ptr _recv_observer {};
         segment_info _recv_header {};
-        uint8_vector _recv_payload {};
+        write_buffer _recv_payload {};
         op_observer_ptr _recv_hdr_observer = std::make_shared<receive_header_observer_t>(*this);
         op_observer_ptr _recv_payload_observer = std::make_shared<receive_payload_observer_t>(*this);
+
+        void _drain_ingress(const mini_protocol mp, protocol_data &protocol)
+        {
+            while (!protocol.ingress.empty() && !protocol.busy.load(std::memory_order_acquire) && protocol.observer->can_receive()) {
+                const auto message = protocol.ingress.next();
+                if (!message)
+                    break;
+                protocol.observer->data(*message, [this, mp](data_generator_t &&gen) {
+                    if (!try_send(mp, std::move(gen))) [[unlikely]]
+                        throw error{"mini protocol {} can't schedule data submission while another one is in progress!", mp};
+                });
+            }
+        }
 
         template<typename ...Args>
         void _notify_send_observer(void (op_observer_t::*method)(Args...), Args... args)
@@ -366,12 +392,13 @@ namespace turbo::cardano::network {
                         expected_ready, false, std::memory_order_acquire, std::memory_order_relaxed)) {
                     // once the buffer is non-empty, the sender owns the resource
                     if (!p_data.buffer.empty() && p_data.packet.empty()) {
-                        const auto sz = std::min(_next_protocol->second.buffer.size(), segment_info::max_payload_size);
-                        const segment_info hdr { numeric_cast<uint32_t>(std::chrono::system_clock::to_time_t(std::chrono::system_clock::now())), channel_mode::responder, _next_protocol->first, numeric_cast<uint16_t>(sz) };
-                        _next_protocol->second.packet.clear();
-                        _next_protocol->second.packet.reserve(sizeof(hdr) + sz);
-                        _next_protocol->second.packet << buffer::from(hdr) << static_cast<buffer>(_next_protocol->second.buffer).subbuf(0, sz);
-                        _conn->async_write(_next_protocol->second.packet, std::make_shared<send_observer_t>(*this, p_id));
+                        const auto sz = std::min(p_data.buffer.size(), segment_info::max_payload_size);
+                        const segment_info hdr { numeric_cast<uint32_t>(std::chrono::system_clock::to_time_t(std::chrono::system_clock::now())), channel_mode::responder, p_id, numeric_cast<uint16_t>(sz) };
+                        p_data.packet.clear();
+                        p_data.packet.reserve(sizeof(hdr) + sz);
+                        const auto first = p_data.buffer.array_one();
+                        p_data.packet << buffer::from(hdr) << buffer { first.first, sz };
+                        _conn->async_write(p_data.packet, std::make_shared<send_observer_t>(*this, p_id));
                         return;
                     }
                 }

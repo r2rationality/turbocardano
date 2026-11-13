@@ -3,9 +3,6 @@
  * Copyright (c) 2024-2026 R2 Rationality OÜ (info at r2rationality dot com)
  * License: https://github.com/r2rationality/turbocardano/blob/main/LICENSE */
 
-#ifdef _MSC_VER
-#   include <SDKDDKVer.h>
-#endif
 #define BOOST_ASIO_HAS_STD_INVOKE_RESULT 1
 #ifndef BOOST_ALLOW_DEPRECATED_HEADERS
 #   define BOOST_ALLOW_DEPRECATED_HEADERS

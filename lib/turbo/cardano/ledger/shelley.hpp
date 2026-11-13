@@ -267,6 +267,7 @@ namespace turbo::cardano::ledger::shelley {
         virtual void retire_stake(uint64_t slot, const stake_ident &stake_id, std::optional<uint64_t> deposit);
         virtual void delegate_stake(const stake_ident &stake_id, const pool_hash &pool_id);
 
+        virtual void _initialize_genesis();
         void _apply_shelley_params(protocol_params &p) const;
         virtual void _add_encode_task(cbor_encoder &, const encode_cbor_func &) const;
         virtual void _apply_param_update(const param_update &update);
@@ -302,6 +303,8 @@ namespace turbo::cardano::ledger::shelley {
         virtual void _decode_donations(cbor::zero2::value &);
         void _populate_pool_vrf_key_hashes();
         void _withdraw_reward(const reward_id_t &, uint64_t amount);
+        void _prep_op_stake_dist(const ledger_copy &snapshot);
+        virtual bool _snapshots_after_epoch() const { return false; }
     private:
         static protocol_params _default_params(const cardano::config &cfg);
         static flat_set<pool_hash> _make_pbft_pools(const shelley_delegate_map &delegs);
@@ -328,7 +331,6 @@ namespace turbo::cardano::ledger::shelley {
 
         uint64_t _retire_avvm_balance();
         std::optional<stake_ident> _extract_stake_id(const address &addr) const;
-        void _prep_op_stake_dist();
         void _apply_future_pool_params();
         void _apply_future_shelley_delegs(uint64_t slot);
         void _reset_shelley_delegs_schedule(bool complete=true);

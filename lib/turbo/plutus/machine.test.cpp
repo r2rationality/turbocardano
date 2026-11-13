@@ -94,7 +94,7 @@ namespace {
     {
         const uplc::script s { alloc, file::read(path) };
         machine m { alloc, conformance_cost_model(), cardano::script_type::plutus_v3, budget,
-            conformance_protocol_major };
+            conformance_protocol_major, s.version() };
         return m.evaluate(s.program());
     }
 
@@ -102,7 +102,7 @@ namespace {
     {
         plutus::allocator alloc {};
         const uplc::script s { alloc, uint8_vector { src } };
-        machine m { alloc, cardano::script_type::plutus_v3, {}, protocol_major };
+        machine m { alloc, cardano::script_type::plutus_v3, {}, protocol_major, s.version() };
         return fmt::format("{}", m.evaluate(s.program()).expr);
     }
 
@@ -111,7 +111,7 @@ namespace {
     {
         plutus::allocator alloc {};
         const uplc::script s { alloc, uint8_vector { src }, typ, protocol_major };
-        machine m { alloc, typ, {}, protocol_major };
+        machine m { alloc, typ, {}, protocol_major, s.version() };
         return fmt::format("{}", m.evaluate(s.program()).expr);
     }
 
@@ -311,6 +311,8 @@ suite plutus_machine_suite = [] {
             expect(throws([&] { eval_profile(cons_out_of_range, script_type::plutus_v3, 9); }));
             expect(nothrow([&] { eval_profile(cons_out_of_range, script_type::plutus_v1, 11); }));
             expect(throws([&] { eval_profile(cons_out_of_range, script_type::plutus_v3, 11); }));
+            expect(nothrow([&] { eval_profile(cons_out_of_range, script_type::plutus_v1, 12); }));
+            expect(throws([&] { eval_profile(cons_out_of_range, script_type::plutus_v3, 12); }));
 
             const std::string_view constr_data_out_of_range {
                 "(program 1.0.0 [[(builtin constrData) (con integer -1)] (con (list data) [])])"

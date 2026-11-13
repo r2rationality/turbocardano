@@ -4,6 +4,7 @@
 
 #include <turbo/cardano/dijkstra/block.hpp>
 #include <turbo/common/test.hpp>
+#include <turbo/zpp.hpp>
 
 using namespace turbo;
 using namespace turbo::cardano;
@@ -157,6 +158,62 @@ suite cardano_dijkstra_decoding_suite = [] {
                 expected += voter(type) + ordered_votes;
             expect_encoding<dijkstra::voting_procedures_t>(input, expected);
             expect_encoding<conway::voting_procedures_t>(input, expected, era_t::conway);
+        };
+        "header version information uses two unsigned 32-bit fields"_test = [] {
+            const auto raw = uint8_vector::from_hex("9F1AFFFFFFFF1AFFFFFFFFFF");
+            const auto info = dijkstra::header_version_info_t::from_cbor(cbor::zero2::parse(raw).get());
+            expect_equal(info.highest_supported_major_version, 0xFFFFFFFFULL);
+            expect_equal(info.self_reported_software_tag, 0xFFFFFFFFULL);
+            expect_encoding<dijkstra::header_version_info_t>("9F0E1904D2FF", "820E1904D2");
+            for (const auto malformed: { "821B000000010000000000", "82001B0000000100000000", "810C", "830C0000" })
+                expect(throws([&] { expect_decodes<dijkstra::header_version_info_t>(malformed); }));
+        };
+        "Leios and dormant parameters retain their typed values through encoding and snapshots"_test = [] {
+            const std::string parameters = "B1"
+                "182801182902182A03182B04182CD81E820102182D06182E07182F820809"
+                "18300A18310B1832D81E820C0118330D18340E18350F1836D81E820104183711183812";
+            const auto raw = uint8_vector::from_hex(parameters);
+            const auto decoded = dijkstra::protocol_param_update_t::from_cbor(cbor::zero2::parse(raw).get());
+            param_update_t expected {};
+            expected.leios_announcement_period_length = 1;
+            expected.leios_vote_period_length = 2;
+            expected.leios_diffusion_period_length = 3;
+            expected.leios_committee_size = 4;
+            expected.leios_quorum_stake_threshold = rational_u64 { 1, 2 };
+            expected.max_endorser_block_references_size = 6;
+            expected.max_endorser_block_txs_size = 7;
+            expected.max_endorser_block_ex_units = ex_units { 8, 9 };
+            expected.max_ref_script_size_per_endorser_block = 10;
+            expected.peras_min_candidate_block_age = 11;
+            expected.peras_healing_factor = rational_u64 { 12, 1 };
+            expected.peras_cert_boost = 13;
+            expected.peras_target_committee_size = 14;
+            expected.peras_bootstrap_round.emplace(nil_optional_t<uint32_t> { 15 });
+            expected.peras_quorum_threshold_safety_margin = rational_u64 { 1, 4 };
+            expected.ref_inputs_cost_per_multi_asset_policy = 17;
+            expected.ref_inputs_cost_per_datum_byte = 18;
+            expect(decoded.value == expected);
+            expect_encoding<dijkstra::protocol_param_update_t>(parameters, parameters);
+            expect_encoding<dijkstra::governance_action_t>("8400F6" + parameters + "F6", "8400F6" + parameters + "F6");
+            expect(turbo::zpp::deserialize<param_update_t>(turbo::zpp::serialize(decoded.value)) == expected);
+            const auto null_raw = uint8_vector::from_hex("A11835F6");
+            const auto null_update = dijkstra::protocol_param_update_t::from_cbor(cbor::zero2::parse(null_raw).get());
+            expect(null_update.value.peras_bootstrap_round.has_value());
+            expect(!null_update.value.peras_bootstrap_round->has_value());
+            expect_encoding<dijkstra::protocol_param_update_t>("A11835F6", "A11835F6");
+            expect_encoding<dijkstra::protocol_param_update_t>("A1183500", "A1183500");
+            for (const auto malformed: {
+                "A118281B0000000100000000", // 32-bit overflow
+                "A1182B1A00010000", // 16-bit overflow
+                "A1182CD81E820201", // quorum above one
+                "A1182CD81E820100", // zero denominator
+                "A11832D81E820001", // non-positive healing factor
+                "A118351B0000000100000000", // nullable round overflow
+                "A2182800182801", // duplicate key
+                "A1183900" // unknown key
+            })
+                expect(throws([&] { expect_decodes<dijkstra::protocol_param_update_t>(malformed); }));
+            expect(throws([&] { expect_decodes<param_update_t>(parameters); }));
         };
         "Dijkstra VRF output length"_test = [] {
             const auto decode = [](const size_t size) {

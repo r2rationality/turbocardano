@@ -6,7 +6,7 @@
 #include "creds-needed.hpp"
 
 namespace turbo::cardano::ledger::rules {
-    using language_view_cache = std::array<uint8_vector, 8>;
+    using language_view_cache = std::array<uint8_vector, 16>;
     language_view_cache make_language_views(const plutus_cost_models &);
 
     // Compact preprocessing results. No ledger state or script decoding is duplicated.

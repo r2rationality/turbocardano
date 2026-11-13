@@ -19,6 +19,7 @@ namespace turbo::plutus::costs {
     const std::vector<std::string> &cost_arg_names_v1();
     const std::vector<std::string> &cost_arg_names_v2();
     const std::vector<std::string> &cost_arg_names_v3();
+    const std::vector<std::string> &cost_arg_names_v4();
     const arg_map &default_cost_args_a();
     const arg_map &default_cost_args_b();
     const arg_map &default_cost_args_c();

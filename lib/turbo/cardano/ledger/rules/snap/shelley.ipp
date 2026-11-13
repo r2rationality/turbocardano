@@ -87,14 +87,14 @@
         return {};
     }
 
-    void state::_prep_op_stake_dist()
+    void state::_prep_op_stake_dist(const ledger_copy &snapshot)
     {
         _operating_stake_dist.clear();
-        _operating_stake_dist.total_stake = _set.pool_dist.total_stake();
-        for (const auto &[pool_id, coin]: _set.pool_dist) {
-            if (_set.delegated_pools.contains(pool_id)) {
-                const auto &params = _set.pool_params.at(pool_id).params;
-                rational_u64 rel_stake { coin, _set.pool_dist.total_stake() };
+        _operating_stake_dist.total_stake = snapshot.pool_dist.total_stake();
+        for (const auto &[pool_id, coin]: snapshot.pool_dist) {
+            if (coin && snapshot.delegated_pools.contains(pool_id)) {
+                const auto &params = snapshot.pool_params.at(pool_id).params;
+                rational_u64 rel_stake { coin, snapshot.pool_dist.total_stake() };
                 rel_stake.normalize();
                 _operating_stake_dist.try_emplace(pool_id, std::move(rel_stake), coin, params.vrf_vkey);
             }

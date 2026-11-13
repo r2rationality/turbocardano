@@ -192,6 +192,23 @@ namespace turbo::cardano {
         std::optional<rational_u64> ref_script_cost_multiplier {}; // 37
         std::optional<nil_optional_t<rational_u64>> max_pledge_leverage {}; // 38
         std::optional<rational_u64> min_pool_margin {}; // 39
+        std::optional<uint32_t> leios_announcement_period_length {}; // 40
+        std::optional<uint32_t> leios_vote_period_length {}; // 41
+        std::optional<uint32_t> leios_diffusion_period_length {}; // 42
+        std::optional<uint16_t> leios_committee_size {}; // 43
+        std::optional<rational_u64> leios_quorum_stake_threshold {}; // 44
+        std::optional<uint32_t> max_endorser_block_references_size {}; // 45
+        std::optional<uint32_t> max_endorser_block_txs_size {}; // 46
+        std::optional<ex_units> max_endorser_block_ex_units {}; // 47
+        std::optional<uint32_t> max_ref_script_size_per_endorser_block {}; // 48
+        std::optional<uint32_t> peras_min_candidate_block_age {}; // 49
+        std::optional<rational_u64> peras_healing_factor {}; // 50
+        std::optional<uint16_t> peras_cert_boost {}; // 51
+        std::optional<uint16_t> peras_target_committee_size {}; // 52
+        std::optional<nil_optional_t<uint32_t>> peras_bootstrap_round {}; // 53
+        std::optional<rational_u64> peras_quorum_threshold_safety_margin {}; // 54
+        std::optional<uint64_t> ref_inputs_cost_per_multi_asset_policy {}; // 55
+        std::optional<uint64_t> ref_inputs_cost_per_datum_byte {}; // 56
 
         static constexpr auto serialize(auto &archive, auto &self)
         {
@@ -231,7 +248,24 @@ namespace turbo::cardano {
                 self.ref_script_cost_stride,
                 self.ref_script_cost_multiplier,
                 self.max_pledge_leverage,
-                self.min_pool_margin
+                self.min_pool_margin,
+                self.leios_announcement_period_length,
+                self.leios_vote_period_length,
+                self.leios_diffusion_period_length,
+                self.leios_committee_size,
+                self.leios_quorum_stake_threshold,
+                self.max_endorser_block_references_size,
+                self.max_endorser_block_txs_size,
+                self.max_endorser_block_ex_units,
+                self.max_ref_script_size_per_endorser_block,
+                self.peras_min_candidate_block_age,
+                self.peras_healing_factor,
+                self.peras_cert_boost,
+                self.peras_target_committee_size,
+                self.peras_bootstrap_round,
+                self.peras_quorum_threshold_safety_margin,
+                self.ref_inputs_cost_per_multi_asset_policy,
+                self.ref_inputs_cost_per_datum_byte
             );
         }
 

@@ -9,7 +9,7 @@
         void index_tx(const cardano::tx_base &tx) override
         {
             const auto slot = tx.block().slot();
-            if (const auto *c_tx = dynamic_cast<const cardano::conway::tx *>(&tx); c_tx) {
+            if (const auto *c_tx = dynamic_cast<const cardano::conway::tx_base *>(&tx); c_tx) {
                 conway_tx_prelude prelude { .has_proposals=!c_tx->proposals().empty() };
                 for (const auto &v: c_tx->votes()) {
                     if (v.voter.type == cardano::voter_t::type_t::drep_key

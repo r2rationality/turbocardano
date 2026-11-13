@@ -27,6 +27,11 @@ namespace turbo::cardano::network::miniprotocol::chainsync {
                 _next(send, false);
         }
 
+        bool can_receive() const
+        {
+            return !_state.is<st_must_reply_t>();
+        }
+
         void failed(const std::string_view)
         {
             _state = st_done_t {};
@@ -211,6 +216,11 @@ namespace turbo::cardano::network::miniprotocol::chainsync {
     void handler::poll(const protocol_send_func &send)
     {
         _impl->poll(send);
+    }
+
+    bool handler::can_receive() const
+    {
+        return _impl->can_receive();
     }
 
     void handler::failed(const std::string_view err)

@@ -105,6 +105,7 @@ target_link_directories(lib PUBLIC
     ${ZSTD_LIBRARY_DIRS}
 )
 if (WIN32)
+    target_compile_definitions(lib PUBLIC _WIN32_WINNT=0x0A00 WINVER=0x0A00)
     target_compile_options(lib PUBLIC -DNOMINMAX=1)
     if (CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
         target_link_libraries(lib PUBLIC atomic)

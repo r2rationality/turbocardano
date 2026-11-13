@@ -6,6 +6,14 @@
 #include <turbo/cardano/dijkstra/transaction.hpp>
 
 namespace turbo::cardano::dijkstra {
+    struct header_version_info_t {
+        uint32_t highest_supported_major_version = 0;
+        uint32_t self_reported_software_tag = 0;
+
+        static header_version_info_t from_cbor(cbor::zero2::value &);
+        void to_cbor(era_encoder &) const;
+    };
+
     struct eb_announcement_t {
         block_hash hash {};
         uint32_t size = 0;
@@ -47,6 +55,8 @@ namespace turbo::cardano::dijkstra {
         const buffer &data_raw() const override;
         void to_cbor(era_encoder &) const;
 
+        const header_version_info_t &version_info() const;
+        bool leios() const { return _leios; }
         bool body_contains_leios_certificate() const;
         const std::optional<eb_announcement_t> &eb_announcement() const;
     private:
@@ -59,7 +69,9 @@ namespace turbo::cardano::dijkstra {
         uint32_t _body_size = 0;
         block_hash _body_hash{};
         operational_cert _op_cert{};
-        protocol_version _node_ver{};
+        header_version_info_t _version_info{};
+        protocol_version _protocol_version {};
+        bool _leios = false;
         bool _contains_leios_certificate = false;
         std::optional<eb_announcement_t> _eb_announcement{};
         buffer _body_raw{};
@@ -84,12 +96,12 @@ namespace turbo::cardano::dijkstra {
         block(uint64_t era, uint64_t offset, uint64_t hdr_offset, cbor::zero2::value &, const cardano::config &);
 
         uint32_t body_size() const override;
-        const cardano::block_header_base &header() const override;
+        const block_header &header() const override;
         const block_hash &body_hash() const override;
         const tx_list &txs() const override;
         const invalid_tx_set &invalid_txs() const override;
-        // Standalone BlockBody encoding replays its memoized bytes. The enclosing
-        // block uses the ledger's group encoding, which rebuilds the body fields.
+        const std::optional<leios_certificate_t> &leios_certificate() const;
+        const std::optional<uint8_vector> &peras_certificate() const;
         void body_to_cbor(era_encoder &) const;
         void to_cbor(era_encoder &) const;
     private:

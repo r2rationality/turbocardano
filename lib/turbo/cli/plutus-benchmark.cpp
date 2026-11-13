@@ -48,15 +48,14 @@ namespace turbo::cli::plutus_benchmark {
                         const auto script_path = paths[j].string();
                         const auto bytes = file::read(script_path);
                         try {
-                            const auto info = parse_name(paths[j].stem().string());
-                            const auto epoch = from_str<uint64_t>(paths[j].parent_path().filename().string());
-                            if (!cached_models || cached_models->epoch != epoch)
-                                cached_models.emplace(epoch, epoch_cost_models.for_epoch(epoch));
+                            const auto info = parse_name(paths[j]);
+                            if (!cached_models || cached_models->epoch != info.epoch)
+                                cached_models.emplace(info.epoch, epoch_cost_models.for_epoch(info.epoch));
                             const auto &model = cached_models->models.for_script(info.typ, builtins::semantics_variant(info.typ, info.protocol));
                             const auto start_time = std::chrono::high_resolution_clock::now();
                             allocator alloc{};
                             flat::script s{alloc, bytes, info.typ, info.protocol, false};
-                            machine m{alloc, model, info.typ, info.budget, info.protocol};
+                            machine m{alloc, model, info.typ, info.budget, info.protocol, s.version()};
                             const auto s_res = m.evaluate(s.program());
                             const auto run_time = std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - start_time).count();
                             res.try_emplace(script_path, flat::encode_cbor(s.version(), s_res.expr), run_time);
@@ -87,12 +86,13 @@ namespace turbo::cli::plutus_benchmark {
         using script_res_map = std::map<std::string, script_res>;
 
         struct script_info {
+            uint64_t epoch;
+            uint64_t protocol;
             tx_hash tx_id{};
             uint16_t redeemer_idx{};
             redeemer_tag redeemer_tag{};
             script_hash script_id{};
             script_type typ;
-            uint64_t protocol;
             ex_units budget;
         };
 
@@ -115,24 +115,29 @@ namespace turbo::cli::plutus_benchmark {
             file::write(res_path, csv);
         }
 
-        static script_info parse_name(const std::string &stem)
+        static std::vector<std::string> split_str(const std::string &s) {
+            return s | std::views::split('-') | std::ranges::to<std::vector<std::string>>();;
+        }
+
+        static script_info parse_name(const std::filesystem::path &path)
         {
-            std::stringstream ss{stem};
-            std::vector<std::string> items{};
-            std::string item{};
-            while (std::getline (ss, item, '-')) {
-                items.emplace_back(item);
-            }
-            if (items.size() != 8) [[unlikely]]
-                throw error{"script name must encode 8 fields including memory and CPU budgets; re-extract scripts with older names: {}", stem};
+            const auto dir_stem = path.parent_path().stem().string();
+            const auto dir_items = split_str(dir_stem);
+            if (dir_items.size() != 2) [[unlikely]]
+                throw error{"script directory name must encode 2 fields: {}", dir_stem};
+            const auto stem = path.stem().string();
+            const auto items = split_str(stem);
+            if (items.size() != 7) [[unlikely]]
+                throw error{"script name must encode 8 fields: {}", stem};
             return {
+                .epoch = from_str<uint64_t>(dir_items[0]),
+                .protocol = parse_field(dir_items[1], 'p'),
                 .tx_id = tx_hash::from_hex(items[0]),
                 .redeemer_idx = numeric_cast<uint16_t>(std::stoul(items[1])),
                 .redeemer_tag = redeemer_tag_from_str(items[2]),
                 .script_id = script_hash::from_hex(items[3]),
                 .typ = script_type_from_str(items[4]),
-                .protocol = parse_field(items[5], 'p'),
-                .budget = {parse_field(items[6], 'm'), parse_field(items[7], 's')}
+                .budget = {parse_field(items[5], 'm'), parse_field(items[6], 's')}
             };
         }
     };

@@ -5,45 +5,18 @@
 #include <turbo/cardano/dijkstra/block.hpp>
 
 namespace turbo::cardano::dijkstra {
-    namespace {
-        invalid_tx_set invalid_transactions_from_cbor(cbor::zero2::value &v)
-        {
-            auto *items = &v;
-            if (v.type() == cbor::major_type::tag) {
-                auto &tag = v.tag();
-                if (tag.id() != 258) [[unlikely]]
-                    throw error{"expected invalid transaction set tag 258 but got: {}", tag.id()};
-                items = &tag.read();
-            }
-            invalid_tx_set result {};
-            if (!items->indefinite())
-                result.reserve(items->special_uint());
-            auto &it = items->array();
-            while (!it.done()) {
-                const auto before = result.size();
-                result.emplace_hint(result.end(), numeric_cast<uint16_t>(it.read().uint()));
-                if (result.size() == before) [[unlikely]]
-                    throw error("duplicate Dijkstra invalid transaction index");
-            }
-            if (result.empty()) [[unlikely]]
-                throw error("Dijkstra invalid transaction set must be nonempty when supplied");
-            result.raw = v.data_raw();
-            return result;
-        }
-    }
-
     leios_certificate_t leios_certificate_t::from_cbor(cbor::zero2::value &v)
     {
         auto &it = v.array();
         const auto signers = it.read().bytes();
         if (signers.size() > 8192) [[unlikely]]
-            throw error("Leios signer bitfield cannot exceed 8192 bytes");
+            throw error{"Leios signer bitfield cannot exceed 8192 bytes"};
         leios_certificate_t res {
             signers,
             it.read().bytes()
         };
         if (!it.done()) [[unlikely]]
-            throw error("unexpected trailing Leios certificate elements");
+            throw error{"unexpected trailing Leios certificate elements"};
         return res;
     }
 
@@ -75,14 +48,6 @@ namespace turbo::cardano::dijkstra {
         auto &body = it.read();
         auto &body_it = body.array();
 
-        auto &invalid = body_it.read();
-        if (!invalid.is_null()) {
-            _invalid_transactions = invalid_transactions_from_cbor(invalid);
-        } else {
-            static_cast<void>(invalid.special());
-            _invalid_transactions.raw = invalid.data_raw();
-        }
-
         auto &transactions = body_it.read();
         _transactions = std::make_unique<block_transactions_t>(
             block_transactions_t::from_cbor(*this, v.data_begin(), transactions));
@@ -102,18 +67,16 @@ namespace turbo::cardano::dijkstra {
         }
 
         if (!body_it.done()) [[unlikely]]
-            throw error("unexpected trailing Dijkstra block body elements");
+            throw error{"unexpected trailing Dijkstra block body elements"};
         _body_raw = body.data_raw();
         if (!it.done()) [[unlikely]]
-            throw error("unexpected trailing Dijkstra block elements");
+            throw error{"unexpected trailing Dijkstra block elements"};
         _raw = v.data_raw();
 
         if (_header.body_contains_leios_certificate() != _leios_certificate.has_value()) [[unlikely]]
-            throw error("Dijkstra header/body Leios certificate presence mismatch");
-        for (const auto tx_idx: _invalid_transactions) {
-            if (tx_idx >= _transactions->txs.size()) [[unlikely]]
-                throw error{"Dijkstra invalid transaction index {} is out of range", tx_idx};
-            mark_invalid_tx(tx_idx);
-        }
+            throw error{"Dijkstra header/body Leios certificate presence mismatch"};
+        for (const auto &transaction: _transactions->txs)
+            if (transaction.invalid())
+                _invalid_transactions.emplace_hint(_invalid_transactions.end(), transaction.index());
     }
 }

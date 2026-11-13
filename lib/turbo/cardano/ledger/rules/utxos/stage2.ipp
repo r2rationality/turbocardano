@@ -34,7 +34,7 @@
                         const auto msg = fmt::format("txwit slot: {} tx: {} error: {}", blk.slot(), tx.hash(), ex.what());
                         logger::error("{}", msg);
                         error_handler(msg);
-                        if (blk.era() == 7)
+                        if (blk.era() == 7 || blk.era() == 8)
                             throw;
                     }
                 }

@@ -131,7 +131,7 @@ namespace turbo::cardano::ledger::rules {
         for (size_t mask = 0; mask < views.size(); ++mask) {
             flat_set<script_type> languages {};
             bool available = true;
-            for (size_t id = 0; id < 3; ++id) {
+            for (size_t id = 0; id < 4; ++id) {
                 if (mask & (1U << id)) {
                     available &= models.contains(id);
                     languages.emplace(static_cast<script_type>(id + 1));
@@ -155,8 +155,8 @@ namespace turbo::cardano::ledger::rules {
             size_t mask = 0;
             for (const auto language: languages) {
                 const auto id = static_cast<unsigned>(language);
-                if (id < 1 || id > 3)
-                    throw error("unsupported Conway Plutus language");
+                if (id < 1 || id > 4)
+                    throw error{"unsupported Plutus language in script integrity hash"};
                 mask |= 1U << (id - 1);
             }
             if ((*views)[mask].empty())

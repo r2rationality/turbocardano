@@ -43,6 +43,8 @@ namespace {
     };
 
     struct partial_progress_syncer: syncer {
+        std::exception_ptr failure = std::make_exception_ptr(cardano::network::transient_error{"recoverable failure after progress"});
+
         partial_progress_syncer(chunk_registry &cr, uint8_vector first_chunk, uint8_vector second_chunk, std::string obsolete_path,
             std::function<void()> on_retry={}, bool fail_after_progress=true)
             : syncer { cr }, _first_chunk { std::move(first_chunk) }, _second_chunk { std::move(second_chunk) },
@@ -64,14 +66,15 @@ namespace {
         bool sync_attempt(peer_info &peer, cardano::optional_slot) override
         {
             if (peer.intersection()) {
-                if (_on_retry) _on_retry();
+                if (_on_retry)
+                    _on_retry();
                 local_chain().add_buffer(local_chain().num_bytes(), std::move(_second_chunk));
                 return false;
             }
             local_chain().add_buffer(0, std::move(_first_chunk));
             local_chain().remover().mark(_obsolete_path, std::chrono::seconds { -1 });
             if (_fail_after_progress)
-                throw error("recoverable failure after progress");
+                std::rethrow_exception(failure);
             return false;
         }
     };
@@ -103,6 +106,29 @@ suite turbo_sync_base_suite = [] {
                 expect(retried);
                 expect_equal(cr.validator().snapshots().size(), 1);
                 expect_equal(cr.validator().snapshots().rbegin()->end_offset, cr.num_bytes());
+            }
+        };
+        "non-transient action and commit failures stop retries after progress"_test = [] {
+            for (const bool fail_commit: { false, true }) {
+                const file::tmp_directory dir { "sync-permanent-failure" };
+                const auto chain = gen_chain({ .height=3 });
+                file_remover remover;
+                chunk_registry cr { dir.path(), chunk_registry_settings_t {
+                    .validate_vrf=false, .ccfg=chain.cardano_cfg, .fr=remover } };
+                const auto first = chain.blocks.front()->blk.raw();
+                const auto obsolete = dir.path() + "/obsolete";
+                file::write(obsolete, std::string_view{"obsolete"});
+                size_t retries = 0;
+                partial_progress_syncer syncer { cr, uint8_vector{first}, {}, obsolete, [&] { ++retries; } };
+                if (fail_commit)
+                    cr.before_commit([] { throw std::logic_error{"commit failed"}; });
+                else
+                    syncer.failure = std::make_exception_ptr(std::logic_error{"action failed"});
+                auto peer = std::make_shared<test_peer_info>(*chain.tip);
+                expect(throws<std::logic_error>([&] { syncer.sync(peer, {}, validation_mode_t::none); }));
+                expect_equal(retries, 0);
+                expect_equal(cr.valid_end_offset(), fail_commit ? 0 : first.size());
+                expect(!cr.tx());
             }
         };
         "deferred validation failures stop retries without losing committed progress"_test = [] {

@@ -14,6 +14,7 @@ namespace turbo::cardano::network {
     struct protocol_observer_t: base_observer_t {
         virtual void data(buffer, const protocol_send_func &) =0;
         virtual void poll(const protocol_send_func &) {}
+        virtual bool can_receive() const { return true; }
     };
     using protocol_observer_ptr = std::shared_ptr<protocol_observer_t>;
     using protocol_observer_factory_t = std::function<protocol_observer_ptr(const miniprotocol::handshake::result_t &)>;

@@ -3,6 +3,8 @@
  * License: https://github.com/r2rationality/turbocardano/blob/main/LICENSE */
 
 #include <turbo/cardano/dijkstra/block.hpp>
+#include <turbo/cardano.hpp>
+#include <turbo/cardano/common/block-producer.hpp>
 #include <turbo/cbor/normalize.hpp>
 #include <turbo/common/test.hpp>
 
@@ -28,6 +30,23 @@ namespace {
         value.to_cbor(enc);
         expect_equal(enc.cbor(), bytes);
     }
+
+    uint8_vector make_header(const buffer body, const bool leios = false,
+        const std::optional<dijkstra::eb_announcement_t> &announcement = {})
+    {
+        cbor::encoder enc {};
+        enc.array().array(12).uint(0).uint(0).s_null().bytes(vkey {}).bytes(vrf_vkey {})
+            .array(2).bytes(vrf_result {}).bytes(vrf_proof {}).uint(body.size())
+            .bytes(crypto::blake2b::digest<block_hash>(body))
+            .array(4).bytes(kes_vkey {}).uint(0).uint(0).bytes(signature {})
+            .array(2).uint(14).uint(1234).boolean(leios);
+        if (announcement)
+            enc.array(2).bytes(announcement->hash).uint(announcement->size);
+        else
+            enc.s_null();
+        enc.bytes(cardano_kes_signature_data {}).s_break();
+        return enc.cbor();
+    }
 }
 
 suite cardano_dijkstra_cbor_suite = [] {
@@ -41,6 +60,21 @@ suite cardano_dijkstra_cbor_suite = [] {
         const auto sub_tx = "83" + sub_body + witnesses + auxiliary;
         const auto body = "BF008001800218001781" + sub_tx + "FF";
         const auto transaction = "83" + body + witnesses + auxiliary;
+
+        "DijkstraNet Praos headers preserve their signing bytes"_test = [] {
+            const auto seed = crypto::blake2b::digest<crypto::ed25519::seed>(std::string_view { "dijkstra-header" });
+            block_producer producer { crypto::ed25519::create_sk_from_seed(seed), seed, vrf03_create_sk_from_seed(seed) };
+            const auto bytes = producer.empty_dijkstra_cbor();
+            const parsed_block parsed { bytes };
+            const auto &header = dynamic_cast<const dijkstra::block_header &>(parsed.blk->header());
+            expect(!header.leios());
+            expect(header.protocol_ver() == protocol_version { 12, 0 });
+            expect(parsed.blk->signature_ok());
+            expect(parsed.blk->body_hash_ok());
+            era_encoder enc { era_t::dijkstra };
+            header.to_cbor(enc);
+            expect_equal(buffer { enc.cbor() }, header.raw());
+        };
 
         "validated wire values borrow their original bytes"_test = [&] {
             check_preserved<decoded_cbor_t<dijkstra::native_script_t>>(native);
@@ -136,31 +170,130 @@ suite cardano_dijkstra_cbor_suite = [] {
             expect_equal(guarded_enc.cbor(), guarded_bytes);
         };
 
-        "standalone block body preserves bytes while the block rebuilds its fields"_test = [&] {
-            cbor::encoder header_enc {};
-            header_enc.array().array(12).uint(0).uint(0).s_null().bytes(vkey {}).bytes(vrf_vkey {})
-                .array(2).bytes(vrf_result {}).bytes(vrf_proof {}).uint(0).bytes(block_hash {})
-                .array(4).bytes(kes_vkey {}).uint(0).uint(0).bytes(signature {})
-                .array(2).uint(13).uint(0).s_false().s_null()
-                .bytes(cardano_kes_signature_data {}).s_break();
-            const auto tx_bytes = uint8_vector::from_hex(transaction);
+        "ledger size excludes validity and normalizes only the outer envelope"_test = [&] {
+            for (const bool definite: { false, true }) {
+                for (const bool valid: { false, true }) {
+                    for (const auto &aux: { std::string { "F6" }, auxiliary }) {
+                        const auto tx_bytes = uint8_vector::from_hex(
+                            (definite ? "84" : "9F") + body + witnesses + aux
+                            + (valid ? "F5" : "F4") + (definite ? "" : "FF"));
+                        cbor::encoder body_enc {};
+                        body_enc.array(3).array(1).raw_cbor(tx_bytes).s_null().s_null();
+                        const auto header = make_header(body_enc.cbor());
+                        cbor::encoder encoded {};
+                        encoded.array(2).raw_cbor(header).raw_cbor(body_enc.cbor());
+                        cbor::zero2::decoder dec { encoded.cbor(), cbor::zero2::decoder::create_chunk_storage() };
+                        const dijkstra::block block { 8, 0, 0, dec.read(), cardano::config::get() };
+                        expect(dec.done());
+                        const auto &tx = dynamic_cast<const dijkstra::tx &>(*block.txs().at(0));
+                        const auto expected = uint8_vector::from_hex("83" + body + witnesses + aux);
+                        expect_equal(tx.ledger_size(), expected.size());
+                        expect_equal(tx.size(), tx_bytes.size());
+                        expect_equal(tx.size() - tx.ledger_size(), definite ? 1U : 2U);
+                        era_encoder mempool { era_t::dijkstra };
+                        tx.to_cbor(mempool);
+                        expect_equal(mempool.cbor(), expected);
+                    }
+                }
+            }
+        };
+
+        "block bytes, validity and Leios metadata survive decoding and storage lookup"_test = [&] {
+            const auto valid_tx = uint8_vector::from_hex("84" + body + witnesses + auxiliary + "F5");
+            const auto invalid_tx = uint8_vector::from_hex("84" + body + witnesses + auxiliary + "F4");
+            const auto signers = uint8_vector::from_hex("0102");
+            const auto peras = uint8_vector::from_hex("0304");
+            const dijkstra::eb_announcement_t announcement { block_hash::from_hex(std::string(64, '1')), 123 };
             cbor::encoder body_enc {};
-            body_enc.array().array().uint(1).uint(0).s_break()
-                .array(2).raw_cbor(tx_bytes).raw_cbor(tx_bytes).s_null().s_null().s_break();
+            body_enc.array().array(2).raw_cbor(valid_tx).raw_cbor(invalid_tx)
+                .array(2).bytes(signers).bytes(byte_array<48> {}).bytes(peras).s_break();
+            const auto header_bytes = make_header(body_enc.cbor(), true, announcement);
             era_encoder input { era_t::dijkstra };
-            input.array(2).raw_cbor(header_enc.cbor()).raw_cbor(body_enc.cbor());
+            input.array().raw_cbor(header_bytes).raw_cbor(body_enc.cbor()).s_break();
             cbor::zero2::decoder dec { input.cbor(), cbor::zero2::decoder::create_chunk_storage() };
             const dijkstra::block block { 8, 0, 0, dec.read(), cardano::config::get() };
             expect(dec.done());
+            expect_equal(block.body_size(), body_enc.cbor().size());
+            expect_equal(block.body_hash(), block.header().body_hash());
+            expect_equal(block.header().hash(), crypto::blake2b::digest<block_hash>(header_bytes));
+            expect_equal(block.header().version_info().highest_supported_major_version, 14);
+            expect_equal(block.header().version_info().self_reported_software_tag, 1234);
+            expect_equal(block.protocol_ver(), (protocol_version { 14, 0 }));
+            expect(block.header().body_contains_leios_certificate());
+            expect_equal(block.header().eb_announcement()->hash, announcement.hash);
+            expect_equal(block.header().eb_announcement()->size, announcement.size);
+            expect_equal(block.leios_certificate()->signers, signers);
+            expect_equal(*block.peras_certificate(), peras);
+            expect_equal(block.invalid_txs().size(), 1);
+            expect(block.invalid_txs().contains(1));
+            expect(!block.txs().at(0)->invalid());
+            expect(block.txs().at(1)->invalid());
+            expect_equal(block.txs().at(0)->hash(), block.txs().at(1)->hash());
+            expect_equal(block.txs().at(0)->hash(), crypto::blake2b::digest<tx_hash>(uint8_vector::from_hex(body)));
+            size_t valid_count = 0;
+            size_t invalid_count = 0;
+            block.foreach_tx([&](const auto &) { ++valid_count; });
+            block.foreach_invalid_tx([&](const auto &) { ++invalid_count; });
+            expect_equal(valid_count, 1);
+            expect_equal(invalid_count, 1);
             era_encoder encoded_body { era_t::dijkstra };
             block.body_to_cbor(encoded_body);
             expect_equal(encoded_body.cbor(), body_enc.cbor());
             era_encoder encoded { era_t::dijkstra };
             block.to_cbor(encoded);
             era_encoder expected { era_t::dijkstra };
-            expected.array(2).raw_cbor(header_enc.cbor()).array(4).tag(258).array(2).uint(0).uint(1)
-                .array(2).raw_cbor(tx_bytes).raw_cbor(tx_bytes).s_null().s_null();
+            expected.array(2).raw_cbor(header_bytes).raw_cbor(body_enc.cbor());
             expect_equal(encoded.cbor(), expected.cbor());
+
+            cbor::encoder wrapped {};
+            wrapped.array(2).uint(8).raw_cbor(encoded.cbor());
+            cbor::zero2::decoder stored_dec { wrapped.cbor(), cbor::zero2::decoder::create_chunk_storage() };
+            const block_container stored { 1000, stored_dec.read() };
+            const auto &stored_tx = *stored->txs().at(1);
+            cbor::zero2::decoder tx_dec { stored_tx.raw(), cbor::zero2::decoder::create_chunk_storage() };
+            const tx_container restored { block_info::from_block(stored), stored_tx.offset(),
+                tx_dec.read(), 1, cardano::config::get() };
+            expect(restored->invalid());
+            expect_equal(restored->hash(), stored_tx.hash());
+            expect_equal(restored->offset(), stored_tx.offset());
+            const auto &typed_tx = static_cast<const dijkstra::tx &>(*restored);
+            era_encoder block_tx_enc { era_t::dijkstra };
+            typed_tx.to_cbor_for_block(block_tx_enc);
+            expect_equal(block_tx_enc.cbor(), invalid_tx);
+            era_encoder mempool_enc { era_t::dijkstra };
+            typed_tx.to_cbor(mempool_enc);
+            expect_equal(mempool_enc.cbor(), uint8_vector::from_hex(transaction));
+        };
+
+        "block and mempool transaction envelopes are distinct"_test = [&] {
+            const auto check_block = [](const std::string_view body_hex, const bool contains_leios = false) {
+                const auto body_bytes = uint8_vector::from_hex(body_hex);
+                cbor::encoder enc {};
+                enc.array(2).raw_cbor(make_header(body_bytes, contains_leios)).raw_cbor(body_bytes);
+                cbor::zero2::decoder dec { enc.cbor() };
+                const dijkstra::block block { 8, 0, 0, dec.read(), cardano::config::get() };
+                expect(dec.done());
+            };
+            check_block("8380F6F6");
+            check_block("838184A3008001800200A0F6F5F6F6");
+            check_block("9F9F9FA3008001800200A0F6F4FFFFF6F6FF");
+            for (const auto malformed: {
+                "84F680F6F6", // retired block-level validity set
+                "838183A3008001800200A0F6F6F6", // missing trailing validity
+                "838184A3008001800200A0F5F6F6F6", // mempool compatibility flag
+                "838184A3008001800200A0F600F6F6", // non-boolean validity
+                "838185A3008001800200A0F6F500F6F6", // extra transaction element
+                "8480F6F6F6", // extra body element
+                "8280F6" // missing certificate slot
+            })
+                expect(throws([&] { check_block(malformed); }));
+            expect(throws([&] { check_block("8380F6F6", true); }));
+            const auto cert = "82405830" + std::string(96, '0');
+            expect(throws([&] { check_block("8380" + cert + "F6"); }));
+            check_block("8380" + cert + "F6", true);
+            expect(throws([&] {
+                decode<dijkstra::transaction_t>(uint8_vector::from_hex("84" + body + witnesses + auxiliary + "F5"));
+            }));
         };
     };
 };

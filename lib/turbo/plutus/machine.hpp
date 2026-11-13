@@ -25,9 +25,10 @@ namespace turbo::plutus {
         };
 
         machine(allocator &alloc, cardano::script_type typ, const optional_budget &budget={},
-                uint64_t protocol_major=builtin_case_protocol_major);
+                uint64_t protocol_major=builtin_case_protocol_major, const version &core_version={1, 1, 0});
         machine(allocator &alloc, const costs::runtime_model &model, cardano::script_type typ,
-                const optional_budget &budget={}, uint64_t protocol_major=builtin_case_protocol_major);
+                const optional_budget &budget={}, uint64_t protocol_major=builtin_case_protocol_major,
+                const version &core_version={1, 1, 0});
         ~machine();
         result evaluate(const term &expr);
         cardano::ex_units evaluate_no_res(const term &expr);

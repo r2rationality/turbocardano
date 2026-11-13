@@ -132,10 +132,10 @@ namespace turbo::cli::plutus_extract_scripts {
                         static std::string exp_prefix { "plutus_" };
                         if (!typ_s.starts_with(exp_prefix)) [[unlikely]]
                             throw error{"unsupported script type: {}!", typ_s};
-                        const auto out_prefix = fmt::format("{}/{}/{}-{}-{}-{}-{}-p{}-m{}-s{}",
-                            out_dir, *epoch, tx_id, r_idx++, rid.tag,
-                            ps.hash, typ_s.substr(exp_prefix.size()),
-                            ctx.protocol_ver().major, r.budget.mem, r.budget.steps);
+                        const auto out_prefix = fmt::format("{}/{}-p{}/{}-{}-{}-{}-{}-m{}-s{}",
+                            out_dir, *epoch, ctx.protocol_ver().major,
+                            tx_id, r_idx++, rid.tag, ps.hash, typ_s.substr(exp_prefix.size()),
+                            r.budget.mem, r.budget.steps);
                         if (cfg.uplc) {
                             file::write(out_prefix + ".uplc", fmt::format("(program 0.0.0 {})", ps.expr));
                         } else {

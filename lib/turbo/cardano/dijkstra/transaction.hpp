@@ -250,8 +250,7 @@ namespace turbo::cardano::dijkstra {
     };
 
     struct tx: tx_base {
-        tx(const cardano::block_base &, uint64_t blk_off, cbor::zero2::value &, size_t idx=0,
-            bool invalid=false, bool mempool=false);
+        tx(const cardano::block_base &, uint64_t blk_off, cbor::zero2::value &, size_t idx=0);
 
         const tx_hash &hash() const override;
         const input_set &inputs() const override;
@@ -262,6 +261,7 @@ namespace turbo::cardano::dijkstra {
         const cert_list &certs() const override;
         const param_update_proposal_list &updates() const override;
         buffer raw() const override;
+        uint32_t ledger_size() const;
         const multi_mint_map &mints() const override;
         std::optional<uint64_t> validity_start() const override;
         const signer_set &required_signers() const override;
@@ -274,9 +274,12 @@ namespace turbo::cardano::dijkstra {
         const conway::proposal_set &proposals() const override;
         std::optional<uint64_t> current_treasury() const override;
         void to_cbor(era_encoder &) const;
+        void to_cbor_for_block(era_encoder &) const;
     private:
         transaction_body_t _body {};
         buffer _auxiliary_data_raw {};
         buffer _raw {};
+
+        void _encode_contents(era_encoder &) const;
     };
 }
