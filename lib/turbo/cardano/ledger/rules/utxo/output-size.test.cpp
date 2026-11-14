@@ -53,7 +53,7 @@ suite ledger_output_size_suite = [] {
     "UTXO value size matches ledger encoding at both map boundaries"_test = [] {
         for (const bool many_policies: { false, true }) {
             for (const size_t count: { 23, 24, 255, 256 }) {
-                cardano::tx_out_data out { .coin=1'000'000 };
+                cardano::tx_out_data out { .address_raw={}, .coin=1'000'000 };
                 for (size_t i = 0; i < count; ++i) {
                     cardano::script_hash policy {};
                     const byte_array<2> name { static_cast<uint8_t>(i >> 8), static_cast<uint8_t>(i) };

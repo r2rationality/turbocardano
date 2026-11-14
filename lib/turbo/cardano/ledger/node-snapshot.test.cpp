@@ -179,7 +179,7 @@ suite node_snapshot_suite = [] {
             expected.insert(expected.end(), 28, 0);
             expected << policy << uint8_vector::from_hex("6162");
             expect_equal(snapshot::pack_output(compact), expected);
-            for (const auto datum: { datum_option_t { datum_hash {} }, datum_option_t { uint8_vector::from_hex("820102") } }) {
+            for (const auto &datum: { datum_option_t { datum_hash {} }, datum_option_t { uint8_vector::from_hex("820102") } }) {
                 out.datum = datum;
                 for (const auto type: { script_type::native, script_type::plutus_v1, script_type::plutus_v2, script_type::plutus_v3 }) {
                     out.script_ref.emplace(type, uint8_vector::from_hex("8100"));

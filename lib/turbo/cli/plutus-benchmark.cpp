@@ -25,7 +25,7 @@ namespace turbo::cli::plutus_benchmark {
             cmd.args.expect({ "<script-dir>", "<thread-count>", "<run-id>" });
         }
 
-        void run(const arguments &args, const options &opts) const override {
+        void run(const arguments &args, const options &) const override {
             const auto &script_dir = args.at(0);
             const auto num_workers = std::stoull(args.at(1));
             const auto &run_id = args.at(2);

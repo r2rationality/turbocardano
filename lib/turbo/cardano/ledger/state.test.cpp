@@ -415,7 +415,7 @@ suite cardano_ledger_state_suite = [] {
                 auto &map = table.get().at(0).map();
                 expect(!map.done());
                 auto &key = map.read_key();
-                expect_equal(node_snapshot::unpack_input(key.bytes()).idx, 0);
+                expect_equal(node_snapshot::unpack_input(key.bytes()).idx, size_t { 0 });
                 const auto output = node_snapshot::unpack_output(map.read_val(std::move(key)).bytes(), st.eras().size());
                 expect_equal(output.coin, 123);
                 expect(map.done());

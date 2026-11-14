@@ -226,7 +226,7 @@ namespace turbo::cardano::ledger::node_snapshot {
         auto &point_data = tip.at(0);
         array_size(point_data, 3);
         auto &point_fields = point_data.array();
-        state_info info { .era=era, .epoch=0 };
+        state_info info { .tip={}, .era=era, .epoch=0 };
         info.tip.slot = point_fields.read().uint();
         info.tip.height = point_fields.read().uint();
         info.tip.hash = point_fields.read().bytes();

@@ -414,10 +414,16 @@ suite validator_suite = [] {
                 const optional_point expected = test.fail_first ? optional_point {}
                     : optional_point { test.fail_recovery ? start : prefix };
                 chunk_registry baseline { baseline_dir.path(), settings };
+                cardano::ledger::state expected_state { chain.cardano_cfg };
                 if (expected) {
                     baseline.accept_anything_or_throw({}, *expected, [&] {
                         baseline.add_buffer(0, uint8_vector { static_cast<buffer>(chain.data).subbuf(0, expected->end_offset) });
                     });
+                    // The legacy mock uses PV0 with Babbage blocks; compare checkpoint states consistently.
+                    baseline.save_state();
+                    const auto *snap = baseline.validator().snapshots().at_offset(expected->end_offset);
+                    expect(fatal(snap != nullptr));
+                    baseline.validator().load_snapshot(expected_state, *snap);
                 }
                 block_producer block { sk, seed, vrf03_create_sk_from_seed(seed) };
                 block.height = test.fail_first ? 0 : 2;
@@ -474,13 +480,16 @@ suite validator_suite = [] {
                     expect_equal(recovery_attempted, !test.fail_first);
                     expect_equal(cr.tip(), expected);
                     expect_equal(cr.valid_end_offset(), expected ? expected->end_offset : 0);
-                    expect(cr.validator().state() == baseline.validator().state());
                     expect(!cr.tx());
                     if (expected) {
                         const auto *snap = cr.validator().snapshots().at_offset(expected->end_offset);
                         expect(fatal(snap != nullptr));
                         expect(snap->full_validation);
-                    }
+                        cardano::ledger::state actual_state { chain.cardano_cfg, scheduler::get(), cardano::ledger::state::init_mode::empty };
+                        cr.validator().load_snapshot(actual_state, *snap);
+                        expect(actual_state == expected_state);
+                    } else
+                        expect(cr.validator().state() == expected_state);
                 }
                 std::optional<std::filesystem::file_time_type> saved_time;
                 const auto snapshot_path = std::filesystem::path { dir.path() } / "validate"
@@ -492,7 +501,7 @@ suite validator_suite = [] {
                 }
                 chunk_registry reloaded { dir.path(), settings };
                 expect_equal(reloaded.tip(), expected);
-                expect(reloaded.validator().state() == baseline.validator().state());
+                expect(reloaded.validator().state() == expected_state);
                 if (saved_time)
                     expect(std::filesystem::last_write_time(snapshot_path) == *saved_time);
             }
